@@ -106,7 +106,7 @@ function Write-EnvFile {
     [IO.File]::WriteAllText($Path, $content + "`r`n", [Text.UTF8Encoding]::new($false))
 }
 
-function Escape-XmlValue([string]$Value) {
+function ConvertTo-XmlValue([string]$Value) {
     return [Security.SecurityElement]::Escape($Value)
 }
 

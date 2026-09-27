@@ -196,23 +196,23 @@ function New-WinSWServiceXml {
     foreach ($pair in $ExtraEnv.GetEnumerator()) { $merged[$pair.Key] = [string]$pair.Value }
     $xml = @(
         '<service>',
-        ("  <id>{0}</id>" -f (Escape-XmlValue $Id)),
-        ("  <name>{0}</name>" -f (Escape-XmlValue $Name)),
+        ("  <id>{0}</id>" -f (ConvertTo-XmlValue $Id)),
+        ("  <name>{0}</name>" -f (ConvertTo-XmlValue $Name)),
         '  <description>Native Windows Immich service managed by immich-windows.</description>',
-        ("  <executable>{0}</executable>" -f (Escape-XmlValue $Executable)),
-        ("  <arguments>{0}</arguments>" -f (Escape-XmlValue $Arguments)),
-        ("  <workingdirectory>{0}</workingdirectory>" -f (Escape-XmlValue $current)),
+        ("  <executable>{0}</executable>" -f (ConvertTo-XmlValue $Executable)),
+        ("  <arguments>{0}</arguments>" -f (ConvertTo-XmlValue $Arguments)),
+        ("  <workingdirectory>{0}</workingdirectory>" -f (ConvertTo-XmlValue $current)),
         '  <startmode>Automatic</startmode>',
         '  <onfailure action="restart" delay="5 sec"/>',
         '  <stoptimeout>30 sec</stoptimeout>',
-        ("  <logpath>{0}</logpath>" -f (Escape-XmlValue $logs)),
+        ("  <logpath>{0}</logpath>" -f (ConvertTo-XmlValue $logs)),
         '  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>5</keepFiles></log>'
     )
-    foreach ($dependency in $Depends) { $xml += ('  <depend>{0}</depend>' -f (Escape-XmlValue $dependency)) }
+    foreach ($dependency in $Depends) { $xml += ('  <depend>{0}</depend>' -f (ConvertTo-XmlValue $dependency)) }
     foreach ($pair in $merged.GetEnumerator()) {
-        $xml += ('  <env name="{0}" value="{1}"/>' -f (Escape-XmlValue $pair.Key), (Escape-XmlValue ([string]$pair.Value)))
+        $xml += ('  <env name="{0}" value="{1}"/>' -f (ConvertTo-XmlValue $pair.Key), (ConvertTo-XmlValue ([string]$pair.Value)))
     }
-    $xml += ('  <env name="PATH" value="{0}"/>' -f (Escape-XmlValue $servicePath))
+    $xml += ('  <env name="PATH" value="{0}"/>' -f (ConvertTo-XmlValue $servicePath))
     $xml += '</service>'
     return $xml -join "`r`n"
 }
