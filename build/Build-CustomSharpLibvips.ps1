@@ -14,10 +14,14 @@ $bash=if($IsWindows){
     $gitRoot=Split-Path (Split-Path $git -Parent) -Parent
     Assert-FileExists (Join-Path $gitRoot 'bin/bash.exe')
 }else{Assert-Command bash}
-$docker=Assert-Command docker
-$dockerOs=(& $docker info --format '{{.OSType}}' 2>$null).Trim()
-if($LASTEXITCODE -ne 0){throw 'Docker is not reachable on the build PC. This stage uses the upstream libvips container only to cross-compile native Windows DLLs.'}
-if($dockerOs -ne 'linux'){throw "libvips/build-win64-mxe requires Linux-container mode. Docker reports OSType=$dockerOs"}
+$runtimeName=if(Get-Command podman -ErrorAction SilentlyContinue){'podman'}else{'docker'}
+$runtime=Assert-Command $runtimeName
+& $runtime info *> $null
+if($LASTEXITCODE -ne 0){throw "$runtimeName is not reachable on the build host."}
+if($IsWindows -and $runtimeName -eq 'docker'){
+    $containerOs=(& $runtime info --format '{{.OSType}}').Trim()
+    if($containerOs -ne 'linux'){throw "libvips/build-win64-mxe requires Linux-container mode. Docker reports OSType=$containerOs"}
+}
 
 $source=Join-Path $root '.work/build-win64-mxe'
 if(Test-Path $source){Remove-Item $source -Recurse -Force}
@@ -110,11 +114,11 @@ finally{
 $suffix=if($v.jpeg -eq 'jpegli'){'-hevc-jpegli'}elseif($v.jpeg -eq 'libjpeg-turbo'){'-hevc-libjpeg-turbo'}else{'-hevc'}
 $zipName="vips-dev-x64-all-$($v.version)$suffix.zip"
 $containerName='immich-libvips-export-'+[Guid]::NewGuid().ToString('N')
-Invoke-Native $docker @('create','--name',$containerName,'libvips-build-win-mxe:latest')|Out-Null
+Invoke-Native $runtime @('create','--name',$containerName,'libvips-build-win-mxe:latest')|Out-Null
 try{
-    Invoke-Native $docker @('cp',"${containerName}:/data/packaging/$zipName",(Join-Path $source 'packaging'))
+    Invoke-Native $runtime @('cp',"${containerName}:/data/packaging/$zipName",(Join-Path $source 'packaging'))
 }
-finally{Invoke-Native $docker @('rm',$containerName)|Out-Null}
+finally{Invoke-Native $runtime @('rm',$containerName)|Out-Null}
 $zip=Get-ChildItem -LiteralPath (Join-Path $source 'packaging') -Filter "vips-dev-x64-all-$($v.version)$suffix.zip" -File|Select-Object -First 1
 if(-not $zip){
     $candidates=Get-ChildItem -LiteralPath (Join-Path $source 'packaging') -Filter 'vips-dev-x64-all-*-hevc*.zip' -File
