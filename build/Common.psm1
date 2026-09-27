@@ -28,12 +28,9 @@ function Test-WindowsAbsolutePath {
 
 function Get-RelativePathPortable {
     param([Parameter(Mandatory)][string]$BasePath,[Parameter(Mandatory)][string]$FullPath)
-    $base = (Resolve-Path -LiteralPath $BasePath).Path.TrimEnd('\') + '\'
+    $base = (Resolve-Path -LiteralPath $BasePath).Path
     $full = (Resolve-Path -LiteralPath $FullPath).Path
-    $baseUri = New-Object System.Uri($base)
-    $fullUri = New-Object System.Uri($full)
-    if ($baseUri.Scheme -ne $fullUri.Scheme) { return $full }
-    return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($fullUri).ToString()).Replace('/','\')
+    return [IO.Path]::GetRelativePath($base,$full)
 }
 
 function Assert-Command {
