@@ -71,7 +71,7 @@ function Assert-UpstreamVersions {
     $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
     if ("v$($server.version)" -ne $upstream.version) { throw "Server package version differs from $($upstream.version)." }
     foreach ($name in @('node','pnpm')) {
-        $match = [regex]::Match($mise, "(?m)^$name = `"([^`"]+)`"$")
+        $match = [regex]::Match($mise, "(?m)^$name = `"([^`"]+)`"\r?$")
         if (-not $match.Success -or $match.Groups[1].Value -ne $versions.$name.version) {
             throw "Update dependencies/versions.json: $name differs from the pinned upstream mise.toml."
         }
@@ -80,13 +80,13 @@ function Assert-UpstreamVersions {
         @{ upstream = 'github:extism/js-pdk'; local = 'extismJs'; prefix = 'v' },
         @{ upstream = 'github:webassembly/binaryen'; local = 'binaryen'; prefix = 'version_' }
     )) {
-        $pattern = '(?m)^"' + [regex]::Escape($tool.upstream) + '" = "([^\"]+)"$'
+        $pattern = '(?m)^"' + [regex]::Escape($tool.upstream) + '" = "([^\"]+)"\r?$'
         $match = [regex]::Match($mise, $pattern)
         if (-not $match.Success -or $match.Groups[1].Value -ne "$($tool.prefix)$($versions.($tool.local).version)") {
             throw "Update dependencies/versions.json: $($tool.local) differs from the pinned upstream mise.toml."
         }
     }
-    $ffmpeg = [regex]::Match($mise, '(?m)^\[tools\."github:jellyfin/jellyfin-ffmpeg"\]\r?\nversion = "([^"]+)"$')
+    $ffmpeg = [regex]::Match($mise, '(?m)^\[tools\."github:jellyfin/jellyfin-ffmpeg"\]\r?\nversion = "([^"]+)"\r?$')
     if (-not $ffmpeg.Success -or $ffmpeg.Groups[1].Value -ne $versions.ffmpeg.version) {
         throw 'Update dependencies/versions.json: FFmpeg differs from the pinned upstream mise.toml.'
     }
