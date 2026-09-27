@@ -15,7 +15,7 @@ jobs:
   audit:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Parse PowerShell and verify pins
         shell: pwsh
         run: .\tests\Static-RepositoryAudit.ps1
