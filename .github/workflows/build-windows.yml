@@ -5,7 +5,7 @@ on:
     inputs:
       component:
         type: choice
-        options: [all, codec, application]
+        options: [all, codec, application, postgres]
         default: all
 
 permissions:
@@ -32,3 +32,18 @@ jobs:
         run: |
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-All.ps1 -SkipNativeDependencies
+  postgres:
+    if: inputs.component == 'all' || inputs.component == 'postgres'
+    runs-on: windows-2025
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build PostgreSQL 18 extensions
+        shell: pwsh
+        run: |
+          choco install postgresql18 --version 18.6.3 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL 18 installation failed.' }
+          $env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
+          .\build\Enter-VsDevEnvironment.ps1
+          .\build\Build-PgVector.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18'
+          .\build\Build-VectorChord.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' -InstallCargoPgrx
