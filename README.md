@@ -12,4 +12,4 @@ Immich本体はforkせず、[upstream.json](upstream.json)で固定した上流�
 
 パッケージ内の`Install.cmd`を起動すると、範囲や不足している設定を対話式に入力できます。既存の`.env`を指定する場合は、`Install.cmd -EnvFile "C:\path\to\.env" -Scope AllUsers`のように渡します。`DB_PASSWORD`などのDB設定を読み込み、指定した移行元`.env`は書き換えずに、インストール先へWindows用の設定を作ります。`UPLOAD_LOCATION`が相対パスの場合は、Windows上のメディアルートを尋ねます。従来の`Install.ps1`の引数も引き続き使えます。
 
-Linux/WSL2からの移行では、同じImmich版を使用し、PostgreSQLの論理バックアップをWindowsへ復元します。NTFS上のメディアは元の場所を使用できます。手順と設計は[architecture.md](docs/architecture.md)を参照してください。
+Linux/WSL2からの移行では、同じImmich版のPostgreSQL論理バックアップを復元し、NTFS上の既存メディアを使用できます。手順は[migration guide](docs/migration.md)を参照してください。
