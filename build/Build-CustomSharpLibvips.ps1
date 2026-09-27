@@ -2,27 +2,30 @@
 param([string]$Destination)
 
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
-Assert-WindowsX64
+if(-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64'){
+    throw 'The libvips cross-build requires an x64 host.'
+}
 $root=Get-RepositoryRoot
-$v=(Read-JsonFile (Join-Path $root 'dependencies\versions.json')).sharpLibvips
-if(-not $Destination){$Destination=Join-Path $root 'artifacts\native\sharp-libvips-custom'}
+$v=(Read-JsonFile (Join-Path $root 'dependencies/versions.json')).sharpLibvips
+if(-not $Destination){$Destination=Join-Path $root 'artifacts/native/sharp-libvips-custom'}
 
-$git=Assert-Command git.exe
-$gitRoot=Split-Path (Split-Path $git -Parent) -Parent
-$gitBash=Join-Path $gitRoot 'bin\bash.exe'
-Assert-FileExists $gitBash|Out-Null
-Assert-Command docker.exe|Out-Null
-$dockerOs=(& docker.exe info --format '{{.OSType}}' 2>$null).Trim()
+$git=Assert-Command git
+$bash=if($IsWindows){
+    $gitRoot=Split-Path (Split-Path $git -Parent) -Parent
+    Assert-FileExists (Join-Path $gitRoot 'bin/bash.exe')
+}else{Assert-Command bash}
+$docker=Assert-Command docker
+$dockerOs=(& $docker info --format '{{.OSType}}' 2>$null).Trim()
 if($LASTEXITCODE -ne 0){throw 'Docker is not reachable on the build PC. This stage uses the upstream libvips container only to cross-compile native Windows DLLs.'}
 if($dockerOs -ne 'linux'){throw "libvips/build-win64-mxe requires Linux-container mode. Docker reports OSType=$dockerOs"}
 
-$source=Join-Path $root '.work\build-win64-mxe'
+$source=Join-Path $root '.work/build-win64-mxe'
 if(Test-Path $source){Remove-Item $source -Recurse -Force}
-Invoke-Native git.exe @('clone','--depth','1','--branch',$v.tag,$v.repository,$source)
-$actual=(& git.exe -C $source rev-parse HEAD).Trim()
+Invoke-Native $git @('clone','--depth','1','--branch',$v.tag,$v.repository,$source)
+$actual=(& $git -C $source rev-parse HEAD).Trim()
 if($actual -ne $v.commit){throw "build-win64-mxe commit mismatch. Expected $($v.commit), got $actual"}
 
-$dockerfile=Join-Path $source 'container\Dockerfile'
+$dockerfile=Join-Path $source 'container/Dockerfile'
 $dockerfileText=Get-Content -Raw -LiteralPath $dockerfile
 $downloadMount='RUN --mount=type=cache,id=mxe-download,target=/usr/local/mxe/pkg \'
 $downloadMountCount=[regex]::Matches($dockerfileText,[regex]::Escape($downloadMount)).Count
@@ -60,15 +63,15 @@ if([regex]::Matches($buildScriptText,[regex]::Escape($runtimePackageMarker)).Cou
 $buildScriptText=$buildScriptText.Replace($runtimePackageMarker,'  -e PKGS="" \')
 Write-Utf8NoBom -Path $buildScript -Content $buildScriptText
 
-$pangoPatch=Join-Path $root 'media-patches\libvips\0002-pango-clang-unused-global.patch'
+$pangoPatch=Join-Path $root 'media-patches/libvips/0002-pango-clang-unused-global.patch'
 Assert-FileExists $pangoPatch|Out-Null
-Invoke-Native git.exe @('-C',$source,'apply','--check','--whitespace=error-all',$pangoPatch)
-Invoke-Native git.exe @('-C',$source,'apply','--whitespace=error-all',$pangoPatch)
+Invoke-Native $git @('-C',$source,'apply','--check','--whitespace=error-all',$pangoPatch)
+Invoke-Native $git @('-C',$source,'apply','--whitespace=error-all',$pangoPatch)
 
-$librsvgPatch=Join-Path $root 'media-patches\libvips\0003-librsvg-synchronization-import-library.patch'
+$librsvgPatch=Join-Path $root 'media-patches/libvips/0003-librsvg-synchronization-import-library.patch'
 Assert-FileExists $librsvgPatch|Out-Null
-Invoke-Native git.exe @('-C',$source,'apply','--check','--whitespace=error-all',$librsvgPatch)
-Invoke-Native git.exe @('-C',$source,'apply','--whitespace=error-all',$librsvgPatch)
+Invoke-Native $git @('-C',$source,'apply','--check','--whitespace=error-all',$librsvgPatch)
+Invoke-Native $git @('-C',$source,'apply','--whitespace=error-all',$librsvgPatch)
 
 # Mirror the Immich base-image libvips behavior instead of building the plain
 # upstream Windows package. The base image for this Immich generation used
@@ -76,15 +79,15 @@ Invoke-Native git.exe @('-C',$source,'apply','--whitespace=error-all',$librsvgPa
 # before dcraw. Inject that patch into the MXE vips-all build recipe.
 $immichPatch=Join-Path $root ([string]$v.immichLoaderPatch)
 Assert-FileExists $immichPatch|Out-Null
-$containerPatch=Join-Path $source 'build\patches\immich-loader-priority.patch'
+$containerPatch=Join-Path $source 'build/patches/immich-loader-priority.patch'
 Copy-Item -LiteralPath $immichPatch -Destination $containerPatch -Force
-$popplerPatch=Join-Path $root 'media-patches\libvips\0004-poppler-fontinfo-vector.patch'
+$popplerPatch=Join-Path $root 'media-patches/libvips/0004-poppler-fontinfo-vector.patch'
 Assert-FileExists $popplerPatch|Out-Null
-Copy-Item -LiteralPath $popplerPatch -Destination (Join-Path $source 'build\patches\poppler-0001-fontinfo-vector.patch') -Force
-$pluginDirectoryPatch=Join-Path $root 'media-patches\libvips\0005-win32-plugin-directory-separators.patch'
+Copy-Item -LiteralPath $popplerPatch -Destination (Join-Path $source 'build/patches/poppler-0001-fontinfo-vector.patch') -Force
+$pluginDirectoryPatch=Join-Path $root 'media-patches/libvips/0005-win32-plugin-directory-separators.patch'
 Assert-FileExists $pluginDirectoryPatch|Out-Null
-Copy-Item -LiteralPath $pluginDirectoryPatch -Destination (Join-Path $source 'build\patches\win32-plugin-directory-separators.patch') -Force
-$vipsMake=Join-Path $source 'build\plugins\all-deps\vips-all.mk'
+Copy-Item -LiteralPath $pluginDirectoryPatch -Destination (Join-Path $source 'build/patches/win32-plugin-directory-separators.patch') -Force
+$vipsMake=Join-Path $source 'build/plugins/all-deps/vips-all.mk'
 $vipsMakeText=Get-Content -Raw -LiteralPath $vipsMake
 $buildLine='    $(vips_BUILD)'
 $matches=[regex]::Matches($vipsMakeText,[regex]::Escape($buildLine)).Count
@@ -99,7 +102,7 @@ $previousPackagingPath=$env:IMMICH_PACKAGING_PATH
 $previousPathConversion=$env:MSYS_NO_PATHCONV
 $env:IMMICH_PACKAGING_PATH=(Join-Path $source 'packaging').Replace('\','/')
 $env:MSYS_NO_PATHCONV='1'
-try{Invoke-Native $gitBash @('-lc',$command) $source}
+try{Invoke-Native $bash @('-lc',$command) $source}
 finally{
     $env:IMMICH_PACKAGING_PATH=$previousPackagingPath
     $env:MSYS_NO_PATHCONV=$previousPathConversion
@@ -107,17 +110,17 @@ finally{
 $suffix=if($v.jpeg -eq 'jpegli'){'-hevc-jpegli'}elseif($v.jpeg -eq 'libjpeg-turbo'){'-hevc-libjpeg-turbo'}else{'-hevc'}
 $zipName="vips-dev-x64-all-$($v.version)$suffix.zip"
 $containerName='immich-libvips-export-'+[Guid]::NewGuid().ToString('N')
-Invoke-Native docker.exe @('create','--name',$containerName,'libvips-build-win-mxe:latest')|Out-Null
+Invoke-Native $docker @('create','--name',$containerName,'libvips-build-win-mxe:latest')|Out-Null
 try{
-    Invoke-Native docker.exe @('cp',"${containerName}:/data/packaging/$zipName",(Join-Path $source 'packaging'))
+    Invoke-Native $docker @('cp',"${containerName}:/data/packaging/$zipName",(Join-Path $source 'packaging'))
 }
-finally{Invoke-Native docker.exe @('rm',$containerName)|Out-Null}
+finally{Invoke-Native $docker @('rm',$containerName)|Out-Null}
 $zip=Get-ChildItem -LiteralPath (Join-Path $source 'packaging') -Filter "vips-dev-x64-all-$($v.version)$suffix.zip" -File|Select-Object -First 1
 if(-not $zip){
     $candidates=Get-ChildItem -LiteralPath (Join-Path $source 'packaging') -Filter 'vips-dev-x64-all-*-hevc*.zip' -File
     throw "Expected libvips $($v.version) HEVC package was not produced. Candidates: $($candidates.Name -join ', ')"
 }
-$temp=Expand-ZipClean $zip.FullName (Join-Path $root '.work\sharp-libvips-extracted')
+$temp=Expand-ZipClean $zip.FullName (Join-Path $root '.work/sharp-libvips-extracted')
 $vipsRoot=Get-ChildItem -LiteralPath $temp -Directory|Where-Object{$_.Name -like 'vips-dev-*'}|Select-Object -First 1
 if(-not $vipsRoot){throw 'Unexpected build-win64-mxe zip layout.'}
 $bin=Join-Path $vipsRoot.FullName 'bin'
@@ -146,7 +149,7 @@ if(Test-Path -LiteralPath $versionsFile -PathType Leaf){
 $metadata=[ordered]@{
     schemaVersion=1
     libvips=$v.version
-    sharp=$((Read-JsonFile (Join-Path $root 'dependencies\versions.json')).sharp.version)
+    sharp=$((Read-JsonFile (Join-Path $root 'dependencies/versions.json')).sharp.version)
     sourceRepository=$v.repository
     sourceCommit=$actual
     target=$v.target

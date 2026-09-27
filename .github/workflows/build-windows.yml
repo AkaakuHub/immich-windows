@@ -7,6 +7,14 @@ permissions:
   contents: read
 
 jobs:
+  codec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cross-build Windows libvips
+        shell: pwsh
+        run: ./build/Build-CustomSharpLibvips.ps1
   build:
     runs-on: windows-2025
     timeout-minutes: 180
