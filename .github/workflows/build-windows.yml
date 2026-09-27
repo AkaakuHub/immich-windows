@@ -2,12 +2,18 @@ name: build-windows-native
 
 on:
   workflow_dispatch:
+    inputs:
+      component:
+        type: choice
+        options: [all, codec, application]
+        default: all
 
 permissions:
   contents: read
 
 jobs:
   codec:
+    if: inputs.component == 'all' || inputs.component == 'codec'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
@@ -16,6 +22,7 @@ jobs:
         shell: pwsh
         run: ./build/Build-CustomSharpLibvips.ps1
   build:
+    if: inputs.component == 'all' || inputs.component == 'application'
     runs-on: windows-2025
     timeout-minutes: 180
     steps:
