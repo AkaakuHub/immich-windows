@@ -7,27 +7,27 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   check:
     if: github.event.repository.private == false
-    runs-on: windows-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Compare pinned and latest stable release
-        shell: powershell
+      - name: Report a new stable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $pin = Get-Content -Raw .\upstream.json | ConvertFrom-Json
-          $headers = @{ 'User-Agent' = 'AkaakuHub-immich-windows' }
-          $latest = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/immich-app/immich/releases/latest'
-          @"
-          ## Immich upstream check
-
-          - pinned: ``$($pin.version)``
-          - latest stable: ``$($latest.tag_name)``
-          - pinned commit: ``$($pin.commit)``
-          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
-          if ($latest.tag_name -ne $pin.version) {
-            throw "A newer stable Immich release exists: $($latest.tag_name). Follow README.md's upstream update procedure; do not update automatically."
-          }
-          Write-Host "Pinned release $($pin.version) is still the latest stable release."
+          $pin = Get-Content -Raw ./upstream.json | ConvertFrom-Json
+          $latest = & gh api repos/immich-app/immich/releases/latest --jq '.tag_name'
+          if ($LASTEXITCODE -ne 0 -or $latest -notmatch '^v\d+\.\d+\.\d+$') { throw "Invalid upstream release: $latest" }
+          "Pinned: $($pin.version); upstream: $latest" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if ($latest -eq $pin.version) { return }
+          $title = "Support Immich $latest on Windows"
+          $issues = & gh issue list --repo $env:GITHUB_REPOSITORY --state all --limit 1000 --json title | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect existing update issues.' }
+          if (@($issues | Where-Object { $_.title -eq $title }).Count -gt 0) { return }
+          & gh issue create --repo $env:GITHUB_REPOSITORY --title $title --body "Review the upstream release, update pins and Windows patches, build and qualify the native package before publishing it."
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the upstream update issue.' }
