@@ -26,6 +26,7 @@ foreach($required in @(
     'dependencies\postgres-extensions\vector\vector.dll',
     'dependencies\postgres-extensions\vchord\vchord.dll',
     'sharp-libvips-qualification.json',
+    'Install.cmd',
     'installer\Update.ps1'
 )){
     if(-not(Test-Path -LiteralPath (Join-Path $PackageRoot $required) -PathType Leaf)){

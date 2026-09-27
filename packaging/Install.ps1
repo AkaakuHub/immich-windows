@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$PackageRoot,
-    [Parameter(Mandatory)][string]$MediaRoot,
-    [Parameter(Mandatory)][string]$DatabasePassword,
-    [ValidateSet('AllUsers','CurrentUser')][string]$Scope = 'AllUsers',
+    [string]$PackageRoot,
+    [string]$MediaRoot,
+    [string]$DatabasePassword,
+    [string]$EnvFile,
+    [ValidateSet('AllUsers','CurrentUser')][string]$Scope,
     [string]$InstallRoot,
     [string]$DataRoot,
     [string]$PostgresRoot = 'C:\Program Files\PostgreSQL\18',
@@ -25,12 +26,68 @@ param(
     [switch]$DoNotStart
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+
+if (-not $PackageRoot) { $PackageRoot = Split-Path -Parent $PSScriptRoot }
+if (-not $Scope) {
+    Write-Host 'Install scope:'
+    Write-Host '  1. AllUsers (Windows services; starts at boot; requires administrator)'
+    Write-Host '  2. CurrentUser (starts at sign-in; no administrator required)'
+    $scopeChoice = Read-Host 'Choose 1 or 2'
+    $Scope = switch ($scopeChoice) { '1' { 'AllUsers' } '2' { 'CurrentUser' } default { throw 'Choose 1 or 2 for the install scope.' } }
+}
 if ($Scope -eq 'AllUsers') {
     Assert-Administrator
 }
 $paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
 $InstallRoot=$paths.InstallRoot
 $DataRoot=$paths.DataRoot
+
+$defaultEnvFile = Join-Path $DataRoot 'immich.env'
+if (-not $EnvFile -and (-not $MediaRoot -or -not $DatabasePassword) -and -not (Test-Path -LiteralPath $defaultEnvFile -PathType Leaf)) {
+    $EnvFile = Read-Host 'Path to an existing Immich .env file (press Enter to enter settings manually)'
+}
+if (-not $EnvFile) { $EnvFile = $defaultEnvFile }
+$sourceEnv = [ordered]@{}
+if (Test-Path -LiteralPath $EnvFile -PathType Leaf) {
+    foreach ($pair in (Read-EnvFile $EnvFile).GetEnumerator()) { $sourceEnv[$pair.Key] = $pair.Value }
+} elseif ($PSBoundParameters.ContainsKey('EnvFile')) {
+    throw "Environment file not found: $EnvFile"
+}
+if (-not $MediaRoot) {
+    $MediaRoot = [string]$sourceEnv['IMMICH_MEDIA_LOCATION']
+    if (-not $MediaRoot) { $MediaRoot = [string]$sourceEnv['UPLOAD_LOCATION'] }
+    if ($MediaRoot -match '^/mnt/([a-zA-Z])(?:/(.*))?$') {
+        $MediaRoot = '{0}:\{1}' -f $Matches[1].ToUpperInvariant(), ([string]$Matches[2]).Replace('/', '\')
+    }
+}
+if (-not $MediaRoot) { $MediaRoot = Read-Host 'Absolute Windows path to the existing Immich media root' }
+elseif (-not (Test-WindowsAbsolutePath $MediaRoot)) {
+    if ($PSBoundParameters.ContainsKey('MediaRoot')) { throw 'MediaRoot must be an absolute Windows drive or UNC path.' }
+    $MediaRoot = Read-Host 'The env file has no Windows media path. Enter the absolute Windows media root'
+}
+if (-not $DatabasePassword) {
+    $DatabasePassword = [string]$sourceEnv['DB_PASSWORD']
+    if (-not $DatabasePassword) {
+        $securePassword = Read-Host 'PostgreSQL password' -AsSecureString
+        $credential = [pscredential]::new('postgres', $securePassword)
+        $DatabasePassword = $credential.GetNetworkCredential().Password
+    }
+}
+if (-not $MediaRoot) { throw 'MediaRoot was not provided by the env file or prompt.' }
+if (-not $DatabasePassword) { throw 'DatabasePassword was not provided by the env file or prompt.' }
+$DatabaseHost = if ($PSBoundParameters.ContainsKey('DatabaseHost')) { $DatabaseHost } elseif ($sourceEnv['DB_HOSTNAME']) { [string]$sourceEnv['DB_HOSTNAME'] } else { $DatabaseHost }
+if (-not $PSBoundParameters.ContainsKey('DatabaseHost') -and $DatabaseHost -eq 'database') { $DatabaseHost = '127.0.0.1' }
+$DatabasePort = if ($PSBoundParameters.ContainsKey('DatabasePort')) { $DatabasePort } elseif ($sourceEnv['DB_PORT']) { [int]$sourceEnv['DB_PORT'] } else { $DatabasePort }
+$DatabaseName = if ($PSBoundParameters.ContainsKey('DatabaseName')) { $DatabaseName } elseif ($sourceEnv['DB_DATABASE_NAME']) { [string]$sourceEnv['DB_DATABASE_NAME'] } else { $DatabaseName }
+$DatabaseUser = if ($PSBoundParameters.ContainsKey('DatabaseUser')) { $DatabaseUser } elseif ($sourceEnv['DB_USERNAME']) { [string]$sourceEnv['DB_USERNAME'] } else { $DatabaseUser }
+$PostgresService = if ($PSBoundParameters.ContainsKey('PostgresService')) { $PostgresService } elseif ($sourceEnv['POSTGRES_SERVICE']) { [string]$sourceEnv['POSTGRES_SERVICE'] } else { $PostgresService }
+$PostgresRoot = if ($PSBoundParameters.ContainsKey('PostgresRoot')) { $PostgresRoot } elseif ($sourceEnv['POSTGRES_ROOT']) { [string]$sourceEnv['POSTGRES_ROOT'] } else { $PostgresRoot }
+$ServerPort = if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort } elseif ($sourceEnv['IMMICH_PORT']) { [int]$sourceEnv['IMMICH_PORT'] } else { $ServerPort }
+$MachineLearningPort = if ($PSBoundParameters.ContainsKey('MachineLearningPort')) { $MachineLearningPort } elseif ($sourceEnv['IMMICH_PORT_ML']) { [int]$sourceEnv['IMMICH_PORT_ML'] } else { $MachineLearningPort }
+$RedisPort = if ($PSBoundParameters.ContainsKey('RedisPort')) { $RedisPort } elseif ($sourceEnv['REDIS_PORT']) { [int]$sourceEnv['REDIS_PORT'] } else { $RedisPort }
+$RedisMode = if ($PSBoundParameters.ContainsKey('RedisMode')) { $RedisMode } elseif ($sourceEnv['IMMICH_WINDOWS_REDIS_MODE']) { [string]$sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] } else { $RedisMode }
+$RedisHost = if ($PSBoundParameters.ContainsKey('RedisHost')) { $RedisHost } elseif ($sourceEnv['REDIS_HOSTNAME'] -and $sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] -eq 'External') { [string]$sourceEnv['REDIS_HOSTNAME'] } else { $RedisHost }
+$MediaRoot = [IO.Path]::GetFullPath($MediaRoot)
 $PackageRoot = (Resolve-Path $PackageRoot).Path
 $packageManifestPath=Join-Path $PackageRoot 'manifest.json'
 if(-not(Test-Path -LiteralPath $packageManifestPath -PathType Leaf)){throw "Package manifest is missing: $packageManifestPath"}
@@ -149,9 +206,7 @@ $managedEnvValues = [ordered]@{
 }
 $envFile = Join-Path $DataRoot 'immich.env'
 $envValues = [ordered]@{}
-if ($PreserveExistingEnv) {
-    foreach ($pair in (Read-EnvFile $envFile).GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
-}
+foreach ($pair in $sourceEnv.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 foreach ($pair in $managedEnvValues.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 Write-EnvFile -Path $envFile -Values $envValues
 if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }

@@ -45,6 +45,7 @@ Copy-Directory (Join-Path $root 'packaging') (Join-Path $Destination 'installer'
 if (Test-Path (Join-Path $root 'migration')) { Copy-Directory (Join-Path $root 'migration') (Join-Path $Destination 'migration') }
 if (Test-Path (Join-Path $root 'tests')) { Copy-Directory (Join-Path $root 'tests') (Join-Path $Destination 'tests') }
 Copy-Item (Join-Path $root 'config\immich.env.example') (Join-Path $Destination 'immich.env.example') -Force
+Copy-Item (Join-Path $root 'packaging\Install.cmd') (Join-Path $Destination 'Install.cmd') -Force
 $manifest = [ordered]@{
     schemaVersion = 1
     immichVersion = $upstream.version

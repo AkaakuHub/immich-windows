@@ -87,12 +87,17 @@ function Read-EnvFile {
     param([Parameter(Mandatory)][string]$Path)
     $result = [ordered]@{}
     foreach ($line in Get-Content -LiteralPath $Path) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        if ($line.TrimStart().StartsWith('#')) { continue }
-        $index = $line.IndexOf('=')
+        $entry = $line.TrimStart()
+        if (-not $entry -or $entry.StartsWith('#')) { continue }
+        if ($entry.StartsWith('export ')) { $entry = $entry.Substring(7).TrimStart() }
+        $index = $entry.IndexOf('=')
         if ($index -lt 1) { throw "Invalid env line in ${Path}: $line" }
-        $key = $line.Substring(0, $index).Trim()
-        $value = $line.Substring($index + 1)
+        $key = $entry.Substring(0, $index).Trim()
+        $value = $entry.Substring($index + 1)
+        if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[$value.Length - 1] -eq '"') -or ($value[0] -eq "'" -and $value[$value.Length - 1] -eq "'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { throw "Invalid env key in ${Path}: $key" }
         $result[$key] = $value
     }
     return $result

@@ -40,6 +40,10 @@ try {
     Write-EnvFile -Path $envRoundTrip -Values ([ordered]@{DB_PASSWORD=$expectedPassword;DB_DATABASE_NAME='immich'})
     $parsedEnv=Read-EnvFile $envRoundTrip
     Assert-True ([string]$parsedEnv.DB_PASSWORD -ceq $expectedPassword) 'Env parsing must preserve password whitespace and embedded equals signs exactly.'
+    [IO.File]::WriteAllText($envRoundTrip, "# source env`r`nexport DB_PASSWORD=`" leading=middle trailing # literal `"`r`nDB_HOSTNAME=database`r`n", [Text.UTF8Encoding]::new($false))
+    $parsedEnv=Read-EnvFile $envRoundTrip
+    Assert-True ([string]$parsedEnv.DB_PASSWORD -ceq ' leading=middle trailing # literal ') 'Env parsing must preserve quoted passwords and ignore export/comment lines.'
+    Assert-True ([string]$parsedEnv.DB_HOSTNAME -ceq 'database') 'Env parsing must read unquoted source values.'
 } finally { Remove-Item -LiteralPath $envRoundTrip -Force -ErrorAction SilentlyContinue }
 
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
