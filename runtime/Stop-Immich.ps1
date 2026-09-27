@@ -16,18 +16,21 @@ if (Test-Path -LiteralPath $EnvFile) {
 
 $shouldStopValkey = $redisMode -eq 'BundledValkey'
 if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
+    $processRoots=@((Join-Path $InstallRoot 'current'),(Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path)
     $processNames = @('ImmichServer','ImmichMachineLearning')
     if ($shouldStopValkey) {
-        $valkeyCli = Join-Path (Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path 'dependencies\valkey\valkey-cli.exe'
-        & $valkeyCli -h $env:REDIS_HOSTNAME -p $env:REDIS_PORT shutdown save | Out-Null
         $processNames += 'ImmichValkey'
     }
     foreach ($name in $processNames) {
+        if ($name -eq 'ImmichValkey') {
+            $valkeyCli = Join-Path $processRoots[-1] 'dependencies\valkey\valkey-cli.exe'
+            & $valkeyCli -h $env:REDIS_HOSTNAME -p $env:REDIS_PORT shutdown save | Out-Null
+        }
         $pidFile = Join-Path $DataRoot "services\$name.pid"
         if (-not (Test-Path -LiteralPath $pidFile)) { continue }
         $processId = [int](Get-Content -Raw -LiteralPath $pidFile)
         $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        if ($process -and $process.Path -and $process.Path.StartsWith((Resolve-Path -LiteralPath $InstallRoot).Path,[StringComparison]::OrdinalIgnoreCase)) {
+        if ($process -and $process.Path -and @($processRoots|Where-Object{$process.Path.StartsWith($_,[StringComparison]::OrdinalIgnoreCase)}).Count -gt 0) {
             Stop-Process -Id $processId -Force
         }
         Remove-Item -LiteralPath $pidFile -Force

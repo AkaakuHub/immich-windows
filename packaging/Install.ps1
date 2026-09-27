@@ -12,6 +12,8 @@ param(
     [string]$DatabaseUser = 'postgres',
     [string]$DatabaseHost = '127.0.0.1',
     [ValidateRange(1,65535)][int]$DatabasePort = 5432,
+    [ValidateRange(1,65535)][int]$ServerPort = 2283,
+    [ValidateRange(1,65535)][int]$MachineLearningPort = 3003,
     [ValidateSet('BundledValkey','External')][string]$RedisMode = 'BundledValkey',
     [string]$RedisHost = '127.0.0.1',
     [int]$RedisPort = 6379,
@@ -122,10 +124,10 @@ $services = Join-Path $DataRoot 'services'
 New-Item -ItemType Directory -Path $cache,$logs,$valkeyData,$services -Force | Out-Null
 $managedEnvValues = [ordered]@{
     IMMICH_HOST = '0.0.0.0'
-    IMMICH_PORT = '2283'
+    IMMICH_PORT = [string]$ServerPort
     IMMICH_MEDIA_LOCATION = $MediaRoot
     IMMICH_BUILD_DATA = (Join-Path $current 'build')
-    IMMICH_MACHINE_LEARNING_URL = 'http://127.0.0.1:3003'
+    IMMICH_MACHINE_LEARNING_URL = "http://127.0.0.1:$MachineLearningPort"
     IMMICH_ENV = 'production'
     IMMICH_SOURCE_REF = (Get-Content -Raw (Join-Path $current 'manifest.json') | ConvertFrom-Json).immichVersion
     DB_HOSTNAME = $DatabaseHost
@@ -142,7 +144,7 @@ $managedEnvValues = [ordered]@{
     MACHINE_LEARNING_CACHE_FOLDER = $cache
     MACHINE_LEARNING_WORKERS = '1'
     IMMICH_HOST_ML = '127.0.0.1'
-    IMMICH_PORT_ML = '3003'
+    IMMICH_PORT_ML = [string]$MachineLearningPort
     NO_COLOR = 'true'
 }
 $envFile = Join-Path $DataRoot 'immich.env'
@@ -164,7 +166,10 @@ if ($Scope -eq 'AllUsers' -and (Get-Service -Name ImmichValkey -ErrorAction Sile
 }
 if ($RedisMode -eq 'BundledValkey') {
     if ($RedisHost -notin @('127.0.0.1','localhost','::1')) { throw 'BundledValkey requires a loopback RedisHost.' }
-    @("bind 127.0.0.1 ::1","protected-mode yes","port $RedisPort","dir $($valkeyData.Replace('\','/'))","dbfilename dump.rdb","save 900 1","save 300 10","save 60 10000","logfile $((Join-Path $logs 'valkey.log').Replace('\','/'))") | Set-Content -Encoding ascii -LiteralPath $valkeyConfig
+    $valkeyDataPath = if ($Scope -eq 'CurrentUser') { ConvertTo-MsysPath $valkeyData } else { $valkeyData.Replace('\','/') }
+    $valkeyLogFile = Join-Path $logs 'valkey.log'
+    $valkeyLogPath = if ($Scope -eq 'CurrentUser') { ConvertTo-MsysPath $valkeyLogFile } else { $valkeyLogFile.Replace('\','/') }
+    @("bind 127.0.0.1 ::1","protected-mode yes","port $RedisPort","dir $valkeyDataPath","dbfilename dump.rdb","save 900 1","save 300 10","save 60 10000","logfile $valkeyLogPath") | Set-Content -Encoding ascii -LiteralPath $valkeyConfig
     if ($Scope -eq 'AllUsers' -and (-not $ReuseServices -or -not (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue))) {
         & $valkeyServiceExe install -c $valkeyConfig --dir $valkeyData --port $RedisPort --service-name ImmichValkey --start-mode auto
         if ($LASTEXITCODE -ne 0) { throw 'Valkey service installation failed.' }
@@ -224,7 +229,7 @@ $python = Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -
 if (-not $python) { throw 'Packaged machine-learning Python runtime not found.' }
 $mlExe = Join-Path $services 'ImmichMachineLearning.exe'; Copy-Item $winswSource $mlExe -Force
 $mlXml = Join-Path $services 'ImmichMachineLearning.xml'
-New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $python.FullName -Arguments '-m immich_ml' -ExtraEnv @{ IMMICH_HOST='127.0.0.1'; IMMICH_PORT='3003' } | Set-Content -Encoding utf8 -LiteralPath $mlXml
+New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $python.FullName -Arguments '-m immich_ml' -ExtraEnv @{ IMMICH_HOST='127.0.0.1'; IMMICH_PORT=[string]$MachineLearningPort } | Set-Content -Encoding utf8 -LiteralPath $mlXml
 foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
     $name = [IO.Path]::GetFileNameWithoutExtension($svc[0])
     $existingService=Get-Service -Name $name -ErrorAction SilentlyContinue
@@ -236,7 +241,8 @@ foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
 }
 }
 if (-not $DoNotStart) {
-    & (Join-Path $current 'runtime\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+    & (Join-Path $current 'runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+    if ($Scope -eq 'CurrentUser') { Set-ImmichUserStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Enabled $true }
 }
 Write-Host "Installed native Immich for $Scope from $release"
 Write-Host "Persistent config: $envFile"

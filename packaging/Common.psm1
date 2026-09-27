@@ -61,6 +61,28 @@ function Resolve-ImmichInstallPaths {
     return [pscustomobject]@{InstallRoot=$InstallRoot;DataRoot=$DataRoot}
 }
 
+function Set-ImmichUserStartup {
+    param([Parameter(Mandatory)][string]$InstallRoot,[string]$DataRoot,[Parameter(Mandatory)][bool]$Enabled)
+    $key='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $name='ImmichWindows'
+    if (-not $Enabled) {
+        Remove-ItemProperty -LiteralPath $key -Name $name -ErrorAction SilentlyContinue
+        return
+    }
+    $pwsh=(Get-Command pwsh.exe -ErrorAction Stop).Source
+    $entry=Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1'
+    $envFile=Join-Path $DataRoot 'immich.env'
+    $command='"{0}" -NoProfile -WindowStyle Hidden -File "{1}" -EnvFile "{2}" -InstallRoot "{3}" -DataRoot "{4}"' -f $pwsh,$entry,$envFile,$InstallRoot,$DataRoot
+    New-Item -Path $key -Force | Out-Null
+    Set-ItemProperty -LiteralPath $key -Name $name -Value $command
+}
+
+function ConvertTo-MsysPath {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -notmatch '^([A-Za-z]):[\\/](.*)$') { throw "Valkey requires a drive path for its data: $Path" }
+    return '/cygdrive/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\','/')
+}
+
 function Read-EnvFile {
     param([Parameter(Mandatory)][string]$Path)
     $result = [ordered]@{}

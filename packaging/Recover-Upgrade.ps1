@@ -36,7 +36,7 @@ $description="restore database backup '$backup', restore PostgreSQL extension bi
 if(-not $PSCmdlet.ShouldProcess('Immich native Windows installation',$description)){return}
 
 if ($Scope -eq 'CurrentUser') {
-    & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+    & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
 } else { foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}} }
 
 # A Windows PostgreSQL extension DLL is global to the PostgreSQL installation,
@@ -66,7 +66,7 @@ $envs['IMMICH_BUILD_DATA']=Join-Path $InstallRoot 'current\build'
 Write-EnvFile -Path $envFile -Values $envs
 if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
 
-& (Join-Path $InstallRoot 'current\runtime\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+& (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
 & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
 
 $state.status='recovered'

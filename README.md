@@ -8,6 +8,6 @@ Immich本体はforkせず、[upstream.json](upstream.json)で固定した上流�
 
 生成物はWindowsネイティブのパッケージディレクトリです。インストールと更新のスクリプトが含まれ、公開Releaseからの更新にも対応します。GitHub Actionsは上流の新版確認、patch適用の監査、Windowsパッケージのビルドを行います。
 
-インストール範囲は`-Scope AllUsers`または`-Scope CurrentUser`で選べます。`AllUsers`はProgram FilesとProgramDataに配置し、Windowsサービスとして起動するため管理者権限が必要です。`CurrentUser`は`%LOCALAPPDATA%`に配置し、ユーザー権限のプロセスとして起動します。こちらはPostgreSQL本体とpgvector、VectorChordが事前に利用可能である必要があります。更新と削除にも同じ`-Scope`を指定します。
+インストール範囲は`-Scope AllUsers`または`-Scope CurrentUser`で選べます。`AllUsers`はProgram FilesとProgramDataに配置し、Windowsサービスとして起動するため管理者権限が必要です。`CurrentUser`は`%LOCALAPPDATA%`に配置し、ユーザー権限でログオン中に常駐します。サインイン時に起動するよう現在のユーザーへ登録します。PostgreSQL本体と、パッケージと同じ版のpgvector、VectorChordが事前に利用可能である必要があります。更新と削除にも同じ`-Scope`を指定します。
 
 Linux/WSL2からの移行では、同じImmich版を使用し、PostgreSQLの論理バックアップをWindowsへ復元します。NTFS上のメディアは元の場所を使用できます。手順と設計は[architecture.md](docs/architecture.md)を参照してください。

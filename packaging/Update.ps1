@@ -62,7 +62,7 @@ Save-UpgradeState
 Write-Host "Pre-upgrade database backup: $backup"
 
 if ($Scope -eq 'CurrentUser') {
-    & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+    & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
 } else { foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){
     if(Get-Service $name -ErrorAction SilentlyContinue){
         Stop-Service $name -Force -ErrorAction SilentlyContinue
@@ -74,6 +74,8 @@ try {
     $redisMode=if($e.IMMICH_WINDOWS_REDIS_MODE){$e.IMMICH_WINDOWS_REDIS_MODE}else{'BundledValkey'}
     $redisHost=if($e.REDIS_HOSTNAME){$e.REDIS_HOSTNAME}else{'127.0.0.1'}
     $redisPort=if($e.REDIS_PORT){[int]$e.REDIS_PORT}else{6379}
+    $serverPort=if($e.IMMICH_PORT){[int]$e.IMMICH_PORT}else{2283}
+    $machineLearningPort=if($e.IMMICH_PORT_ML){[int]$e.IMMICH_PORT_ML}else{3003}
 
     & (Join-Path $PSScriptRoot 'Install.ps1') `
         -PackageRoot $PackageRoot `
@@ -88,6 +90,8 @@ try {
         -DatabaseUser $e.DB_USERNAME `
         -DatabaseHost $e.DB_HOSTNAME `
         -DatabasePort ([int]$e.DB_PORT) `
+        -ServerPort $serverPort `
+        -MachineLearningPort $machineLearningPort `
         -RedisMode $redisMode `
         -RedisHost $redisHost `
         -RedisPort $redisPort `
@@ -99,7 +103,7 @@ try {
     $state.status='candidate-installed'
     Save-UpgradeState
 
-    & (Join-Path $InstallRoot 'current\runtime\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+    & (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
     & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
 
     $state.status='qualified'
@@ -109,7 +113,7 @@ try {
     Write-Host "Paired rollback backup retained at: $backup"
 } catch {
     if ($Scope -eq 'CurrentUser') {
-        & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+        & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
     } else { foreach($name in @('ImmichServer','ImmichMachineLearning')){if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}} }
     $state.status='failed'
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')

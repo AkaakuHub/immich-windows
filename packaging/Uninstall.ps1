@@ -7,8 +7,9 @@ $DataRoot=$paths.DataRoot
 $InstallRoot=$paths.InstallRoot
 if ($PSCmdlet.ShouldProcess($InstallRoot,'Remove Immich application releases')) {
     if ($Scope -eq 'CurrentUser') {
+        Set-ImmichUserStartup -InstallRoot $InstallRoot -Enabled $false
         $envFile=Join-Path $DataRoot 'immich.env'
-        if (Test-Path -LiteralPath $envFile) { & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot }
+        if (Test-Path -LiteralPath $envFile) { & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot }
     } else {
         $services = Join-Path $DataRoot 'services'
         foreach ($name in @('ImmichServer','ImmichMachineLearning')) {
