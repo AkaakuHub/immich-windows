@@ -39,10 +39,10 @@ $candidate = 'D:\staging\immich-windows-vNEXT-win-x64'
 & "$candidate\installer\Update.ps1" -PackageRoot $candidate
 ```
 
-GitHub Releaseに完成版の`immich-windows-vX.Y.Z-win-x64.tar.gz`が公開された場合は、インストール済みの`installer\Update-FromRelease.ps1`で取得と更新を一度に実行できます。最新版の取得だけを自動化し、ビルドは本番PCで行いません。
+GitHub Releaseに完成版の`immich-windows-vX.Y.Z-win-x64.tar.gz`が公開された場合は、このリポジトリの`packaging\Update-FromRelease.ps1`で取得と更新を一度に実行できます。次回以降のパッケージには同じスクリプトが同梱されます。最新版の取得だけを自動化し、ビルドは本番PCで行いません。
 
 ```powershell
-& 'C:\Program Files\Immich\current\installer\Update-FromRelease.ps1'
+.\packaging\Update-FromRelease.ps1
 ```
 
 配布ファイルを公開するときだけ、完成したディレクトリをWindows標準の`tar.exe`でまとめます。
