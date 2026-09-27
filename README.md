@@ -1,15 +1,22 @@
 # immich-windows
 
-ImmichをWindows x64でネイティブ実行するための非公式プロジェクトです。PostgreSQL、Valkey、Immich Server、Machine LearningをWindows上で動かします。本番実行にDocker、WSL2、Linux VMは使いません。
+ImmichをWindows x64でネイティブ実行する非公式プロジェクトです。Immich本体はforkせず、固定した上流版にWindows向けpatchを適用します。DB schemaとmigrationは変更しません。
 
-Immich本体はforkせず、[upstream.json](upstream.json)で固定した上流の版に[Windows patch](patches/README.md)を適用します。DB schemaとmigrationは上流のままです。Windows固有の修正だけをpatchとして管理します。
+本番環境ではDocker、WSL2、Linux VMを使わず、Windows上のPostgreSQL、Valkey、Immich Server、Machine Learningを動かします。
 
-ビルドにはPowerShell 7、Git for Windows、Visual Studio Build Tools、LLVM、Rust、PostgreSQLが必要です。custom libvipsを作る工程だけDockerのLinuxコンテナを使用します。本番PCにビルドツールは必要ありません。
+## Install
 
-生成物はWindowsネイティブのパッケージディレクトリです。インストールと更新のスクリプトが含まれ、公開Releaseからの更新にも対応します。GitHub Actionsは上流の新版確認、patch適用の監査、Windowsパッケージのビルドを行います。
+公開Releaseの`Install.cmd`を実行します。対話式でインストール範囲や設定を指定できます。
 
-インストール範囲は`-Scope AllUsers`または`-Scope CurrentUser`で選べます。`AllUsers`はProgram FilesとProgramDataに配置し、Windowsサービスとして起動するため管理者権限が必要です。`CurrentUser`は`%LOCALAPPDATA%`に配置し、ユーザー権限でログオン中に常駐します。サインイン時に起動するよう現在のユーザーへ登録します。PostgreSQL本体と、パッケージと同じ版のpgvector、VectorChordが事前に利用可能である必要があります。更新と削除にも同じ`-Scope`を指定します。
+- `AllUsers`: Windowsサービスとして常駐。管理者権限が必要です。
+- `CurrentUser`: ユーザーのサインイン中に常駐。管理者権限は不要です。
 
-パッケージ内の`Install.cmd`を起動すると、範囲や不足している設定を対話式に入力できます。既存の`.env`を指定する場合は、`Install.cmd -EnvFile "C:\path\to\.env" -Scope AllUsers`のように渡します。`DB_PASSWORD`などのDB設定を読み込み、指定した移行元`.env`は書き換えずに、インストール先へWindows用の設定を作ります。`UPLOAD_LOCATION`が相対パスの場合は、Windows上のメディアルートを尋ねます。従来の`Install.ps1`の引数も引き続き使えます。
+既存の`.env`を使う場合は、`Install.cmd -EnvFile "C:\path\to\.env" -Scope CurrentUser`のように指定します。PostgreSQLと、[固定バージョン](dependencies/versions.json)に合うpgvectorおよびVectorChordが必要です。
 
-Linux/WSL2からの移行では、同じImmich版のPostgreSQL論理バックアップを復元し、NTFS上の既存メディアを使用できます。手順は[migration guide](docs/migration.md)を参照してください。
+## Migration
+
+Linux/WSL2からのDB復元とメディアパス更新は[移行手順](docs/migration.md)を参照してください。既存のメディアファイルはNTFS上でそのまま使用できます。
+
+## Development
+
+上流の固定版、Windows patch、ビルド手順は[patch policy](patches/README.md)とGitHub Actionsを参照してください。Dockerはcustom libvipsのビルド時だけ使用します。
