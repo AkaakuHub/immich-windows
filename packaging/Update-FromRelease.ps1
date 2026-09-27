@@ -36,7 +36,6 @@ $stagingPath=[IO.Path]::GetFullPath($stagingBase).TrimEnd('\')+'\'
 $stagePath=[IO.Path]::GetFullPath($stage)
 if(-not $stagePath.StartsWith($stagingPath,[StringComparison]::OrdinalIgnoreCase)){throw "Invalid staging path: $stagePath"}
 
-$manifestPath=Join-Path $candidate 'manifest.json'
 $readyPath=Join-Path $stage '.ready'
 if(-not(Test-Path -LiteralPath $readyPath -PathType Leaf)){
     if(Test-Path -LiteralPath $stage){
@@ -53,14 +52,7 @@ if(-not(Test-Path -LiteralPath $readyPath -PathType Leaf)){
     }finally{Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue}
 }
 
-if(-not(Test-Path -LiteralPath $manifestPath -PathType Leaf)){throw "Package manifest is missing: $manifestPath"}
-$manifest=Get-Content -Raw -LiteralPath $manifestPath|ConvertFrom-Json
-if($manifest.immichVersion -ne $version -or $manifest.target -ne 'windows-x64-native' -or -not $manifest.mediaStack.productionQualified){
-    throw "Release $version does not contain a qualified Windows native package."
-}
-foreach($required in @('server\dist\main.js','runtime\node\node.exe','machine-learning\python-runtime\python.exe','installer\Update.ps1')){
-    if(-not(Test-Path -LiteralPath (Join-Path $candidate $required) -PathType Leaf)){throw "Release package is incomplete: $required"}
-}
+& (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackageRoot $candidate -Version $version
 if(-not(Test-Path -LiteralPath $readyPath -PathType Leaf)){'ready'|Set-Content -Encoding ascii -LiteralPath $readyPath}
 & (Join-Path $candidate 'installer\Update.ps1') -PackageRoot $candidate -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService
 Remove-Item -LiteralPath $stage -Recurse -Force
