@@ -1,0 +1,20 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] pango: tolerate diagnostics from generated and legacy sources
+
+Clang 23 reports generated GObject class data as an unused global and Pango's
+legacy Unicode break table uses deprecated GLib enumerators. Keep these
+third-party source diagnostics visible without treating them as fatal.
+---
+ build/overrides.mk | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/build/overrides.mk b/build/overrides.mk
+--- a/build/overrides.mk
++++ b/build/overrides.mk
+@@ -561,5 +561,6 @@ define pango_BUILD
+     $(MXE_MESON_WRAPPER) \
+         -Ddocumentation=false \
++        -Dc_args=-Wno-error=unused-but-set-global,-Wno-error=deprecated-declarations \
+         -Dbuild-testsuite=false \
+         -Dbuild-examples=false \
+         -Dintrospection=disabled \

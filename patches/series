@@ -1,0 +1,11 @@
+# Ordered patch stack applied to the pristine Immich tag pinned by upstream.json.
+# Keep one logical change per patch. Do not vendor or merge upstream Immich commits.
+server/0001-use-platform-null-device.patch
+server/0002-configurable-postgres-bin.patch
+server/0003-cross-platform-absolute-paths.patch
+server/0004-use-node-gzip-on-windows.patch
+server/0005-cross-platform-media-location-migration.patch
+server/0006-cross-platform-storage-boundary.patch
+server/0007-cross-platform-folder-paths.patch
+server/0008-cross-platform-glob-paths.patch
+machine-learning/0001-native-windows-uvicorn.patch

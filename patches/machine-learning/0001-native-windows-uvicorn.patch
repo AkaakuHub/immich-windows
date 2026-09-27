@@ -1,0 +1,78 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] machine-learning: use native Uvicorn launcher on Windows
+
+diff --git a/machine-learning/immich_ml/config.py b/machine-learning/immich_ml/config.py
+--- a/machine-learning/immich_ml/config.py
++++ b/machine-learning/immich_ml/config.py
+@@ -5,13 +5,15 @@
+ from pathlib import Path
+ from socket import socket
+ 
+-from gunicorn.arbiter import Arbiter
+ from pydantic import BaseModel, Field
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+ from rich.console import Console
+ from rich.logging import RichHandler
+ from uvicorn import Server
+-from uvicorn.workers import UvicornWorker
++
++if sys.platform != "win32":
++    from gunicorn.arbiter import Arbiter
++    from uvicorn.workers import UvicornWorker
+ 
+ from .schemas import ModelPrecision
+ 
+@@ -150,11 +152,13 @@
+         await super().shutdown()
+ 
+ 
+-class CustomUvicornWorker(UvicornWorker):
+-    async def _serve(self) -> None:
+-        self.config.app = self.wsgi
+-        server = CustomUvicornServer(config=self.config)
+-        self._install_sigquit_handler()
+-        await server.serve(sockets=self.sockets)
+-        if not server.started:
+-            sys.exit(Arbiter.WORKER_BOOT_ERROR)
++if sys.platform != "win32":
++
++    class CustomUvicornWorker(UvicornWorker):
++        async def _serve(self) -> None:
++            self.config.app = self.wsgi
++            server = CustomUvicornServer(config=self.config)
++            self._install_sigquit_handler()
++            await server.serve(sockets=self.sockets)
++            if not server.started:
++                sys.exit(Arbiter.WORKER_BOOT_ERROR)
+diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml/__main__.py
+--- a/machine-learning/immich_ml/__main__.py
++++ b/machine-learning/immich_ml/__main__.py
+@@ -1,6 +1,7 @@
+ import os
+ import signal
+ import subprocess
++import sys
+ from ipaddress import ip_address
+ from pathlib import Path
+ 
+@@ -25,6 +26,20 @@
+ if is_ipv6(bind_host):
+     bind_host = f"[{bind_host}]"
+ bind_address = f"{bind_host}:{non_prefixed_settings.immich_port}"
++
++if sys.platform == "win32":
++    import uvicorn
++
++    windows_host = non_prefixed_settings.immich_host.strip("[]")
++    uvicorn.run(
++        "immich_ml.main:app",
++        host=windows_host,
++        port=non_prefixed_settings.immich_port,
++        workers=settings.workers,
++        timeout_keep_alive=settings.http_keepalive_timeout_s,
++        log_config=str(module_dir / "log_conf.json"),
++    )
++    raise SystemExit(0)
+ 
+ try:
+     with subprocess.Popen(

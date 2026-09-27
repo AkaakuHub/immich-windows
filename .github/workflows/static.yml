@@ -1,0 +1,19 @@
+name: static-windows-port-audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell and verify pins
+        shell: pwsh
+        run: .\tests\Static-RepositoryAudit.ps1
+      - name: Verify patch stack applies to pristine upstream tag
+        shell: pwsh
+        run: .\build\Prepare-Source.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'immich-upstream')

@@ -1,0 +1,58 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] server: make folder path queries cross-platform
+
+diff --git a/server/src/repositories/view-repository.ts b/server/src/repositories/view-repository.ts
+--- a/server/src/repositories/view-repository.ts
++++ b/server/src/repositories/view-repository.ts
+@@ -1,5 +1,6 @@
+ import { Kysely } from 'kysely';
+ import { InjectKysely } from 'nestjs-kysely';
++import { normalize, sep } from 'node:path';
+ import { DummyValue, GenerateSql } from 'src/decorators';
+ import { AssetVisibility } from 'src/enum';
+ import { DB } from 'src/schema';
+@@ -12,7 +13,9 @@
+   async getUniqueOriginalPaths(userId: string) {
+     const results = await this.db
+       .selectFrom('asset')
+-      .select((eb) => eb.fn<string>('substring', ['asset.originalPath', eb.val('^(.*/)[^/]*$')]).as('directoryPath'))
++      .select((eb) =>
++        eb.fn<string>('substring', ['asset.originalPath', eb.val('^(.+[\\\\/])[^\\\\/]*$')]).as('directoryPath'),
++      )
+       .distinct()
+       .where('ownerId', '=', asUuid(userId))
+       .where('visibility', '=', AssetVisibility.Timeline)
+@@ -23,12 +26,17 @@
+       .orderBy('directoryPath', 'asc')
+       .execute();
+ 
+-    return results.map((row) => row.directoryPath.replaceAll(/\/$/g, ''));
++    return results.map((row) => row.directoryPath.replaceAll(/[\\/]$/g, '').replaceAll('\\', '/'));
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
+   async getAssetsByOriginalPath(userId: string, partialPath: string) {
+-    const normalizedPath = partialPath.replaceAll(/\/$/g, '');
++    const normalizedPath = normalize(partialPath.replaceAll(/[\\/]$/g, ''));
++    const escapeLike = (value: string) => value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
++    const escapedPath = escapeLike(normalizedPath);
++    const escapedSeparator = sep === '\\' ? '\\\\' : sep;
++    const directChildPattern = `%${escapedPath}${escapedSeparator}%`;
++    const nestedChildPattern = `%${escapedPath}${escapedSeparator}%${escapedSeparator}%`;
+ 
+     return this.db
+       .selectFrom('asset')
+@@ -40,10 +48,10 @@
+       .where('fileCreatedAt', 'is not', null)
+       .where('fileModifiedAt', 'is not', null)
+       .where('localDateTime', 'is not', null)
+-      .where('originalPath', 'like', `%${normalizedPath}/%`)
+-      .where('originalPath', 'not like', `%${normalizedPath}/%/%`)
++      .where('originalPath', 'like', directChildPattern)
++      .where('originalPath', 'not like', nestedChildPattern)
+       .orderBy(
+-        (eb) => eb.fn('regexp_replace', ['asset.originalPath', eb.val('.*/(.+)'), eb.val(String.raw`\1`)]),
++        (eb) => eb.fn('regexp_replace', ['asset.originalPath', eb.val(String.raw`.*[\\/](.+)`), eb.val(String.raw`\1`)]),
+         'asc',
+       )
+       .execute();

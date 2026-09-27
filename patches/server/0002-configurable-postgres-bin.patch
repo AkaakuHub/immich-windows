@@ -1,0 +1,45 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] server: make postgres client directory cross-platform
+
+Use Node's platform null device for psql progress output and allow native
+Windows PostgreSQL installations to supply their bin directory through
+IMMICH_POSTGRES_BIN_DIR. Linux keeps the existing versioned default path.
+---
+ server/src/services/database-backup.service.ts | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/server/src/services/database-backup.service.ts b/server/src/services/database-backup.service.ts
+--- a/server/src/services/database-backup.service.ts
++++ b/server/src/services/database-backup.service.ts
+@@ -2,4 +2,5 @@
+ import { debounce } from 'lodash';
+ import { DateTime } from 'luxon';
++import { devNull } from 'node:os';
+ import path, { basename } from 'node:path';
+ import { Duplex, PassThrough, Readable, Writable } from 'node:stream';
+@@ -203,7 +204,7 @@
+         args.push(
+           // used for progress monitoring
+           '--echo-all',
+-          '--output=/dev/null',
++          `--output=${devNull}`,
+         );
+         break;
+       }
+@@ -212,8 +213,15 @@
+       throw new UnsupportedPostgresError(databaseVersion);
+     }
++
++    const postgresBinDir =
++      process.env.IMMICH_POSTGRES_BIN_DIR ??
++      (process.platform === 'win32'
++        ? path.join(process.env.ProgramFiles ?? String.raw`C:\Program Files`, 'PostgreSQL', String(databaseMajorVersion), 'bin')
++        : `/usr/lib/postgresql/${databaseMajorVersion}/bin`);
++    const executable = process.platform === 'win32' ? `${bin}.exe` : bin;
+ 
+     return {
+-      bin: `/usr/lib/postgresql/${databaseMajorVersion}/bin/${bin}`,
++      bin: path.join(postgresBinDir, executable),
+       args,
+       databaseUsername,
+       databasePassword,

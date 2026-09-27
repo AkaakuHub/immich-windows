@@ -1,0 +1,37 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] server: make media-location migration Windows-safe
+
+Allow both POSIX and Windows trailing separators and escape backslashes in the
+PostgreSQL regexp replacement string. Also bind the source regular expression
+as a literal instead of interpolating it into raw SQL.
+---
+ server/src/repositories/database.repository.ts | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/server/src/repositories/database.repository.ts b/server/src/repositories/database.repository.ts
+--- a/server/src/repositories/database.repository.ts
++++ b/server/src/repositories/database.repository.ts
+@@ -413,16 +413,18 @@
+   async migrateFilePaths(sourceFolder: string, targetFolder: string): Promise<void> {
+-    // remove trailing slashes
+-    if (sourceFolder.endsWith('/')) {
++    // remove a trailing path separator on either POSIX or Windows
++    if (sourceFolder.endsWith('/') || sourceFolder.endsWith('\\')) {
+       sourceFolder = sourceFolder.slice(0, -1);
+     }
+ 
+-    if (targetFolder.endsWith('/')) {
++    if (targetFolder.endsWith('/') || targetFolder.endsWith('\\')) {
+       targetFolder = targetFolder.slice(0, -1);
+     }
+ 
+     // escaping regex special characters with a backslash
+     const sourceRegex = '^' + sourceFolder.replaceAll(/[-[\]{}()*+?.,\\^$|#\s]/g, String.raw`\$&`);
+-    const source = sql.raw(`'${sourceRegex}'`);
+-    const target = sql.lit(targetFolder);
++    const source = sql.lit(sourceRegex);
++    // PostgreSQL regexp replacement strings use backslashes for backreferences.
++    // Double Windows separators so they are written back as literal backslashes.
++    const target = sql.lit(targetFolder.replaceAll('\\', String.raw`\\`));
+ 
+     await this.db.transaction().execute(async (tx) => {

@@ -1,0 +1,29 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] server: use Node platform null device for ffmpeg
+
+Keep Linux behavior unchanged while allowing two-pass FFmpeg transcoding to
+write its first pass to the Windows null device.
+---
+ server/src/repositories/media.repository.ts | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/server/src/repositories/media.repository.ts b/server/src/repositories/media.repository.ts
+--- a/server/src/repositories/media.repository.ts
++++ b/server/src/repositories/media.repository.ts
+@@ -4,6 +4,7 @@
+ import _ from 'lodash';
+ import { Duration } from 'luxon';
+ import { spawn } from 'node:child_process';
+ import fs from 'node:fs/promises';
++import { devNull } from 'node:os';
+ import { Writable } from 'node:stream';
+ import sharp from 'sharp';
+@@ -394,7 +394,7 @@
+     // recommended for vp9 for better quality and compression
+     return new Promise((resolve, reject) => {
+       // first pass output is not saved as only the .log file is needed
+-      this.configureFfmpegCall(input, '/dev/null', options)
++      this.configureFfmpegCall(input, devNull, options)
+         .addOptions('-pass', '1')
+         .addOptions('-passlogfile', output)
+         .addOptions('-f null')

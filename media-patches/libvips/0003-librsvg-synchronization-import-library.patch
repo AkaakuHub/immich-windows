@@ -1,0 +1,28 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] librsvg: link the Windows synchronization import library
+
+Rust's Windows synchronization primitives call the WaitOnAddress family,
+which MinGW exposes through libsynchronization.a.
+---
+ build/overrides.mk | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/build/overrides.mk b/build/overrides.mk
+--- a/build/overrides.mk
++++ b/build/overrides.mk
+@@ -587,6 +587,6 @@ define librsvg_BUILD
+         -Dvala=disabled \
+         -Dtests=false \
+         -Dtriplet='$(PROCESSOR)-pc-windows-gnullvm' \
+-        -Dc_link_args='$(LDFLAGS) -lntdll -luserenv' \
++        -Dc_link_args='$(LDFLAGS) -lntdll -luserenv -lsynchronization' \
+         '$(SOURCE_DIR)' \
+         '$(BUILD_DIR)'
+@@ -597,6 +597,6 @@ define librsvg_BUILD
+ 
+     # Add native libraries needed for static linking to .pc file.
+     # We cannot use rustc --print native-static-libs due to -Zbuild-std.
+     # See: https://gitlab.gnome.org/GNOME/librsvg/-/issues/968
+-    $(SED) -i "/^Libs.private:/s/$$/ -lntdll -luserenv/" '$(PREFIX)/$(TARGET)/lib/pkgconfig/librsvg-2.0.pc'
++    $(SED) -i "/^Libs.private:/s/$$/ -lntdll -luserenv -lsynchronization/" '$(PREFIX)/$(TARGET)/lib/pkgconfig/librsvg-2.0.pc'
+ endef
