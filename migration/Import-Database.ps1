@@ -9,11 +9,23 @@ $Backup=(Resolve-Path $Backup).Path
 $envs=Read-EnvFile $EnvFile
 $psql=Join-Path $PostgresRoot 'bin\psql.exe'; $pgRestore=Join-Path $PostgresRoot 'bin\pg_restore.exe'
 foreach($f in @($psql,$pgRestore)){if(-not(Test-Path $f)){throw "PostgreSQL client missing: $f"}}
-foreach($name in @('ImmichServer','ImmichMachineLearning')){
-    $service=Get-Service $name -ErrorAction SilentlyContinue
-    if($service -and $service.Status -ne 'Stopped'){
-        Stop-Service $name -ErrorAction Stop
-        $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(60))
+if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
+    $stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
+    if(-not(Test-Path -LiteralPath $stopScript -PathType Leaf)){
+        $stopScript=Join-Path $PSScriptRoot '..\runtime\Stop-Immich.ps1'
+    }
+    if(-not(Test-Path -LiteralPath $stopScript -PathType Leaf)){throw 'CurrentUser Immich stop script was not found.'}
+    $dataRoot=Split-Path -Parent (Resolve-Path -LiteralPath $EnvFile).Path
+    $currentRoot=if($envs.IMMICH_BUILD_DATA){Split-Path -Parent ([string]$envs.IMMICH_BUILD_DATA)}else{Join-Path $env:LOCALAPPDATA 'Programs\Immich\current'}
+    $installRoot=Split-Path -Parent $currentRoot
+    & $stopScript -EnvFile $EnvFile -DataRoot $dataRoot -InstallRoot $installRoot
+} else {
+    foreach($name in @('ImmichServer','ImmichMachineLearning')){
+        $service=Get-Service $name -ErrorAction SilentlyContinue
+        if($service -and $service.Status -ne 'Stopped'){
+            Stop-Service $name -ErrorAction Stop
+            $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(60))
+        }
     }
 }
 $env:PGPASSWORD=[string]$envs.DB_PASSWORD
