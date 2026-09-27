@@ -21,7 +21,20 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
+      - name: Select libvips cache key
+        id: codec-key
+        shell: pwsh
+        run: |
+          $v = Get-Content -Raw dependencies/versions.json | ConvertFrom-Json
+          $media = $v.sharpLibvips
+          "value=$($media.version)-$($media.commit)-$($media.libvipsRevision)-$($media.target)-$($media.variant)-$($media.jpeg)-$($v.sharp.version)" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache@v6
+        id: codec-cache
+        with:
+          path: artifacts/native/sharp-libvips-custom
+          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.value }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
       - name: Cross-build Windows libvips
+        if: steps.codec-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./build/Build-CustomSharpLibvips.ps1
       - uses: actions/upload-artifact@v7
@@ -47,7 +60,19 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
+      - name: Select PostgreSQL extension cache key
+        id: postgres-key
+        shell: pwsh
+        run: |
+          $v = Get-Content -Raw dependencies/versions.json | ConvertFrom-Json
+          "value=$($v.postgresql.major)-$($v.postgresql.version)-$($v.pgvector.commit)-$($v.vectorchord.commit)-$($v.vectorchord.pgrx)-$($v.vectorchord.rustToolchain)" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache@v6
+        id: postgres-cache
+        with:
+          path: artifacts/native/postgres-extensions
+          key: postgres-extensions-${{ runner.os }}-${{ steps.postgres-key.outputs.value }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
       - name: Build PostgreSQL 18 extensions
+        if: steps.postgres-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           choco install postgresql18 --version 18.6.3 -y --no-progress
