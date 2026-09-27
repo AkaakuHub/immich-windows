@@ -48,11 +48,12 @@ GitHub Releaseに完成版の`immich-windows-vX.Y.Z-win-x64.tar.gz`が公開さ�
 配布ファイルを公開するときだけ、完成したディレクトリをWindows標準の`tar.exe`でまとめます。
 
 ```powershell
+.\packaging\Test-ReleasePackage.ps1 -PackageRoot dist\immich-windows-v3.2.2-win-x64 -Version v3.2.2
 tar.exe -czf dist\immich-windows-v3.2.2-win-x64.tar.gz -C dist immich-windows-v3.2.2-win-x64
-gh release create v3.2.2 dist\immich-windows-v3.2.2-win-x64.tar.gz
+gh release create v3.2.2 dist\immich-windows-v3.2.2-win-x64.tar.gz --draft
 ```
 
-現在はGitHub Releaseを公開していないため、公開されるまではディレクトリから更新します。公開前にWindows実行テストと同梱物の再配布条件を確認します。
+draft作成後、GitHub Actionsの`verify-windows-release`を対象版で手動実行します。Windows上で配布物を展開し、manifest、Node、ML、FFmpegを検査します。実機でのWindows実行テストと同梱物の再配布条件を確認した後、同workflowの`publish=true`を指定すると公開できます。現在はGitHub Releaseを公開していないため、公開されるまではディレクトリから更新します。
 
 更新スクリプトは更新直前のDBバックアップを作成し、既存設定とサービスを引き継ぎます。失敗時は候補パッケージの`installer\Recover-Upgrade.ps1`で、旧アプリと対応するDBバックアップを一緒に戻します。
 
