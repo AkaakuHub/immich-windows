@@ -229,6 +229,12 @@ if ($RedisMode -eq 'BundledValkey') {
         & $valkeyServiceExe install -c $valkeyConfig --dir $valkeyData --port $RedisPort --service-name ImmichValkey --start-mode auto
         if ($LASTEXITCODE -ne 0) { throw 'Valkey service installation failed.' }
     }
+    if ($Scope -eq 'AllUsers') {
+        & sc.exe failure ImmichValkey reset= 86400 actions= restart/5000/restart/15000/restart/60000
+        if ($LASTEXITCODE -ne 0) { throw 'Could not configure automatic Valkey service recovery.' }
+        & sc.exe failureflag ImmichValkey flag=1
+        if ($LASTEXITCODE -ne 0) { throw 'Could not configure Valkey recovery for nonzero service exits.' }
+    }
 } else {
     Write-Host "Using external Redis-compatible service at ${RedisHost}:$RedisPort; bundled ImmichValkey service is disabled."
 }
