@@ -21,8 +21,14 @@ jobs:
       - name: Cross-build Windows libvips
         shell: pwsh
         run: ./build/Build-CustomSharpLibvips.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: libvips
+          path: artifacts/native/sharp-libvips-custom
+          retention-days: 1
+          if-no-files-found: error
   build:
-    if: inputs.component == 'all' || inputs.component == 'application'
+    if: inputs.component == 'application'
     runs-on: windows-2025
     timeout-minutes: 180
     steps:
@@ -47,3 +53,48 @@ jobs:
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-PgVector.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18'
           .\build\Build-VectorChord.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' -InstallCargoPgrx
+      - uses: actions/upload-artifact@v7
+        with:
+          name: postgres-extensions
+          path: artifacts/native/postgres-extensions
+          retention-days: 1
+          if-no-files-found: error
+  assemble:
+    if: inputs.component == 'all'
+    needs: [codec, postgres]
+    runs-on: windows-2025
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          name: libvips
+          path: artifacts/native/sharp-libvips-custom
+      - uses: actions/download-artifact@v7
+        with:
+          name: postgres-extensions
+          path: artifacts/native/postgres-extensions
+      - name: Build and qualify Windows package
+        shell: pwsh
+        run: |
+          $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'immich-fixtures'))
+          .\build\Enter-VsDevEnvironment.ps1
+          .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
+          .\build\Build-NativeDependencies.ps1 -SkipPostgresExtensions
+          $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
+          $folder = "immich-windows-$version-win-x64"
+          .\packaging\New-Package.ps1
+          .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
+          & tar.exe -czf "dist/$folder.tar.gz" -C dist $folder
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create release archive.' }
+      - name: Upload qualified draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
+          $folder = "immich-windows-$version-win-x64"
+          & gh release create $version "dist/$folder.tar.gz" --draft --title $version
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release.' }
