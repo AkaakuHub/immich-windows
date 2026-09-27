@@ -212,6 +212,7 @@ Write-EnvFile -Path $envFile -Values $envValues
 if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
 $valkeyConfig = Join-Path $DataRoot 'valkey.conf'
 $valkeyServiceExe = Join-Path $current 'dependencies\valkey\ValkeyService.exe'
+$serviceRestartDelays = @(5,15)
 if ($Scope -eq 'AllUsers' -and (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue)) {
     Stop-Service -Name ImmichValkey -ErrorAction SilentlyContinue
     if (-not $ReuseServices -or $RedisMode -ne 'BundledValkey') {
@@ -230,7 +231,8 @@ if ($RedisMode -eq 'BundledValkey') {
         if ($LASTEXITCODE -ne 0) { throw 'Valkey service installation failed.' }
     }
     if ($Scope -eq 'AllUsers') {
-        & sc.exe failure ImmichValkey reset= 86400 actions= restart/5000/restart/15000/restart/60000
+        $valkeyRecoveryActions = (@($serviceRestartDelays | ForEach-Object { "restart/$($_ * 1000)" }) + 'run/0') -join '/'
+        & sc.exe failure ImmichValkey reset= 86400 actions= $valkeyRecoveryActions command= "$env:SystemRoot\System32\cmd.exe /c exit 0"
         if ($LASTEXITCODE -ne 0) { throw 'Could not configure automatic Valkey service recovery.' }
         & sc.exe failureflag ImmichValkey flag=1
         if ($LASTEXITCODE -ne 0) { throw 'Could not configure Valkey recovery for nonzero service exits.' }
@@ -264,11 +266,13 @@ function New-WinSWServiceXml {
         ("  <arguments>{0}</arguments>" -f (ConvertTo-XmlValue $Arguments)),
         ("  <workingdirectory>{0}</workingdirectory>" -f (ConvertTo-XmlValue $current)),
         '  <startmode>Automatic</startmode>',
-        '  <onfailure action="restart" delay="5 sec"/>',
         '  <stoptimeout>30 sec</stoptimeout>',
         ("  <logpath>{0}</logpath>" -f (ConvertTo-XmlValue $logs)),
         '  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>5</keepFiles></log>'
     )
+    foreach ($delay in $serviceRestartDelays) { $xml += ('  <onfailure action="restart" delay="{0} sec"/>' -f $delay) }
+    $xml += '  <onfailure action="none"/>'
+    $xml += '  <resetfailure>1 day</resetfailure>'
     foreach ($dependency in $Depends) { $xml += ('  <depend>{0}</depend>' -f (ConvertTo-XmlValue $dependency)) }
     foreach ($pair in $merged.GetEnumerator()) {
         $xml += ('  <env name="{0}" value="{1}"/>' -f (ConvertTo-XmlValue $pair.Key), (ConvertTo-XmlValue ([string]$pair.Value)))
