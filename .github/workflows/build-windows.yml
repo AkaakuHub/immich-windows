@@ -1,0 +1,19 @@
+name: build-windows-native
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build server, web, and machine learning
+        shell: pwsh
+        run: |
+          .\build\Enter-VsDevEnvironment.ps1
+          .\build\Build-All.ps1 -SkipNativeDependencies
