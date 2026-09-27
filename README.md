@@ -39,6 +39,21 @@ $candidate = 'D:\staging\immich-windows-vNEXT-win-x64'
 & "$candidate\installer\Update.ps1" -PackageRoot $candidate
 ```
 
+GitHub Releaseに完成版の`immich-windows-vX.Y.Z-win-x64.tar.gz`が公開された場合は、インストール済みの`installer\Update-FromRelease.ps1`で取得と更新を一度に実行できます。最新版の取得だけを自動化し、ビルドは本番PCで行いません。
+
+```powershell
+& 'C:\Program Files\Immich\current\installer\Update-FromRelease.ps1'
+```
+
+配布ファイルを公開するときだけ、完成したディレクトリをWindows標準の`tar.exe`でまとめます。
+
+```powershell
+tar.exe -czf dist\immich-windows-v3.2.2-win-x64.tar.gz -C dist immich-windows-v3.2.2-win-x64
+gh release create v3.2.2 dist\immich-windows-v3.2.2-win-x64.tar.gz
+```
+
+現在はGitHub Releaseを公開していないため、公開されるまではディレクトリから更新します。公開前にWindows実行テストと同梱物の再配布条件を確認します。
+
 更新スクリプトは更新直前のDBバックアップを作成し、既存設定とサービスを引き継ぎます。失敗時は候補パッケージの`installer\Recover-Upgrade.ps1`で、旧アプリと対応するDBバックアップを一緒に戻します。
 
 ## Linux/WSL2からの移行
@@ -50,5 +65,7 @@ $candidate = 'D:\staging\immich-windows-vNEXT-win-x64'
 ## 開発方針
 
 版は[upstream.json](upstream.json)と[dependencies/versions.json](dependencies/versions.json)で管理します。`.work/immich`は直接編集せず、Windows固有の修正だけを`patches/`へ追加します。開発中は`build/Build-All.ps1`を使うと、入力が変わった段階だけを再ビルドします。配布ディレクトリを毎回作り直す必要はありません。
+
+公開リポジトリではGitHub Actionsがpush/PR時に静的監査とpatch適用を確認し、週1回の新版確認で更新用issueを作成します。上流の版を自動で差し替えたり、未検証の配布物を自動公開したりはしません。
 
 構成の詳細は[docs/architecture.md](docs/architecture.md)を参照してください。
