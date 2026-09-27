@@ -11,12 +11,8 @@ if (-not $redistRoot -or -not (Test-Path -LiteralPath $redistRoot -PathType Cont
     throw 'VCToolsRedistDir is not set. Run build/Enter-VsDevEnvironment.ps1 before staging the MSVC runtime.'
 }
 
-$crt = Join-Path $redistRoot 'x64\Microsoft.VC143.CRT'
-if (-not (Test-Path -LiteralPath $crt -PathType Container)) {
-    $crt = Get-ChildItem -LiteralPath $redistRoot -Directory -Recurse -Filter 'Microsoft.VC143.CRT' -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match '\\x64\\' } |
-        Select-Object -First 1 -ExpandProperty FullName
-}
+$crt = Get-ChildItem -LiteralPath (Join-Path $redistRoot 'x64') -Directory -Filter 'Microsoft.VC*.CRT' -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
 if (-not $crt -or -not (Test-Path -LiteralPath $crt -PathType Container)) {
     throw "Visual C++ x64 app-local CRT directory was not found below $redistRoot"
 }
