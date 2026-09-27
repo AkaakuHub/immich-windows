@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$PackageRoot,
-    [string]$InstallRoot='C:\Program Files\Immich',
-    [string]$DataRoot='C:\ProgramData\Immich',
+    [ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',
+    [string]$InstallRoot,
+    [string]$DataRoot,
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',
     [string]$PostgresService='postgresql-x64-18'
 )
@@ -10,7 +11,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
-Assert-Administrator
+if ($Scope -eq 'AllUsers') {
+    Assert-Administrator
+}
+$paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
+$InstallRoot=$paths.InstallRoot
+$DataRoot=$paths.DataRoot
 
 $PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path
 $previousRelease=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
@@ -55,12 +61,14 @@ $state.status='backup-created'
 Save-UpgradeState
 Write-Host "Pre-upgrade database backup: $backup"
 
-foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){
+if ($Scope -eq 'CurrentUser') {
+    & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+} else { foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){
     if(Get-Service $name -ErrorAction SilentlyContinue){
         Stop-Service $name -Force -ErrorAction SilentlyContinue
         (Get-Service $name).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(60))
     }
-}
+} }
 
 try {
     $redisMode=if($e.IMMICH_WINDOWS_REDIS_MODE){$e.IMMICH_WINDOWS_REDIS_MODE}else{'BundledValkey'}
@@ -69,6 +77,7 @@ try {
 
     & (Join-Path $PSScriptRoot 'Install.ps1') `
         -PackageRoot $PackageRoot `
+        -Scope $Scope `
         -MediaRoot $e.IMMICH_MEDIA_LOCATION `
         -DatabasePassword $e.DB_PASSWORD `
         -InstallRoot $InstallRoot `
@@ -90,7 +99,7 @@ try {
     $state.status='candidate-installed'
     Save-UpgradeState
 
-    & (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile
+    & (Join-Path $InstallRoot 'current\runtime\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
     & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
 
     $state.status='qualified'
@@ -99,9 +108,9 @@ try {
     Write-Host "Upgrade qualified: $($state.previousVersion) -> $($state.candidateVersion)"
     Write-Host "Paired rollback backup retained at: $backup"
 } catch {
-    foreach($name in @('ImmichServer','ImmichMachineLearning')){
-        if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}
-    }
+    if ($Scope -eq 'CurrentUser') {
+        & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+    } else { foreach($name in @('ImmichServer','ImmichMachineLearning')){if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}} }
     $state.status='failed'
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')
     $state.failure=$_.Exception.ToString()

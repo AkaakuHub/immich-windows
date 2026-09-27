@@ -1,7 +1,8 @@
 [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
 param(
-    [string]$InstallRoot='C:\Program Files\Immich',
-    [string]$DataRoot='C:\ProgramData\Immich',
+    [ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',
+    [string]$InstallRoot,
+    [string]$DataRoot,
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',
     [string]$PostgresService='postgresql-x64-18',
     [switch]$Force
@@ -10,7 +11,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
-Assert-Administrator
+if ($Scope -eq 'AllUsers') { Assert-Administrator }
+$paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
+$InstallRoot=$paths.InstallRoot
+$DataRoot=$paths.DataRoot
 
 $stateFile=Join-Path $DataRoot 'state\upgrade-recovery.json'
 if(-not(Test-Path -LiteralPath $stateFile -PathType Leaf)){throw "Upgrade recovery state not found: $stateFile"}
@@ -31,16 +35,16 @@ $envs=Read-EnvFile $envFile
 $description="restore database backup '$backup', restore PostgreSQL extension binaries from '$previousRelease', and switch current back to $($previousManifest.immichVersion)"
 if(-not $PSCmdlet.ShouldProcess('Immich native Windows installation',$description)){return}
 
-foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){
-    if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}
-}
+if ($Scope -eq 'CurrentUser') {
+    & (Join-Path $InstallRoot 'current\runtime\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+} else { foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}} }
 
 # A Windows PostgreSQL extension DLL is global to the PostgreSQL installation,
 # not release-local. Put back the extension binaries paired with the previous
 # release before recreating the pre-upgrade database. RecoveryRestore explicitly
 # skips ALTER EXTENSION against the failed candidate database; that database is
 # replaced immediately below.
-& (Join-Path $PSScriptRoot 'Install-PostgresExtensions.ps1') `
+if ($Scope -eq 'AllUsers') { & (Join-Path $PSScriptRoot 'Install-PostgresExtensions.ps1') `
     -PackageRoot $previousRelease `
     -PostgresRoot $PostgresRoot `
     -PostgresService $PostgresService `
@@ -49,7 +53,7 @@ foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){
     -DatabaseHost $envs.DB_HOSTNAME `
     -DatabasePort ([int]$envs.DB_PORT) `
     -AdminPassword $envs.DB_PASSWORD `
-    -RecoveryRestore
+    -RecoveryRestore }
 
 & (Join-Path $previousRelease 'migration\Import-Database.ps1') -Backup $backup -EnvFile $envFile -PostgresRoot $PostgresRoot
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $previousRelease
@@ -60,9 +64,9 @@ $envs=Read-EnvFile $envFile
 $envs['IMMICH_SOURCE_REF']=[string]$previousManifest.immichVersion
 $envs['IMMICH_BUILD_DATA']=Join-Path $InstallRoot 'current\build'
 Write-EnvFile -Path $envFile -Values $envs
-Protect-ImmichDataRoot -Path $DataRoot
+if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
 
-& (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile
+& (Join-Path $InstallRoot 'current\runtime\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
 & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
 
 $state.status='recovered'

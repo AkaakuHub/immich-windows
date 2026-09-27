@@ -3,8 +3,9 @@ param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [Parameter(Mandatory)][string]$MediaRoot,
     [Parameter(Mandatory)][string]$DatabasePassword,
-    [string]$InstallRoot = 'C:\Program Files\Immich',
-    [string]$DataRoot = 'C:\ProgramData\Immich',
+    [ValidateSet('AllUsers','CurrentUser')][string]$Scope = 'AllUsers',
+    [string]$InstallRoot,
+    [string]$DataRoot,
     [string]$PostgresRoot = 'C:\Program Files\PostgreSQL\18',
     [string]$PostgresService = 'postgresql-x64-18',
     [string]$DatabaseName = 'immich',
@@ -22,7 +23,12 @@ param(
     [switch]$DoNotStart
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
-Assert-Administrator
+if ($Scope -eq 'AllUsers') {
+    Assert-Administrator
+}
+$paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
+$InstallRoot=$paths.InstallRoot
+$DataRoot=$paths.DataRoot
 $PackageRoot = (Resolve-Path $PackageRoot).Path
 $packageManifestPath=Join-Path $PackageRoot 'manifest.json'
 if(-not(Test-Path -LiteralPath $packageManifestPath -PathType Leaf)){throw "Package manifest is missing: $packageManifestPath"}
@@ -63,7 +69,7 @@ if ($ResumeExistingRelease) {
 }
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $current = Join-Path $InstallRoot 'current'
-if (-not $SkipPostgresExtensionInstall) {
+if (-not $SkipPostgresExtensionInstall -and $Scope -eq 'AllUsers') {
     & (Join-Path $PSScriptRoot 'Install-PostgresExtensions.ps1') -PackageRoot $current -PostgresRoot $PostgresRoot -PostgresService $PostgresService -AdminUser $DatabaseUser -DatabaseName $DatabaseName -AdminPassword $DatabasePassword -DatabaseHost $DatabaseHost -DatabasePort $DatabasePort
 }
 # A fresh native installation may not have the Immich database yet. Create only
@@ -84,6 +90,30 @@ try {
     }
 } finally {
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
+if ($Scope -eq 'CurrentUser' -or $SkipPostgresExtensionInstall) {
+    $env:PGPASSWORD = $DatabasePassword
+    try {
+        if ($Scope -eq 'CurrentUser') {
+            & $psqlExe -h $DatabaseHost -p $DatabasePort -U $DatabaseUser -d $DatabaseName -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS vchord;'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not initialize pgvector and VectorChord in the Immich database.' }
+        }
+        $preload = & $psqlExe -h $DatabaseHost -p $DatabasePort -U $DatabaseUser -d postgres -Atqc 'SHOW shared_preload_libraries'
+        if ($LASTEXITCODE -ne 0 -or (ConvertTo-TrimmedOutput -Output $preload) -notmatch '(^|,)\s*vchord\s*(,|$)') {
+            throw 'PostgreSQL must already load VectorChord in shared_preload_libraries.'
+        }
+        foreach ($extension in @('vector','vchord')) {
+            $control = Join-Path $current "dependencies\postgres-extensions\$extension\$extension.control"
+            $versionLine = Select-String -LiteralPath $control -Pattern "default_version\s*=\s*'([^']+)'" | Select-Object -First 1
+            if (-not $versionLine) { throw "Could not read packaged $extension version." }
+            $expected = $versionLine.Matches[0].Groups[1].Value
+            $available = & $psqlExe -h $DatabaseHost -p $DatabasePort -U $DatabaseUser -d postgres -Atqc "SELECT default_version FROM pg_available_extensions WHERE name='$extension'"
+            $installed = & $psqlExe -h $DatabaseHost -p $DatabasePort -U $DatabaseUser -d $DatabaseName -Atqc "SELECT extversion FROM pg_extension WHERE extname='$extension'"
+            if ($LASTEXITCODE -ne 0 -or (ConvertTo-TrimmedOutput -Output $available) -ne $expected -or (ConvertTo-TrimmedOutput -Output $installed) -ne $expected) {
+                throw "PostgreSQL $extension must be available and installed at version $expected."
+            }
+        }
+    } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
 }
 $cache = Join-Path $DataRoot 'cache'
 $logs = Join-Path $DataRoot 'logs'
@@ -108,6 +138,7 @@ $managedEnvValues = [ordered]@{
     REDIS_HOSTNAME = $RedisHost
     REDIS_PORT = [string]$RedisPort
     IMMICH_WINDOWS_REDIS_MODE = $RedisMode
+    IMMICH_WINDOWS_INSTALL_SCOPE = $Scope
     MACHINE_LEARNING_CACHE_FOLDER = $cache
     MACHINE_LEARNING_WORKERS = '1'
     IMMICH_HOST_ML = '127.0.0.1'
@@ -121,10 +152,10 @@ if ($PreserveExistingEnv) {
 }
 foreach ($pair in $managedEnvValues.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 Write-EnvFile -Path $envFile -Values $envValues
-Protect-ImmichDataRoot -Path $DataRoot
+if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
 $valkeyConfig = Join-Path $DataRoot 'valkey.conf'
 $valkeyServiceExe = Join-Path $current 'dependencies\valkey\ValkeyService.exe'
-if (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue) {
+if ($Scope -eq 'AllUsers' -and (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue)) {
     Stop-Service -Name ImmichValkey -ErrorAction SilentlyContinue
     if (-not $ReuseServices -or $RedisMode -ne 'BundledValkey') {
         & $valkeyServiceExe uninstall --service-name ImmichValkey
@@ -134,13 +165,14 @@ if (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue) {
 if ($RedisMode -eq 'BundledValkey') {
     if ($RedisHost -notin @('127.0.0.1','localhost','::1')) { throw 'BundledValkey requires a loopback RedisHost.' }
     @("bind 127.0.0.1 ::1","protected-mode yes","port $RedisPort","dir $($valkeyData.Replace('\','/'))","dbfilename dump.rdb","save 900 1","save 300 10","save 60 10000","logfile $((Join-Path $logs 'valkey.log').Replace('\','/'))") | Set-Content -Encoding ascii -LiteralPath $valkeyConfig
-    if (-not $ReuseServices -or -not (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue)) {
+    if ($Scope -eq 'AllUsers' -and (-not $ReuseServices -or -not (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue))) {
         & $valkeyServiceExe install -c $valkeyConfig --dir $valkeyData --port $RedisPort --service-name ImmichValkey --start-mode auto
         if ($LASTEXITCODE -ne 0) { throw 'Valkey service installation failed.' }
     }
 } else {
     Write-Host "Using external Redis-compatible service at ${RedisHost}:$RedisPort; bundled ImmichValkey service is disabled."
 }
+if ($Scope -eq 'AllUsers') {
 $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
 $sharpPackage = Get-ChildItem -LiteralPath (Join-Path $current 'server\node_modules\.pnpm') -Directory -Filter '@img+sharp-win32-x64@*' -ErrorAction SilentlyContinue | Select-Object -First 1
 $sharpLibPath = if ($sharpPackage) { Join-Path $sharpPackage.FullName 'node_modules\@img\sharp-win32-x64\lib' }
@@ -202,12 +234,9 @@ foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
         if ($LASTEXITCODE -ne 0) { throw "Failed to install $name" }
     }
 }
-if (-not $DoNotStart) {
-    if($RedisMode -eq 'BundledValkey'){Start-Service ImmichValkey}
-    Start-Service ImmichMachineLearning
-    Start-Service ImmichServer
-    Wait-HttpOk 'http://127.0.0.1:3003/ping' 120
-    Wait-HttpOk 'http://127.0.0.1:2283/api/server/ping' 120
 }
-Write-Host "Installed native Immich from $release"
+if (-not $DoNotStart) {
+    & (Join-Path $current 'runtime\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+}
+Write-Host "Installed native Immich for $Scope from $release"
 Write-Host "Persistent config: $envFile"

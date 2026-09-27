@@ -15,11 +15,22 @@ if(-not $manifest.mediaStack.productionQualified -and -not $AllowUnqualifiedShar
 $envs=Read-EnvFile (Join-Path $DataRoot 'immich.env')
 $redisMode=if($envs.IMMICH_WINDOWS_REDIS_MODE){$envs.IMMICH_WINDOWS_REDIS_MODE}else{'BundledValkey'}
 if($redisMode -notin @('BundledValkey','External')){throw "Unknown IMMICH_WINDOWS_REDIS_MODE: $redisMode"}
-$expectedServices=@('ImmichMachineLearning','ImmichServer')
-if($redisMode -eq 'BundledValkey'){$expectedServices += 'ImmichValkey'}
-foreach($name in $expectedServices){
-    $svc=Get-Service -Name $name -ErrorAction Stop
-    if($svc.Status -ne 'Running'){throw "Service $name is $($svc.Status), expected Running."}
+if ($envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
+    $expectedProcesses=@('ImmichMachineLearning','ImmichServer')
+    if($redisMode -eq 'BundledValkey'){$expectedProcesses += 'ImmichValkey'}
+    foreach($name in $expectedProcesses){
+        $pidFile=Join-Path $DataRoot "services\$name.pid"
+        if(-not(Test-Path -LiteralPath $pidFile)){throw "Process $name has no PID file."}
+        $process=Get-Process -Id ([int](Get-Content -Raw -LiteralPath $pidFile)) -ErrorAction SilentlyContinue
+        if(-not $process){throw "Process $name is not running."}
+    }
+} else {
+    $expectedServices=@('ImmichMachineLearning','ImmichServer')
+    if($redisMode -eq 'BundledValkey'){$expectedServices += 'ImmichValkey'}
+    foreach($name in $expectedServices){
+        $svc=Get-Service -Name $name -ErrorAction Stop
+        if($svc.Status -ne 'Running'){throw "Service $name is $($svc.Status), expected Running."}
+    }
 }
 Wait-HttpOk 'http://127.0.0.1:3003/ping' 30
 Wait-HttpOk 'http://127.0.0.1:2283/api/server/ping' 30

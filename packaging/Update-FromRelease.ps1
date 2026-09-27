@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [string]$InstallRoot='C:\Program Files\Immich',
-    [string]$DataRoot='C:\ProgramData\Immich',
+    [ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',
+    [string]$InstallRoot,
+    [string]$DataRoot,
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',
     [string]$PostgresService='postgresql-x64-18'
 )
@@ -10,7 +11,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
-Assert-Administrator
+if ($Scope -eq 'AllUsers') { Assert-Administrator }
+$paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
+$InstallRoot=$paths.InstallRoot
+$DataRoot=$paths.DataRoot
+New-Item -ItemType Directory -Path $DataRoot -Force|Out-Null
 
 if($Version -and $Version -notmatch '^v\d+\.\d+\.\d+$'){throw "Invalid Immich version: $Version"}
 $releaseUri=if($Version){"https://api.github.com/repos/AkaakuHub/immich-windows/releases/tags/$Version"}else{'https://api.github.com/repos/AkaakuHub/immich-windows/releases/latest'}
@@ -54,5 +59,5 @@ if(-not(Test-Path -LiteralPath $readyPath -PathType Leaf)){
 
 & (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackageRoot $candidate -Version $version
 if(-not(Test-Path -LiteralPath $readyPath -PathType Leaf)){'ready'|Set-Content -Encoding ascii -LiteralPath $readyPath}
-& (Join-Path $candidate 'installer\Update.ps1') -PackageRoot $candidate -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService
+& (Join-Path $candidate 'installer\Update.ps1') -PackageRoot $candidate -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService
 Remove-Item -LiteralPath $stage -Recurse -Force

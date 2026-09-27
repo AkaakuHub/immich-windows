@@ -38,6 +38,29 @@ function Assert-Administrator {
     }
 }
 
+function Resolve-ImmichInstallPaths {
+    param(
+        [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,
+        [string]$InstallRoot,
+        [string]$DataRoot
+    )
+    if ($Scope -eq 'AllUsers') {
+        if (-not $InstallRoot) { $InstallRoot = 'C:\Program Files\Immich' }
+        if (-not $DataRoot) { $DataRoot = 'C:\ProgramData\Immich' }
+    } else {
+        if (-not $InstallRoot) { $InstallRoot = Join-Path $env:LOCALAPPDATA 'Programs\Immich' }
+        if (-not $DataRoot) { $DataRoot = Join-Path $env:LOCALAPPDATA 'Immich' }
+        foreach ($path in @($InstallRoot,$DataRoot)) {
+            $fullPath = [IO.Path]::GetFullPath($path)
+            $localAppData = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd('\') + '\'
+            if (-not $fullPath.StartsWith($localAppData,[StringComparison]::OrdinalIgnoreCase)) {
+                throw 'CurrentUser installation paths must remain under LOCALAPPDATA.'
+            }
+        }
+    }
+    return [pscustomobject]@{InstallRoot=$InstallRoot;DataRoot=$DataRoot}
+}
+
 function Read-EnvFile {
     param([Parameter(Mandatory)][string]$Path)
     $result = [ordered]@{}
