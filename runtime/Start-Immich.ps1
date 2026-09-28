@@ -42,6 +42,7 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $env:IMMICH_HOST = '127.0.0.1'
     $mlPort = if ($env:IMMICH_PORT_ML) { [int]$env:IMMICH_PORT_ML } else { 3003 }
     $env:IMMICH_PORT = [string]$mlPort
+    $env:PYTHONPATH = Join-Path $current 'machine-learning\app'
     $mlProcess = Start-Process -FilePath $python.FullName -ArgumentList @('-m','immich_ml') -WorkingDirectory (Join-Path $current 'machine-learning') -PassThru -WindowStyle Hidden
     $env:IMMICH_PORT = $serverPort
     $mlProcess.Id | Set-Content -LiteralPath (Join-Path $services 'ImmichMachineLearning.pid')

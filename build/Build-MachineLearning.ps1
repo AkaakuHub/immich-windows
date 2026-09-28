@@ -40,29 +40,14 @@ print("onnxruntime", ort.__version__, ort.get_available_providers())
 if ($LASTEXITCODE -ne 0) { throw 'Native Windows InsightFace/ONNX Runtime validation failed after uv sync.' }
 Remove-Item Env:VIRTUAL_ENV
 
-$sitePackages = (& $venvPython -c 'import site; print(site.getsitepackages()[0])').Trim()
 $runtimePython = Get-Item -LiteralPath $pythonExe
-$runtimeSite = (& $runtimePython.FullName -c 'import site; print(site.getsitepackages()[0])').Trim()
-New-Item -ItemType Directory -Force -Path $runtimeSite | Out-Null
-Copy-Directory $sitePackages $runtimeSite
-Copy-Directory (Join-Path $mlDir 'immich_ml') (Join-Path $runtimeSite 'immich_ml')
-$venvConfig = Join-Path $runtimePython.Directory.FullName 'pyvenv.cfg'
-(Get-Content -LiteralPath $venvConfig) -replace '^include-system-site-packages = false$', 'include-system-site-packages = true' |
-    Set-Content -Encoding ascii -LiteralPath $venvConfig
-
-# Re-run the same native import probe from the relocatable runtime, not only the
-# temporary build venv, so packaging cannot accidentally omit a .pyd or DLL.
-& $runtimePython.FullName -c $mlProbe
-if ($LASTEXITCODE -ne 0) { throw 'Relocatable Machine Learning runtime lost a native ONNX Runtime dependency.' }
-
-# Keep non-Python runtime files used by the launcher/log configuration beside the package.
-foreach ($name in @('log_conf.json')) {
-    $candidate = Join-Path $mlDir "immich_ml\$name"
-    if (Test-Path $candidate) { Copy-Item $candidate -Destination (Join-Path $runtimeSite 'immich_ml') -Force }
-}
-
 $packagedPython = Join-Path $Destination 'python-runtime'
 Copy-Directory $runtimePython.Directory.FullName $packagedPython
+$appDirectory = Join-Path $Destination 'app'
+Copy-Directory (Join-Path $mlDir 'immich_ml') (Join-Path $appDirectory 'immich_ml')
+$uv = Assert-Command uv
+Invoke-Native $uv @('export','--frozen','--extra','cpu','--no-dev','--no-emit-project','--no-editable','--no-hashes','--format','requirements-txt','--output-file',(Join-Path $Destination 'requirements.txt')) $mlDir
+Write-Host "Prepared clean CPython runtime at $packagedPython; ML dependencies will be installed on the target Windows host."
 $pythonVersion = (& $runtimePython.FullName --version).Trim()
 $manifest = [ordered]@{
     python = $pythonVersion
