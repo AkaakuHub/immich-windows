@@ -52,7 +52,10 @@ foreach ($project in @(
     }
 }
 if ($customSharp) {
-    $sharpLib = Join-Path $app 'server\node_modules\@img\sharp-win32-x64\lib'
+    $pnpmRoot = Join-Path $app 'server\node_modules\.pnpm'
+    $sharpPackage = Get-ChildItem -LiteralPath $pnpmRoot -Directory -Filter '@img+sharp-win32-x64@*' | Select-Object -First 1
+    if (-not $sharpPackage) { throw 'Deployed @img/sharp-win32-x64 package was not found.' }
+    $sharpLib = Join-Path $sharpPackage.FullName 'node_modules\@img\sharp-win32-x64\lib'
     if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Custom Sharp runtime is missing: $sharpLib" }
     $sharpPayload = Join-Path $Destination 'dependencies\sharp\lib'
     Copy-Directory $sharpLib $sharpPayload

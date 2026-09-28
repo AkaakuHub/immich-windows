@@ -41,7 +41,10 @@ const sharp = req('sharp');
 '@
 Write-Utf8NoBom -Path $scriptPath -Content $js
 $fixturePaths=@($Fixture | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
-$sharpLib=Join-Path $serverRoot 'node_modules\@img\sharp-win32-x64\lib'
+$pnpmRoot=Join-Path $serverRoot 'node_modules\.pnpm'
+$sharpPackage=Get-ChildItem -LiteralPath $pnpmRoot -Directory -Filter '@img+sharp-win32-x64@*' | Select-Object -First 1
+if(-not $sharpPackage){throw 'Deployed @img/sharp-win32-x64 package was not found.'}
+$sharpLib=Join-Path $sharpPackage.FullName 'node_modules\@img\sharp-win32-x64\lib'
 if(-not(Test-Path -LiteralPath $sharpLib -PathType Container)){throw 'Deployed @img/sharp-win32-x64 library was not found.'}
 $previousPath=$env:PATH
 $env:PATH="$sharpLib;$previousPath"
