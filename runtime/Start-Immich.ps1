@@ -19,8 +19,8 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $current = (Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path
     $services = Join-Path $DataRoot 'services'
     New-Item -ItemType Directory -Path $services -Force | Out-Null
-    $sharpPackage = Get-ChildItem -LiteralPath (Join-Path $current 'server\node_modules\.pnpm') -Directory -Filter '@img+sharp-win32-x64@*' | Select-Object -First 1
-    $sharpLib = if ($sharpPackage) { Join-Path $sharpPackage.FullName 'node_modules\@img\sharp-win32-x64\lib' }
+    $sharpLib = Join-Path $current 'server\node_modules\@img\sharp-win32-x64\lib'
+    if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Sharp runtime is missing: $sharpLib" }
     $env:PATH = (@($sharpLib,(Join-Path $current 'runtime\vc-runtime'),(Join-Path $current 'runtime\node'),(Join-Path $current 'runtime\ffmpeg'),$env:PATH) | Where-Object { $_ }) -join ';'
     $env:FFMPEG_PATH = Join-Path $current 'runtime\ffmpeg\ffmpeg.exe'
     $env:FFPROBE_PATH = Join-Path $current 'runtime\ffmpeg\ffprobe.exe'

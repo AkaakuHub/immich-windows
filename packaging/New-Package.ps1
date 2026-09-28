@@ -20,8 +20,44 @@ if (-not $mediaStackQualified -and -not $AllowStockSharp) {
     throw 'The Windows media stack has not completed the required private fixture matrix. Inject custom Sharp/libvips and run Test-SharpCapabilities.ps1 with the documented JPEG/PNG/WebP/AVIF/HEIF/RAW/JXL fixtures, or use -AllowStockSharp only for isolated pre-qualification smoke builds.'
 }
 $Destination = New-CleanDirectory $Destination
-Copy-Directory (Join-Path $app 'server') (Join-Path $Destination 'server')
-Copy-Directory (Join-Path $app 'cli') (Join-Path $Destination 'cli')
+$serverDestination = Join-Path $Destination 'server'
+$cliDestination = Join-Path $Destination 'cli'
+Copy-Directory (Join-Path $app 'server') $serverDestination -ExcludeDirectory @('node_modules')
+Copy-Directory (Join-Path $app 'cli') $cliDestination -ExcludeDirectory @('node_modules')
+
+$allowBuilds = "allowBuilds:`n  bcrypt: true`n  sharp: true"
+Write-Utf8NoBom -Path (Join-Path $serverDestination 'pnpm-workspace.yaml') -Content $allowBuilds
+Write-Utf8NoBom -Path (Join-Path $cliDestination 'pnpm-workspace.yaml') -Content $allowBuilds
+foreach ($project in @(
+    @{ Root = $serverDestination; IsServer = $true },
+    @{ Root = $cliDestination; IsServer = $false }
+)) {
+    $packagePath = Join-Path $project.Root 'package.json'
+    $package = Get-Content -Raw -LiteralPath $packagePath | ConvertFrom-Json
+    $package.PSObject.Properties.Remove('devDependencies')
+    foreach ($sectionName in @('dependencies','optionalDependencies','overrides')) {
+        $section = $package.$sectionName
+        if (-not $section) { continue }
+        foreach ($dependency in $section.PSObject.Properties) {
+            $dependency.Value = [regex]::Replace([string]$dependency.Value,'^([^()]+)\(.*$','$1')
+        }
+    }
+    if ($project.IsServer) { $package.dependencies.'@immich/plugin-sdk' = 'file:./.immich/plugin-sdk' }
+    $package | Add-Member -NotePropertyName packageManager -NotePropertyValue "pnpm@$($versions.pnpm.version)" -Force
+    Write-Utf8NoBom -Path $packagePath -Content ($package | ConvertTo-Json -Depth 100)
+    Invoke-Native (Assert-Command pnpm) @('install','--lockfile-only','--prod','--config.node-linker=hoisted') $project.Root
+    if (Test-Path -LiteralPath (Join-Path $project.Root 'node_modules')) {
+        $projectName = if ($project.IsServer) { 'server' } else { 'CLI' }
+        throw "Portable $projectName package unexpectedly contains node_modules."
+    }
+}
+if ($customSharp) {
+    $sharpLib = Join-Path $app 'server\node_modules\@img\sharp-win32-x64\lib'
+    if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Custom Sharp runtime is missing: $sharpLib" }
+    $sharpPayload = Join-Path $Destination 'dependencies\sharp\lib'
+    Copy-Directory $sharpLib $sharpPayload
+    Get-ChildItem -LiteralPath $sharpPayload -Filter '*.node' -File -Recurse | Remove-Item -Force
+}
 Copy-Directory (Join-Path $app 'build') (Join-Path $Destination 'build')
 $mlDestination = Join-Path $Destination 'machine-learning'
 New-Item -ItemType Directory -Path $mlDestination -Force | Out-Null
@@ -31,6 +67,13 @@ $nodeDestination = Join-Path $Destination 'runtime\node'
 New-Item -ItemType Directory -Path $nodeDestination -Force | Out-Null
 foreach ($name in @('node.exe','LICENSE')) {
     Copy-Item -LiteralPath (Join-Path (Join-Path $native 'node') $name) -Destination $nodeDestination -Force
+}
+$corepackSource = Join-Path $native 'node\node_modules\corepack'
+$corepackDestination = Join-Path $Destination 'runtime\corepack'
+foreach ($relative in @('package.json','dist\corepack.js','dist\lib\corepack.cjs','LICENSE.md')) {
+    $target = Join-Path $corepackDestination $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $corepackSource $relative) -Destination $target -Force
 }
 Copy-Directory (Join-Path $native 'ffmpeg') (Join-Path $Destination 'runtime\ffmpeg')
 Copy-Directory (Join-Path $native 'winsw') (Join-Path $Destination 'runtime\winsw')
