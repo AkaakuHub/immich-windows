@@ -27,7 +27,11 @@ $mlDestination = Join-Path $Destination 'machine-learning'
 New-Item -ItemType Directory -Path $mlDestination -Force | Out-Null
 & robocopy $ml $mlDestination /E /SL /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $ml 'python-runtime\Lib\site-packages\onnx\backend\test') | Out-Host
 if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code ${LASTEXITCODE}: $ml -> $mlDestination" }
-Copy-Directory (Join-Path $native 'node') (Join-Path $Destination 'runtime\node')
+$nodeDestination = Join-Path $Destination 'runtime\node'
+New-Item -ItemType Directory -Path $nodeDestination -Force | Out-Null
+foreach ($name in @('node.exe','LICENSE')) {
+    Copy-Item -LiteralPath (Join-Path (Join-Path $native 'node') $name) -Destination $nodeDestination -Force
+}
 Copy-Directory (Join-Path $native 'ffmpeg') (Join-Path $Destination 'runtime\ffmpeg')
 Copy-Directory (Join-Path $native 'winsw') (Join-Path $Destination 'runtime\winsw')
 Copy-Directory (Join-Path $native 'vc-runtime') (Join-Path $Destination 'runtime\vc-runtime')
