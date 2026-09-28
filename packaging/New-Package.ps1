@@ -23,7 +23,10 @@ $Destination = New-CleanDirectory $Destination
 Copy-Directory (Join-Path $app 'server') (Join-Path $Destination 'server')
 Copy-Directory (Join-Path $app 'cli') (Join-Path $Destination 'cli')
 Copy-Directory (Join-Path $app 'build') (Join-Path $Destination 'build')
-Copy-Directory $ml (Join-Path $Destination 'machine-learning') -ExcludeDirectories @((Join-Path $ml 'python-runtime\Lib\site-packages\onnx\backend\test'))
+$mlDestination = Join-Path $Destination 'machine-learning'
+New-Item -ItemType Directory -Path $mlDestination -Force | Out-Null
+& robocopy $ml $mlDestination /E /SL /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $ml 'python-runtime\Lib\site-packages\onnx\backend\test') | Out-Host
+if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code ${LASTEXITCODE}: $ml -> $mlDestination" }
 Copy-Directory (Join-Path $native 'node') (Join-Path $Destination 'runtime\node')
 Copy-Directory (Join-Path $native 'ffmpeg') (Join-Path $Destination 'runtime\ffmpeg')
 Copy-Directory (Join-Path $native 'winsw') (Join-Path $Destination 'runtime\winsw')
