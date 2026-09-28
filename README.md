@@ -13,6 +13,8 @@ ImmichをWindows x64でネイティブ実行する非公式プロジェクトで
 
 既存の`.env`を使う場合は、`Install.cmd -EnvFile "C:\path\to\.env" -Scope CurrentUser`のように指定します。PostgreSQLと、[固定バージョン](dependencies/versions.json)に合うpgvectorおよびVectorChordが必要です。
 
+`AllUsers`の設置先は`-InstallRoot "C:\SharedC\immich-app"`で指定できます。更新後も`C:\SharedC\immich-app\current`を使用します。配布用フォルダーのバージョン名は設置先に影響しません。
+
 ## Migration
 
 Linux/WSL2からのDB復元とメディアパス更新は[移行手順](docs/migration.md)を参照してください。既存のメディアファイルはNTFS上でそのまま使用できます。
