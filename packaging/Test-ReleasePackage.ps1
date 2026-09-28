@@ -26,6 +26,9 @@ foreach($required in @(
     'runtime\corepack\dist\lib\corepack.cjs',
     'runtime\ffmpeg\ffmpeg.exe',
     'machine-learning\python-runtime\python.exe',
+    'machine-learning\requirements.txt',
+    'machine-learning\uv.exe',
+    'machine-learning\app\immich_ml\__init__.py',
     'dependencies\valkey\ValkeyService.exe',
     'dependencies\postgres-extensions\vector\vector.dll',
     'dependencies\postgres-extensions\vchord\vchord.dll',
@@ -36,6 +39,10 @@ foreach($required in @(
     if(-not(Test-Path -LiteralPath (Join-Path $PackageRoot $required) -PathType Leaf)){
         throw "Release package is incomplete: $required"
     }
+}
+$pythonSitePackages = Get-ChildItem -LiteralPath (Join-Path $PackageRoot 'machine-learning\python-runtime') -Directory -Filter site-packages -Recurse | Select-Object -First 1
+if ($pythonSitePackages -and (Get-ChildItem -LiteralPath $pythonSitePackages.FullName -File -Recurse | Select-Object -First 1)) {
+    throw 'Release package must not contain Python site-packages.'
 }
 foreach($project in @('server','cli','runtime')){
     if(Test-Path -LiteralPath (Join-Path $PackageRoot "$project\node_modules")){

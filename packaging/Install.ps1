@@ -127,6 +127,7 @@ if ($ResumeExistingRelease) {
     $release = Install-ReleaseDirectory -PackageRoot $PackageRoot -InstallRoot $InstallRoot
 }
 & (Join-Path $release 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
+& (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $current = Join-Path $InstallRoot 'current'
 if (-not $SkipPostgresExtensionInstall -and $Scope -eq 'AllUsers') {
@@ -295,7 +296,7 @@ $python = Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -
 if (-not $python) { throw 'Packaged machine-learning Python runtime not found.' }
 $mlExe = Join-Path $services 'ImmichMachineLearning.exe'; Copy-Item $winswSource $mlExe -Force
 $mlXml = Join-Path $services 'ImmichMachineLearning.xml'
-New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $python.FullName -Arguments '-m immich_ml' -ExtraEnv @{ IMMICH_HOST='127.0.0.1'; IMMICH_PORT=[string]$MachineLearningPort } | Set-Content -Encoding utf8 -LiteralPath $mlXml
+New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $python.FullName -Arguments '-m immich_ml' -ExtraEnv @{ IMMICH_HOST='127.0.0.1'; IMMICH_PORT=[string]$MachineLearningPort; PYTHONPATH=(Join-Path $current 'machine-learning\app') } | Set-Content -Encoding utf8 -LiteralPath $mlXml
 foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
     $name = [IO.Path]::GetFileNameWithoutExtension($svc[0])
     $existingService=Get-Service -Name $name -ErrorAction SilentlyContinue
