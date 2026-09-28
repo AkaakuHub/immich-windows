@@ -126,6 +126,7 @@ if ($ResumeExistingRelease) {
 } else {
     $release = Install-ReleaseDirectory -PackageRoot $PackageRoot -InstallRoot $InstallRoot
 }
+& (Join-Path $release 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $current = Join-Path $InstallRoot 'current'
 if (-not $SkipPostgresExtensionInstall -and $Scope -eq 'AllUsers') {
@@ -242,8 +243,8 @@ if ($RedisMode -eq 'BundledValkey') {
 }
 if ($Scope -eq 'AllUsers') {
 $machinePath = [Environment]::GetEnvironmentVariable('Path','Machine')
-$sharpPackage = Get-ChildItem -LiteralPath (Join-Path $current 'server\node_modules\.pnpm') -Directory -Filter '@img+sharp-win32-x64@*' -ErrorAction SilentlyContinue | Select-Object -First 1
-$sharpLibPath = if ($sharpPackage) { Join-Path $sharpPackage.FullName 'node_modules\@img\sharp-win32-x64\lib' }
+$sharpLibPath = Join-Path $current 'server\node_modules\@img\sharp-win32-x64\lib'
+if (-not (Test-Path -LiteralPath $sharpLibPath -PathType Container)) { throw "Sharp runtime is missing: $sharpLibPath" }
 $servicePath = (@($sharpLibPath,(Join-Path $current 'runtime\vc-runtime'),(Join-Path $current 'runtime\node'),(Join-Path $current 'runtime\ffmpeg'),$machinePath) | Where-Object { $_ }) -join ';'
 function New-WinSWServiceXml {
     param(

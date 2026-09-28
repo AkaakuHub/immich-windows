@@ -54,8 +54,8 @@ if($LASTEXITCODE -ne 0 -or $pong -ne 'PONG'){throw "Redis-compatible service pin
 
 $vcRuntime=Join-Path $current 'runtime\vc-runtime'
 foreach($name in @('vcruntime140.dll','msvcp140.dll')){if(-not(Test-Path -LiteralPath (Join-Path $vcRuntime $name) -PathType Leaf)){throw "Packaged MSVC runtime is missing $name"}}
-$sharpPackage=Get-ChildItem -LiteralPath (Join-Path $current 'server\node_modules\.pnpm') -Directory -Filter '@img+sharp-win32-x64@*' -ErrorAction SilentlyContinue|Select-Object -First 1
-$sharpLib=if($sharpPackage){Join-Path $sharpPackage.FullName 'node_modules\@img\sharp-win32-x64\lib'}
+$sharpLib=Join-Path $current 'server\node_modules\@img\sharp-win32-x64\lib'
+if(-not(Test-Path -LiteralPath $sharpLib -PathType Container)){throw "Sharp runtime is missing: $sharpLib"}
 $env:PATH=(@($sharpLib,$vcRuntime,(Join-Path $current 'runtime\node'),(Join-Path $current 'runtime\ffmpeg'),$env:PATH)|Where-Object{$_}) -join ';'
 $node=Join-Path $current 'runtime\node\node.exe'
 $bullProbe=@'

@@ -16,12 +16,8 @@ if (-not $dlls.Count) { throw 'Custom sharp-libvips bundle contains no Windows D
 if (-not ($dlls.Name -contains 'libvips-42.dll')) {
     throw 'Custom libvips bundle does not contain libvips-42.dll.'
 }
-$pnpmRoot = Join-Path $ApplicationRoot 'server\node_modules\.pnpm'
-$packages = @(Get-ChildItem -LiteralPath $pnpmRoot -Directory -Filter '@img+sharp-win32-x64@*' -ErrorAction SilentlyContinue | ForEach-Object { Get-Item -LiteralPath (Join-Path $_.FullName 'node_modules\@img\sharp-win32-x64') -ErrorAction SilentlyContinue })
-if ($packages.Count -ne 1) {
-    throw "Expected one deployed @img/sharp-win32-x64 package; found $($packages.Count)."
-}
-$package = $packages[0]
+$package = Get-Item -LiteralPath (Join-Path $ApplicationRoot 'server\node_modules\@img\sharp-win32-x64') -ErrorAction SilentlyContinue
+if (-not $package) { throw 'Deployed @img/sharp-win32-x64 package was not found.' }
 $targetLib = Join-Path $package.FullName 'lib'
 if (-not (Test-Path -LiteralPath $targetLib -PathType Container)) { throw "Sharp lib directory is missing: $targetLib" }
 $cppRuntime = @(Get-ChildItem -LiteralPath $targetLib -Filter 'libvips-cpp-*.dll' -File | Where-Object Name -ne 'libvips-cpp-42.dll')

@@ -47,8 +47,18 @@ Invoke-Native pnpm @('--filter','@immich/sdk','--filter','@immich/cli','build') 
 
 $serverOut = Join-Path $Destination 'server'
 $cliOut = Join-Path $Destination 'cli'
-Invoke-Native pnpm @('--filter','immich','--prod','deploy',$serverOut) $Source
-Invoke-Native pnpm @('--filter','@immich/cli','--prod','--no-optional','deploy',$cliOut) $Source
+Invoke-Native pnpm @('--filter','immich','--prod','--config.node-linker=hoisted','deploy',$serverOut) $Source
+Invoke-Native pnpm @('--filter','@immich/cli','--prod','--no-optional','--config.node-linker=hoisted','deploy',$cliOut) $Source
+$pluginSdk = Join-Path $serverOut '.immich\plugin-sdk'
+New-Item -ItemType Directory -Path $pluginSdk -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $Source 'packages\plugin-sdk\package.json') -Destination $pluginSdk -Force
+Copy-Item -LiteralPath (Join-Path $Source 'packages\plugin-sdk\plugin-sdk.mjs') -Destination $pluginSdk -Force
+Copy-Directory (Join-Path $Source 'packages\plugin-sdk\dist') (Join-Path $pluginSdk 'dist')
+foreach ($output in @($serverOut,$cliOut)) {
+    if (Get-ChildItem -LiteralPath (Join-Path $output 'node_modules') -Recurse -Attributes ReparsePoint -ErrorAction SilentlyContinue | Select-Object -First 1) {
+        throw "Deployed runtime contains a symbolic link: $output"
+    }
+}
 
 $buildOut = Join-Path $Destination 'build'
 Copy-Directory (Join-Path $Source 'web\build') (Join-Path $buildOut 'www')
@@ -57,7 +67,6 @@ New-Item -ItemType Directory -Force -Path $pluginOut | Out-Null
 Copy-Directory (Join-Path $Source 'packages\plugin-core\dist') (Join-Path $pluginOut 'dist')
 Copy-Item -LiteralPath (Join-Path $Source 'packages\plugin-core\manifest.json') -Destination $pluginOut -Force
 Copy-Item -LiteralPath (Join-Path $Source 'LICENSE') -Destination (Join-Path $Destination 'LICENSE') -Force
-Copy-Item -LiteralPath (Join-Path $Source 'pnpm-lock.yaml') -Destination $Destination -Force
 
 & (Join-Path $PSScriptRoot 'Fetch-Geodata.ps1') -Destination (Join-Path $buildOut 'geodata')
 
