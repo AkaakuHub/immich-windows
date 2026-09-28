@@ -69,10 +69,13 @@ function New-CleanDirectory {
 function Copy-Directory {
     param(
         [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$Destination
+        [Parameter(Mandatory)][string]$Destination,
+        [string[]]$ExcludeDirectories = @()
     )
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    & robocopy $Source $Destination /E /SL /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Host
+    $robocopyArgs = @($Source,$Destination,'/E','/SL','/COPY:DAT','/DCOPY:DAT','/R:2','/W:1','/NFL','/NDL','/NJH','/NJS','/NP')
+    if ($ExcludeDirectories.Count -gt 0) { $robocopyArgs += '/XD'; $robocopyArgs += $ExcludeDirectories }
+    & robocopy @robocopyArgs | Out-Host
     if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code ${LASTEXITCODE}: $Source -> $Destination" }
 }
 

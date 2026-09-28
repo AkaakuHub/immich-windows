@@ -23,7 +23,7 @@ $Destination = New-CleanDirectory $Destination
 Copy-Directory (Join-Path $app 'server') (Join-Path $Destination 'server')
 Copy-Directory (Join-Path $app 'cli') (Join-Path $Destination 'cli')
 Copy-Directory (Join-Path $app 'build') (Join-Path $Destination 'build')
-Copy-Directory $ml (Join-Path $Destination 'machine-learning')
+Copy-Directory $ml (Join-Path $Destination 'machine-learning') -ExcludeDirectories @((Join-Path $ml 'python-runtime\Lib\site-packages\onnx\backend\test'))
 Copy-Directory (Join-Path $native 'node') (Join-Path $Destination 'runtime\node')
 Copy-Directory (Join-Path $native 'ffmpeg') (Join-Path $Destination 'runtime\ffmpeg')
 Copy-Directory (Join-Path $native 'winsw') (Join-Path $Destination 'runtime\winsw')

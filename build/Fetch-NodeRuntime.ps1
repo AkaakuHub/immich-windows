@@ -12,7 +12,9 @@ $temp = Expand-ZipClean $cache (Join-Path $root '.work\node-runtime')
 $inner = Get-ChildItem -LiteralPath $temp -Directory | Select-Object -First 1
 if (-not $inner) { throw 'Unexpected Node archive layout.' }
 $Destination = New-CleanDirectory $Destination
-Copy-Directory $inner.FullName $Destination
+foreach ($name in @('node.exe','LICENSE')) {
+    Copy-Item -LiteralPath (Join-Path $inner.FullName $name) -Destination $Destination -Force
+}
 Assert-FileExists (Join-Path $Destination 'node.exe') | Out-Null
 $actual = (& (Join-Path $Destination 'node.exe') --version).Trim().TrimStart('v')
 if ($actual -ne $v.version) { throw "Packaged Node version mismatch: $actual" }
