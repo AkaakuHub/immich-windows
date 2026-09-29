@@ -70,8 +70,15 @@ function Install-ProjectDependencies([string]$Project) {
         $approval = @(& $node $pnpm @('config','get','allowBuilds') 2>&1)
         if ($LASTEXITCODE -ne 0) { throw "Could not read pnpm build-script policy in $Project." }
         $policy = ($approval -join [Environment]::NewLine) | ConvertFrom-Json
-        if ($policy.'@scarf/scarf' -ne $false -or $policy.esbuild -ne $true -or
-            $policy.'msgpackr-extract' -ne $true -or $policy.protobufjs -ne $false) {
+        $effectivePolicy = @{}
+        foreach ($entry in $policy.PSObject.Properties) { $effectivePolicy[$entry.Name] = $entry.Value }
+        $expectedPolicy = if ([IO.Path]::GetFileName($Project) -eq 'server') {
+            @{ '@scarf/scarf' = $false; esbuild = $true; 'msgpackr-extract' = $true; protobufjs = $false }
+        } else { @{} }
+        $invalidPolicy = @($expectedPolicy.Keys | Where-Object {
+            -not $effectivePolicy.ContainsKey($_) -or $effectivePolicy[$_] -ne $expectedPolicy[$_]
+        })
+        if ($invalidPolicy.Count) {
             throw "pnpm build-script policy was not applied in $Project."
         }
         $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
