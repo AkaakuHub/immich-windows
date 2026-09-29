@@ -47,8 +47,12 @@ $store = Join-Path $InstallRoot 'cache\pnpm-store'
 function Install-ProjectDependencies([string]$Project) {
     Push-Location -LiteralPath $Project
     try {
-        & $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--store-dir',$store)
-        if ($LASTEXITCODE -ne 0) { throw "pnpm install failed in $Project (exit code $LASTEXITCODE)." }
+        $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--store-dir',$store) 2>&1)
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $details = ($output | Select-Object -Last 20 | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            throw "pnpm install failed in $Project (exit code $exitCode): $details"
+        }
     } finally { Pop-Location }
 }
 try {
