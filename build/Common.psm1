@@ -76,7 +76,9 @@ function Copy-Directory {
     $arguments = @($Source,$Destination,'/E','/SL','/COPY:DAT','/DCOPY:DAT','/R:2','/W:1','/NFL','/NDL','/NJH','/NJS','/NP')
     if ($ExcludeDirectory.Count) { $arguments += @('/XD') + $ExcludeDirectory }
     & robocopy @arguments | Out-Host
-    if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code ${LASTEXITCODE}: $Source -> $Destination" }
+    $robocopyExitCode = $LASTEXITCODE
+    if ($robocopyExitCode -gt 7) { throw "robocopy failed with exit code ${robocopyExitCode}: $Source -> $Destination" }
+    $global:LASTEXITCODE = 0
 }
 
 function Write-Utf8NoBom {
