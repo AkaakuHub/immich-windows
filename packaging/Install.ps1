@@ -27,6 +27,67 @@ param(
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
 
+function ConvertTo-WindowsArgument {
+    param([Parameter(Mandatory)][string]$Value)
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]'\') { $backslashes++; continue }
+        if ($character -eq [char]'"') {
+            [void]$builder.Append(('\' * (2 * $backslashes + 1)))
+            [void]$builder.Append('"')
+        } else {
+            [void]$builder.Append(('\' * $backslashes))
+            [void]$builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    [void]$builder.Append(('\' * (2 * $backslashes)))
+    [void]$builder.Append('"')
+    $builder.ToString()
+}
+
+function Start-ElevatedInstaller {
+    param([System.Collections.IDictionary]$InstallerParameters)
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { return }
+
+    $arguments = [System.Collections.Generic.List[string]]::new()
+    $arguments.Add('-NoProfile')
+    $arguments.Add('-ExecutionPolicy')
+    $arguments.Add('Bypass')
+    $arguments.Add('-File')
+    $arguments.Add($PSCommandPath)
+    foreach ($entry in $InstallerParameters.GetEnumerator()) {
+        if ($entry.Key -eq 'Scope') { continue }
+        $arguments.Add("-$($entry.Key)")
+        if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+            if (-not $entry.Value.IsPresent) { $arguments.Remove("-$($entry.Key)") }
+        } else {
+            $arguments.Add([string]$entry.Value)
+        }
+    }
+    $arguments.Add('-Scope')
+    $arguments.Add('AllUsers')
+    $argumentLine = ($arguments | ForEach-Object { ConvertTo-WindowsArgument -Value $_ }) -join ' '
+    $hostPath = (Get-Process -Id $PID).Path
+
+    Write-Host 'Requesting administrator permission to install Immich for all users.'
+    try {
+        $elevated = Start-Process -FilePath $hostPath -ArgumentList $argumentLine -Verb RunAs -Wait -PassThru -ErrorAction Stop
+    } catch {
+        if ($_.Exception.NativeErrorCode -eq 1223) {
+            throw 'Windows administrator permission was not granted. No installation was performed.'
+        }
+        throw
+    }
+    if ($elevated.ExitCode -ne 0) { throw "Elevated installation failed with exit code $($elevated.ExitCode)." }
+    Write-Host 'Elevated installation completed.'
+    exit 0
+}
+
 if (-not $PackageRoot) { $PackageRoot = Split-Path -Parent $PSScriptRoot }
 if (-not $Scope) {
     Write-Host 'Install scope:'
@@ -36,7 +97,7 @@ if (-not $Scope) {
     $Scope = switch ($scopeChoice) { '1' { 'AllUsers' } '2' { 'CurrentUser' } default { throw 'Choose 1 or 2 for the install scope.' } }
 }
 if ($Scope -eq 'AllUsers') {
-    Assert-Administrator
+    Start-ElevatedInstaller -InstallerParameters $PSBoundParameters
 }
 $paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
 $InstallRoot=$paths.InstallRoot
