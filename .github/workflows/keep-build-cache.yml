@@ -9,26 +9,52 @@ permissions:
   contents: read
 
 jobs:
-  keep:
-    runs-on: windows-2025
+  codec:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: Select native build cache keys
+      - name: Select libvips cache key
         id: cache-key
         shell: pwsh
         run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
       - uses: actions/cache/restore@v6
-        id: codec-cache
+        id: cache
         with:
           path: artifacts/native/sharp-libvips-custom
           key: libvips-${{ runner.os }}-${{ steps.cache-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+          restore-keys: |
+            libvips-Linux-8.18.5-695b4511e498d35ea736b6315b5afb1f5144cac8-7c28da9c2b8b5b8defe54f2ae92ee474c0e2d6e4-x86_64-w64-mingw32.shared-vips-all-jpegli-0.35.3-7847c797e7dfd82bb1d9131debbcd28bfe103255c02070f6e2b5a446257b583f
+      - name: Migrate previous cache key
+        if: steps.cache.outputs.cache-hit != 'true' && steps.cache.outputs.cache-matched-key != ''
+        uses: actions/cache/save@v6
+        with:
+          path: artifacts/native/sharp-libvips-custom
+          key: libvips-${{ runner.os }}-${{ steps.cache-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+      - name: Report cache status
+        shell: pwsh
+        run: "\"libvips cache hit: ${{ steps.cache.outputs.cache-hit }}; restored: ${{ steps.cache.outputs.cache-matched-key }}\" >> $env:GITHUB_STEP_SUMMARY"
+
+  postgres:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select PostgreSQL extension cache key
+        id: cache-key
+        shell: pwsh
+        run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
       - uses: actions/cache/restore@v6
-        id: postgres-cache
+        id: cache
+        with:
+          path: artifacts/native/postgres-extensions
+          key: postgres-extensions-${{ runner.os }}-${{ steps.cache-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
+          restore-keys: |
+            postgres-extensions-Windows-18-18.6-159b79aaad5983fb7459c1e3df2897fbb2d11788-f9b5e234c44cee69b266b8431f92b7deed4e99d3-0.17.0-1.95.0-d17900a0da3df29a43fe5eed27f5ddf160ff1097774ad4ae6a93eb077d1e25f1
+      - name: Migrate previous cache key
+        if: steps.cache.outputs.cache-hit != 'true' && steps.cache.outputs.cache-matched-key != ''
+        uses: actions/cache/save@v6
         with:
           path: artifacts/native/postgres-extensions
           key: postgres-extensions-${{ runner.os }}-${{ steps.cache-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
       - name: Report cache status
         shell: pwsh
-        run: |
-          "libvips cache hit: ${{ steps.codec-cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY
-          "PostgreSQL cache hit: ${{ steps.postgres-cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY
+        run: "\"PostgreSQL cache hit: ${{ steps.cache.outputs.cache-hit }}; restored: ${{ steps.cache.outputs.cache-matched-key }}\" >> $env:GITHUB_STEP_SUMMARY"
