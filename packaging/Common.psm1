@@ -69,10 +69,10 @@ function Set-ImmichUserStartup {
         Remove-ItemProperty -LiteralPath $key -Name $name -ErrorAction SilentlyContinue
         return
     }
-    $pwsh=(Get-Command pwsh.exe -ErrorAction Stop).Source
+    $powershellHost=(Get-Process -Id $PID).Path
     $entry=Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1'
     $envFile=Join-Path $DataRoot 'immich.env'
-    $command='"{0}" -NoProfile -WindowStyle Hidden -File "{1}" -EnvFile "{2}" -InstallRoot "{3}" -DataRoot "{4}"' -f $pwsh,$entry,$envFile,$InstallRoot,$DataRoot
+    $command='"{0}" -NoProfile -WindowStyle Hidden -File "{1}" -EnvFile "{2}" -InstallRoot "{3}" -DataRoot "{4}"' -f $powershellHost,$entry,$envFile,$InstallRoot,$DataRoot
     New-Item -Path $key -Force | Out-Null
     Set-ItemProperty -LiteralPath $key -Name $name -Value $command
 }
