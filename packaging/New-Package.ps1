@@ -23,6 +23,9 @@ if (-not $mediaStackQualified -and -not $AllowStockSharp) {
 $Destination = New-CleanDirectory $Destination
 Copy-Directory (Join-Path $app 'server') (Join-Path $Destination 'server') -ExcludeDirectory @('node_modules')
 Copy-Directory (Join-Path $app 'cli') (Join-Path $Destination 'cli') -ExcludeDirectory @('node_modules')
+Get-ChildItem (Join-Path $Destination 'server\dist') -File -Recurse |
+    Where-Object { $_.Name -match '(\.d\.ts|\.map|\.tsbuildinfo)$' } |
+    Remove-Item -Force
 Copy-Directory (Join-Path $app 'build') (Join-Path $Destination 'build')
 $mlDestination = Join-Path $Destination 'machine-learning'
 Copy-Directory (Join-Path $ml 'app') (Join-Path $mlDestination 'app')
