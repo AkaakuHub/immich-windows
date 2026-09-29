@@ -30,7 +30,6 @@ foreach ($required in @($node,$npm)) {
 $pnpmVersion = [string]$manifest.dependencies.pnpm.version
 $pnpmRoot = Join-Path $InstallRoot "tools\pnpm\$pnpmVersion"
 $pnpmCli = Join-Path $pnpmRoot 'node_modules\pnpm\bin\pnpm.cjs'
-$pnpm = $pnpmCli
 if (-not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
     New-Item -ItemType Directory -Path $pnpmRoot -Force | Out-Null
     $env:npm_config_cache = Join-Path $InstallRoot 'cache\npm'
@@ -46,66 +45,10 @@ $env:SHARP_IGNORE_GLOBAL_LIBVIPS = 'true'
 $env:NODE_PATH = Join-Path $ReleaseRoot 'runtime'
 $env:PATH = "$nodeRoot;$oldPath"
 $store = Join-Path $InstallRoot 'cache\pnpm-store'
-function Set-BuildScriptPolicy([string]$Project) {
-    $workspaceFile = Join-Path $Project 'pnpm-workspace.yaml'
-    $original = [IO.File]::ReadAllText($workspaceFile)
-    $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in ($original -split "`r?`n")) { $lines.Add($line) }
-    if ([IO.Path]::GetFileName($Project) -eq 'server') {
-        $start = -1
-        for ($index = 0; $index -lt $lines.Count; $index++) {
-            if ($lines[$index] -match '^allowBuilds:\s*$') { $start = $index; break }
-        }
-        if ($start -lt 0) {
-            $lines.Add('allowBuilds:')
-            $start = $lines.Count - 1
-        }
-        $end = $start + 1
-        while ($end -lt $lines.Count -and ($lines[$end] -match '^\s+' -or $lines[$end] -eq '')) { $end++ }
-        foreach ($policy in @(
-            @{ name = '@scarf/scarf'; value = 'false' },
-            @{ name = 'esbuild'; value = 'true' },
-            @{ name = 'msgpackr-extract'; value = 'true' },
-            @{ name = 'protobufjs'; value = 'false' }
-        )) {
-            $key = if ($policy.name -eq '@scarf/scarf') { "'@scarf/scarf'" } else { $policy.name }
-            $pattern = '^\s*' + [regex]::Escape($key) + ':\s*.*$'
-            $found = -1
-            for ($index = $start + 1; $index -lt $end; $index++) {
-                if ($lines[$index] -match $pattern) { $found = $index; break }
-            }
-            $line = "  ${key}: $($policy.value)"
-            if ($found -ge 0) { $lines[$found] = $line }
-            else { $lines.Insert($end, $line); $end++ }
-        }
-    }
-    $updated = $lines -join [Environment]::NewLine
-    if ($updated -match '(?m):\s*set this to true or false\s*$') {
-        throw "Unreviewed dependency build script in $workspaceFile"
-    }
-    if ($updated -ne $original) {
-        [IO.File]::WriteAllText($workspaceFile, $updated, [Text.UTF8Encoding]::new($false))
-    }
-}
 function Install-ProjectDependencies([string]$Project) {
     Push-Location -LiteralPath $Project
     try {
-        Set-BuildScriptPolicy $Project
-        $approval = @(& $node $pnpm @('config','get','allowBuilds') 2>&1)
-        if ($LASTEXITCODE -ne 0) { throw "Could not read pnpm build-script policy in $Project." }
-        $policy = ($approval -join [Environment]::NewLine) | ConvertFrom-Json
-        $effectivePolicy = @{}
-        foreach ($entry in $policy.PSObject.Properties) { $effectivePolicy[$entry.Name] = $entry.Value }
-        $expectedPolicy = if ([IO.Path]::GetFileName($Project) -eq 'server') {
-            @{ '@scarf/scarf' = $false; esbuild = $true; 'msgpackr-extract' = $true; protobufjs = $false }
-        } else { @{} }
-        $invalidPolicy = @($expectedPolicy.Keys | Where-Object {
-            -not $effectivePolicy.ContainsKey($_) -or $effectivePolicy[$_] -ne $expectedPolicy[$_]
-        })
-        if ($invalidPolicy.Count) {
-            throw "pnpm build-script policy was not applied in $Project."
-        }
-        $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
+        $output = @(& $node $pnpmCli @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
             $details = ($output | Select-Object -Last 20 | ForEach-Object { [string]$_ }) -join [Environment]::NewLine

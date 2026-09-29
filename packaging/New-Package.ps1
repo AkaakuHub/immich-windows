@@ -33,7 +33,6 @@ Copy-Item (Join-Path $ml 'requirements.txt') (Join-Path $mlDestination 'requirem
 Copy-Item (Join-Path $ml 'ml-manifest.json') (Join-Path $mlDestination 'ml-manifest.json') -Force
 Copy-Item (Join-Path $app 'LICENSE') (Join-Path $Destination 'LICENSE') -Force
 
-$allowBuilds = "allowBuilds:`n  bcrypt: true`n  sharp: true"
 foreach ($project in @('server','cli')) {
     $projectRoot = Join-Path $Destination $project
     $packagePath = Join-Path $projectRoot 'package.json'
@@ -49,6 +48,8 @@ foreach ($project in @('server','cli')) {
     if ($project -eq 'server') { $package.dependencies.'@immich/plugin-sdk' = 'file:./.immich/plugin-sdk' }
     $package | Add-Member -NotePropertyName packageManager -NotePropertyValue "pnpm@$($versions.pnpm.version)" -Force
     Write-Utf8NoBom -Path $packagePath -Content ($package | ConvertTo-Json -Depth 100)
+    $allowBuilds = "allowBuilds:`n  bcrypt: true`n  sharp: true"
+    if ($project -eq 'server') { $allowBuilds += "`n  '@scarf/scarf': false`n  esbuild: true`n  msgpackr-extract: true`n  protobufjs: false" }
     Write-Utf8NoBom -Path (Join-Path $projectRoot 'pnpm-workspace.yaml') -Content $allowBuilds
     Invoke-Native (Assert-Command pnpm) @('install','--lockfile-only','--prod','--config.node-linker=hoisted') $projectRoot
     if (Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules')) { throw "$project must not contain node_modules." }
