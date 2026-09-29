@@ -120,7 +120,7 @@ jobs:
           $folder = "immich-windows-$version-win-x64"
           .\packaging\New-Package.ps1
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
-Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
+          Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
       - name: Upload qualified draft release
         shell: pwsh
         env:
