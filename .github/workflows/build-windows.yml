@@ -174,6 +174,7 @@ jobs:
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
           & "$userRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $userRoot -DataRoot $userData -EnvFile "$userData/immich.env"
       - name: Upload qualified release
+        if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
