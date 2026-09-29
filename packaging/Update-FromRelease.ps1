@@ -30,7 +30,7 @@ if($currentVersion -eq $version){Write-Host "Immich $version is already installe
 if([version]$version.TrimStart('v') -lt [version]$currentVersion.TrimStart('v')){throw "Refusing to downgrade from $currentVersion to $version."}
 
 $folder="immich-windows-$version-win-x64"
-$assetName="$folder.tar.gz"
+$assetName="$folder.zip"
 $asset=@($release.assets|Where-Object name -eq $assetName|Select-Object -First 1)
 if($asset.Count -ne 1){throw "Release $version has no native Windows package: $assetName"}
 
@@ -52,8 +52,7 @@ if(-not(Test-Path -LiteralPath $readyPath -PathType Leaf)){
     $archive=Join-Path $stage $assetName
     try{
         Invoke-WebRequest -Uri $asset[0].browser_download_url -OutFile $archive
-        & tar.exe -xzf $archive -C $stage
-        if($LASTEXITCODE -ne 0){throw "Could not extract $assetName"}
+        Expand-Archive -LiteralPath $archive -DestinationPath $stage -Force
     }finally{Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue}
 }
 

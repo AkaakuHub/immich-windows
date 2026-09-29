@@ -126,6 +126,7 @@ if ($ResumeExistingRelease) {
 } else {
     $release = Install-ReleaseDirectory -PackageRoot $PackageRoot -InstallRoot $InstallRoot
 }
+& (Join-Path $release 'installer\Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $release 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
