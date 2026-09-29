@@ -41,8 +41,10 @@ if (-not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) { throw "Pinned pnpm 
 
 $oldSharpIgnoreGlobal = $env:SHARP_IGNORE_GLOBAL_LIBVIPS
 $oldNodePath = $env:NODE_PATH
+$oldPath = $env:PATH
 $env:SHARP_IGNORE_GLOBAL_LIBVIPS = 'true'
 $env:NODE_PATH = Join-Path $ReleaseRoot 'runtime'
+$env:PATH = "$nodeRoot;$oldPath"
 $store = Join-Path $InstallRoot 'cache\pnpm-store'
 function Set-BuildScriptPolicy([string]$Project) {
     $workspaceFile = Join-Path $Project 'pnpm-workspace.yaml'
@@ -137,4 +139,5 @@ try {
 } finally {
     $env:SHARP_IGNORE_GLOBAL_LIBVIPS = $oldSharpIgnoreGlobal
     $env:NODE_PATH = $oldNodePath
+    $env:PATH = $oldPath
 }
