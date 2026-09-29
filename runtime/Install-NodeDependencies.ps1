@@ -44,9 +44,29 @@ $oldNodePath = $env:NODE_PATH
 $env:SHARP_IGNORE_GLOBAL_LIBVIPS = 'true'
 $env:NODE_PATH = Join-Path $ReleaseRoot 'runtime'
 $store = Join-Path $InstallRoot 'cache\pnpm-store'
+function Set-BuildScriptPolicy([string]$Project) {
+    $workspaceFile = Join-Path $Project 'pnpm-workspace.yaml'
+    $original = [IO.File]::ReadAllText($workspaceFile)
+    $updated = $original
+    foreach ($policy in @(
+        @{ pattern = "(?m)^(\s*'@scarf/scarf':\s*)set this to true or false\s*$"; value = 'false' },
+        @{ pattern = '(?m)^(\s*esbuild:\s*)set this to true or false\s*$'; value = 'true' },
+        @{ pattern = '(?m)^(\s*msgpackr-extract:\s*)set this to true or false\s*$'; value = 'true' },
+        @{ pattern = '(?m)^(\s*protobufjs:\s*)set this to true or false\s*$'; value = 'false' }
+    )) {
+        $updated = [regex]::Replace($updated, $policy.pattern, ('${1}' + $policy.value))
+    }
+    if ($updated -match '(?m):\s*set this to true or false\s*$') {
+        throw "Unreviewed dependency build script in $workspaceFile"
+    }
+    if ($updated -ne $original) {
+        [IO.File]::WriteAllText($workspaceFile, $updated, [Text.UTF8Encoding]::new($false))
+    }
+}
 function Install-ProjectDependencies([string]$Project) {
     Push-Location -LiteralPath $Project
     try {
+        Set-BuildScriptPolicy $Project
         $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
