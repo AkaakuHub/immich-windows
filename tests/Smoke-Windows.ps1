@@ -136,5 +136,17 @@ const path = require('node:path');
 & $node -e $probe (Join-Path $current 'server') @SharpFixture
 if($LASTEXITCODE -ne 0){throw 'Sharp/libvips runtime capability test failed.'}
 
+$geodataDate = (Get-Content -Raw -LiteralPath (Join-Path $current 'build\geodata\geodata-date.txt')).Trim()
+$importDate = ''
+for ($attempt = 0; $attempt -lt 120; $attempt++) {
+    $env:PGPASSWORD = [string]$envs.DB_PASSWORD
+    try {
+        $importDate = (& $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -Atqc "SELECT value->>'lastUpdate' FROM system_metadata WHERE key='reverse-geocoding-state'") -join ''
+        if ($LASTEXITCODE -ne 0) { throw 'Could not read geodata import state.' }
+    } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+    if ($importDate -eq $geodataDate) { break }
+    Start-Sleep -Seconds 5
+}
+if ($importDate -ne $geodataDate) { throw 'Geodata import did not finish within 10 minutes.' }
 & (Join-Path $current 'migration\Schema-Check.ps1') -EnvFile (Join-Path $DataRoot 'immich.env') -InstallRoot $InstallRoot
 Write-Host "Native Windows smoke test passed for Immich $($manifest.immichVersion)."

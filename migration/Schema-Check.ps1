@@ -2,5 +2,6 @@
 [CmdletBinding()]
 param([string]$EnvFile='C:\ProgramData\Immich\immich.env',[string]$InstallRoot='C:\Program Files\Immich')
 $admin=Join-Path $InstallRoot 'current\runtime\launchers\immich-admin.ps1'
-& $admin -EnvFile $EnvFile schema-check
-if($LASTEXITCODE -ne 0){throw 'Immich schema-check failed.'}
+$output = @(& $admin -EnvFile $EnvFile schema-check)
+$output | Out-Host
+if($LASTEXITCODE -ne 0 -or ($output -match 'Detected schema drift')){throw 'Immich schema-check failed.'}
