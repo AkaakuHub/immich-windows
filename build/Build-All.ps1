@@ -41,8 +41,8 @@ $appInputs=[ordered]@{
     extismJs=$versions.extismJs.version
     binaryen=$versions.binaryen.version
     sharp=$versions.sharp.version
-    builder=(Get-Item -LiteralPath (Join-Path $PSScriptRoot 'Build-Immich.ps1')).LastWriteTimeUtc.Ticks
-    geodata=(Get-Item -LiteralPath (Join-Path $PSScriptRoot 'Fetch-Geodata.ps1')).LastWriteTimeUtc.Ticks
+    builder=(& git hash-object (Join-Path $PSScriptRoot 'Build-Immich.ps1')).Trim()
+    geodata=(& git hash-object (Join-Path $PSScriptRoot 'Fetch-Geodata.ps1')).Trim()
 }
 Invoke-CachedBuildStage -Destination $app -StateName 'build-inputs.json' -Inputs $appInputs -Required @('server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','application-manifest.json') -Build {
     & (Join-Path $PSScriptRoot 'Build-Immich.ps1') -Source $source -Destination $app
@@ -73,7 +73,7 @@ $mlInputs=[ordered]@{
     sourceDiff=(@(& git -C $source diff --binary -- machine-learning) -join "`n")
     python=$versions.python.version
     uv=$versions.uv.version
-    builder=(Get-Item -LiteralPath (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1')).LastWriteTimeUtc.Ticks
+    builder=(& git hash-object (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1')).Trim()
 }
 Invoke-CachedBuildStage -Destination $ml -StateName 'build-inputs.json' -Inputs $mlInputs -Required @('app\immich_ml\__main__.py','requirements.txt','ml-manifest.json') -Build {
     & (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1') -Source $source -Destination $ml
