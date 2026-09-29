@@ -1,0 +1,34 @@
+name: keep-native-build-cache
+
+on:
+  schedule:
+    - cron: '23 4 */5 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keep:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select native build cache keys
+        id: cache-key
+        shell: pwsh
+        run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
+      - uses: actions/cache/restore@v6
+        id: codec-cache
+        with:
+          path: artifacts/native/sharp-libvips-custom
+          key: libvips-${{ runner.os }}-${{ steps.cache-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+      - uses: actions/cache/restore@v6
+        id: postgres-cache
+        with:
+          path: artifacts/native/postgres-extensions
+          key: postgres-extensions-${{ runner.os }}-${{ steps.cache-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
+      - name: Report cache status
+        shell: pwsh
+        run: |
+          "libvips cache hit: ${{ steps.codec-cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY
+          "PostgreSQL cache hit: ${{ steps.postgres-cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY

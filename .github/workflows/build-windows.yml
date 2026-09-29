@@ -24,15 +24,12 @@ jobs:
       - name: Select libvips cache key
         id: codec-key
         shell: pwsh
-        run: |
-          $v = Get-Content -Raw dependencies/versions.json | ConvertFrom-Json
-          $media = $v.sharpLibvips
-          "value=$($media.version)-$($media.commit)-$($media.libvipsRevision)-$($media.target)-$($media.variant)-$($media.jpeg)-$($v.sharp.version)" >> $env:GITHUB_OUTPUT
+        run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
       - uses: actions/cache@v6
         id: codec-cache
         with:
           path: artifacts/native/sharp-libvips-custom
-          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.value }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
       - name: Cross-build Windows libvips
         if: steps.codec-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -63,14 +60,12 @@ jobs:
       - name: Select PostgreSQL extension cache key
         id: postgres-key
         shell: pwsh
-        run: |
-          $v = Get-Content -Raw dependencies/versions.json | ConvertFrom-Json
-          "value=$($v.postgresql.major)-$($v.postgresql.version)-$($v.pgvector.commit)-$($v.vectorchord.commit)-$($v.vectorchord.pgrx)-$($v.vectorchord.rustToolchain)" >> $env:GITHUB_OUTPUT
+        run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
       - uses: actions/cache@v6
         id: postgres-cache
         with:
           path: artifacts/native/postgres-extensions
-          key: postgres-extensions-${{ runner.os }}-${{ steps.postgres-key.outputs.value }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
+          key: postgres-extensions-${{ runner.os }}-${{ steps.postgres-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
       - name: Build PostgreSQL 18 extensions
         if: steps.postgres-cache.outputs.cache-hit != 'true'
         shell: pwsh
