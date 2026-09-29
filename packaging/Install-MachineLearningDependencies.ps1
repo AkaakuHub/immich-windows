@@ -24,7 +24,7 @@ foreach ($path in @($(if ($python) { $python.FullName }),$uv,$requirements)) {
 }
 $cache = Join-Path $InstallRoot 'cache\uv'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
-& $uv pip sync $requirements --python $python.FullName --system --cache-dir $cache
+& $uv pip sync $requirements --python $python.FullName --system --break-system-packages --cache-dir $cache
 if ($LASTEXITCODE -ne 0) { throw "Could not install Machine Learning dependencies (uv exit code $LASTEXITCODE)." }
 $expectedState | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $statePath
 Write-Host 'Machine Learning dependencies installed for this release.'
