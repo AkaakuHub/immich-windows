@@ -43,6 +43,12 @@ Remove-Item Env:VIRTUAL_ENV
 $runtimePython = Get-Item -LiteralPath $pythonExe
 $packagedPython = Join-Path $Destination 'python-runtime'
 Copy-Directory $runtimePython.Directory.FullName $packagedPython
+foreach ($relative in @('Lib\site-packages','tcl')) {
+    $unneededRuntimeFiles = Join-Path $packagedPython $relative
+    if (Test-Path -LiteralPath $unneededRuntimeFiles -PathType Container) {
+        Remove-Item -LiteralPath $unneededRuntimeFiles -Recurse -Force
+    }
+}
 $appDirectory = Join-Path $Destination 'app'
 Copy-Directory (Join-Path $mlDir 'immich_ml') (Join-Path $appDirectory 'immich_ml')
 $uv = Assert-Command uv

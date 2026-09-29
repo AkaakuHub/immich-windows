@@ -66,6 +66,7 @@ $mlDestination = Join-Path $Destination 'machine-learning'
 New-Item -ItemType Directory -Path $mlDestination -Force | Out-Null
 & robocopy $ml $mlDestination /E /SL /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $ml 'python-runtime\Lib\site-packages\onnx\backend\test') | Out-Host
 if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code ${LASTEXITCODE}: $ml -> $mlDestination" }
+Get-ChildItem -LiteralPath $mlDestination -Directory -Filter site-packages -Recurse | Remove-Item -Recurse -Force
 $uvSource = Join-Path $root '.tools\uv\uv.exe'
 if (-not (Test-Path -LiteralPath $uvSource -PathType Leaf)) { throw "Pinned uv runtime is missing: $uvSource" }
 Copy-Item -LiteralPath $uvSource -Destination (Join-Path $mlDestination 'uv.exe') -Force
