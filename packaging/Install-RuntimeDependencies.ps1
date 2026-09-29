@@ -97,7 +97,7 @@ $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Re
 if (-not $pythonExe) {
     $env:UV_CACHE_DIR = Join-Path $InstallRoot 'cache\uv'
     $env:UV_PYTHON_INSTALL_DIR = $pythonRoot
-    & $uvExe python install $versions.python.version
+    & $uvExe python install $versions.python.version --no-bin
     if ($LASTEXITCODE -ne 0) { throw 'Could not install pinned CPython runtime with uv.' }
     $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 }

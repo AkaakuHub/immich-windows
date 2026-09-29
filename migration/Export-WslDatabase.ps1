@@ -31,7 +31,7 @@ try {
     $arguments=@($compose)+@('exec','-T',$DatabaseService,'pg_dump','-Fc','--no-owner','-w','-U',$DatabaseUser,'-d',$DatabaseName)
     $start=[Diagnostics.ProcessStartInfo]::new()
     $start.FileName='wsl.exe'
-    $start.Arguments=($arguments | ForEach-Object { '"'+($_ -replace '"','\"')+'"' }) -join ' '
+    foreach ($argument in $arguments) { $start.ArgumentList.Add($argument) }
     $start.UseShellExecute=$false
     $start.RedirectStandardOutput=$true
     $start.RedirectStandardError=$true
