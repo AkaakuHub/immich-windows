@@ -190,17 +190,9 @@ if (Test-Path -LiteralPath (Join-Path $InstallRoot 'current')) {
     if (-not (Test-Path -LiteralPath $stopScript -PathType Leaf)) {
         throw "Cannot safely replace the existing Immich installation because its stop script is missing: $stopScript"
     }
-    $previousInstallScope = $env:IMMICH_WINDOWS_INSTALL_SCOPE
-    $env:IMMICH_WINDOWS_INSTALL_SCOPE = $Scope
-    try {
-        & $stopScript -EnvFile $EnvFile -DataRoot $DataRoot -InstallRoot $InstallRoot
-    } finally {
-        if ($null -eq $previousInstallScope) {
-            Remove-Item Env:IMMICH_WINDOWS_INSTALL_SCOPE -ErrorAction SilentlyContinue
-        } else {
-            $env:IMMICH_WINDOWS_INSTALL_SCOPE = $previousInstallScope
-        }
-    }
+    $installedEnv = Read-EnvFile $defaultEnvFile
+    if ($installedEnv.IMMICH_WINDOWS_INSTALL_SCOPE -ne $Scope) { throw 'The selected scope does not match the installed environment.' }
+    & $stopScript -EnvFile $defaultEnvFile -DataRoot $DataRoot -InstallRoot $InstallRoot
 }
 New-Item -ItemType Directory -Path $InstallRoot,$DataRoot -Force | Out-Null
 $release = $null

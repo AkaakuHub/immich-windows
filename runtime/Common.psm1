@@ -126,13 +126,7 @@ function Set-CurrentReleaseJunction {
         if (-not ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw "Refusing to replace non-junction current path: $current"
         }
-        # Use cmd.exe rmdir for directory junctions. It removes only the reparse
-        # point, including a dangling junction whose target was replaced.
-        & cmd.exe /d /c rmdir "$current"
-        $remaining = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
-        if ($LASTEXITCODE -ne 0 -and $remaining) {
-            throw "Failed to remove existing current release junction: $current"
-        }
+        [IO.Directory]::Delete($current)
     }
     New-Item -ItemType Junction -Path $current -Target $ReleasePath | Out-Null
 }
