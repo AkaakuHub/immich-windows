@@ -30,6 +30,7 @@ if ($pnpmVersion -ne $versions.pnpm.version) {
 $env:NODE_OPTIONS = '--max-old-space-size=4096'
 $env:SHARP_IGNORE_GLOBAL_LIBVIPS = 'true'
 $env:CI = '1'
+$env:PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN = 'false'
 
 $filters = @(
     '--filter','@immich/sdk',
@@ -40,10 +41,7 @@ $filters = @(
     '--filter','immich-web'
 )
 Invoke-Native pnpm ($filters + @('install','--frozen-lockfile')) $Source
-Invoke-Native pnpm @('--filter','@immich/sdk','--filter','@immich/plugin-sdk','--filter','immich','build') $Source
-Invoke-Native pnpm @('--filter','@immich/sdk','--filter','immich-web','build') $Source
-Invoke-Native pnpm @('--filter','@immich/sdk','--filter','@immich/plugin-sdk','--filter','@immich/plugin-core','build') $Source
-Invoke-Native pnpm @('--filter','@immich/sdk','--filter','@immich/cli','build') $Source
+Invoke-Native pnpm ($filters + @('-r','--workspace-concurrency=1','run','build')) $Source
 
 $serverOut = Join-Path $Destination 'server'
 $cliOut = Join-Path $Destination 'cli'

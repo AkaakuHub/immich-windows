@@ -32,10 +32,6 @@ function Invoke-CachedNativeStage {
     New-Item -ItemType Directory -Path (Split-Path $statePath -Parent) -Force | Out-Null
     $inputJson|Set-Content -Encoding utf8 -LiteralPath $statePath
 }
-Invoke-CachedNativeStage -Name 'node' -Script 'Fetch-NodeRuntime.ps1' -Version $versions.node -Required 'node.exe'
-Invoke-CachedNativeStage -Name 'ffmpeg' -Script 'Fetch-FFmpeg.ps1' -Version $versions.ffmpeg -Required 'ffmpeg.exe'
-Invoke-CachedNativeStage -Name 'valkey' -Script 'Fetch-Valkey.ps1' -Version $versions.valkey -Required 'ValkeyService.exe'
-Invoke-CachedNativeStage -Name 'winsw' -Script 'Fetch-WinSW.ps1' -Version $versions.winsw -Required 'WinSW-x64.exe'
 Invoke-CachedNativeStage -Name 'vc-runtime' -Script 'Stage-VcRuntime.ps1' -Version $null -Required 'vcruntime140.dll'
 if (-not $SkipPostgresExtensions) {
     Invoke-CachedNativeStage -Name 'postgres-extensions\vector' -Script 'Build-PgVector.ps1' -Version $versions.pgvector -Required 'vector.dll' -Arguments @{PostgresRoot=$PostgresRoot}

@@ -7,9 +7,6 @@ $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
 if (-not $ToolRoot) { $ToolRoot = Join-Path $root '.tools' }
 New-Item -ItemType Directory -Path $ToolRoot -Force | Out-Null
 
-# Use the exact Node release pinned by upstream Immich. The same runtime is later
-# copied into the installable package, so the build and production Node versions
-# cannot drift independently.
 $nodeRoot = Join-Path $ToolRoot 'node'
 $nodeExe = Join-Path $nodeRoot 'node.exe'
 $nodeVersion = if (Test-Path -LiteralPath $nodeExe -PathType Leaf) { (& $nodeExe --version).Trim().TrimStart('v') } else { '' }
