@@ -67,7 +67,7 @@ function Install-ProjectDependencies([string]$Project) {
     Push-Location -LiteralPath $Project
     try {
         Set-BuildScriptPolicy $Project
-        $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
+        $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--allow-build=esbuild','--allow-build=msgpackr-extract','--store-dir',$store) 2>&1)
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
             $details = ($output | Select-Object -Last 20 | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
