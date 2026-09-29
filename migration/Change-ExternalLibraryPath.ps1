@@ -24,7 +24,6 @@ if(-not $OldRoot){throw 'OldRoot must not resolve to an empty path.'}
 if(-not $NewRoot){throw 'NewRoot must not resolve to an empty path.'}
 
 $envs=Read-EnvFile $EnvFile
-$env:PGPASSWORD=[string]$envs.DB_PASSWORD
 $psql=Join-Path $PostgresRoot 'bin\psql.exe'
 if(-not(Test-Path -LiteralPath $psql -PathType Leaf)){throw "psql.exe not found: $psql"}
 
@@ -40,12 +39,25 @@ function Invoke-ImmichSql {
         '-d',[string]$envs.DB_DATABASE_NAME,
         '-At'
     )
-    $output=@($Sql | & $psql @args)
-    if($LASTEXITCODE -ne 0){throw 'psql failed while migrating external library paths.'}
+    $previousPassword=$env:PGPASSWORD
+    try {
+        $env:PGPASSWORD=[string]$envs.DB_PASSWORD
+        $output=@($Sql | & $psql @args)
+        if($LASTEXITCODE -ne 0){throw 'psql failed while migrating external library paths.'}
+    } finally { $env:PGPASSWORD=$previousPassword }
     return $output
 }
 
 function Assert-ImmichApplicationStopped {
+    if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
+        $installRoot=Split-Path -Parent (Split-Path -Parent ([string]$envs.IMMICH_BUILD_DATA))
+        $dataRoot=Split-Path -Parent (Resolve-Path -LiteralPath $EnvFile).Path
+        foreach ($name in @('ImmichServer','ImmichMachineLearning')) {
+            if (Get-ImmichUserProcess -InstallRoot $installRoot -DataRoot $dataRoot -Name $name) { throw "$name must be stopped before changing external library paths." }
+        }
+        return
+    }
+    if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -ne 'AllUsers') { throw 'Unknown installation scope in the env file.' }
     foreach($name in @('ImmichServer','ImmichMachineLearning')){
         $service=Get-Service -Name $name -ErrorAction SilentlyContinue
         if($service -and $service.Status -ne 'Stopped'){
