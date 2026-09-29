@@ -1,26 +1,20 @@
 # immich-windows
 
-ImmichをWindows x64でネイティブ実行する非公式プロジェクトです。Immich本体はforkせず、固定した上流版にWindows向けpatchを適用します。DB schemaとmigrationは変更しません。
+ImmichをWindows x64でネイティブ実行する非公式プロジェクトです。固定した上流版に必要最小限のWindows向けパッチを適用します。Immich本体の履歴、DBスキーマ、マイグレーションは変更しません。
 
-本番環境ではDocker、WSL2、Linux VMを使わず、Windows上のPostgreSQL、Valkey、Immich Server、Machine Learningを動かします。
+## インストール
 
-## Install
+[Releases](https://github.com/AkaakuHub/immich-windows/releases)から`immich-windows-vX.Y.Z-win-x64.zip`をダウンロードし、展開後に`Install.cmd`を実行します。PostgreSQLの準備、既存の`.env`の指定、インストール先の選択は[導入手順](docs/install.md)を参照してください。
 
-公開Releaseの`Install.cmd`を実行します。対話式でインストール範囲や設定を指定できます。
+- `AllUsers`はWindowsサービスとしてPC起動時から常駐します。
+- `CurrentUser`は現在のユーザーのサインイン時に起動します。
 
-メインZIPには`node_modules`、Pythonの`site-packages`、ランタイムを含めません。固定版のNode.js、Python、pnpm、FFmpeg、Valkeyなどはインストール時に取得し、依存キャッシュは更新時に再利用します。Windows向けにビルドするDLLは別のRelease assetから取得します。初回インストールと未キャッシュ依存の取得にはネット接続が必要です。
+メインZIPにNode.js、Python、`node_modules`、`site-packages`は含めません。固定版のランタイムと依存をインストール時に取得し、キャッシュを再利用します。重いネイティブビルドはGitHub Actionsで行います。本番でDocker・WSL2・Linux VMは使用しません。
 
-- `AllUsers`: Windowsサービスとして常駐。管理者権限が必要です。
-- `CurrentUser`: ユーザーのサインイン中に常駐。管理者権限は不要です。
+## 使い方
 
-既存の`.env`を使う場合は、`Install.cmd -EnvFile "C:\path\to\.env" -Scope CurrentUser`のように指定します。PostgreSQLと、[固定バージョン](dependencies/versions.json)に合うpgvectorおよびVectorChordが必要です。
+- [起動・停止・更新・バックアップ・削除](docs/operations.md)
+- [WSLからの移行](docs/migration.md)
+- [開発・上流バージョンへの追従](https://github.com/AkaakuHub/immich-windows/blob/main/docs/development.md)
 
-`AllUsers`の設置先は`-InstallRoot "C:\SharedC\immich-app"`で指定できます。更新後も`C:\SharedC\immich-app\current`を使用します。配布用フォルダーのバージョン名は設置先に影響しません。
-
-## Migration
-
-Linux/WSL2からのDB復元とメディアパス更新は[移行手順](docs/migration.md)を参照してください。既存のメディアファイルはNTFS上でそのまま使用できます。
-
-## Development
-
-上流の固定版、Windows patch、ビルド手順は[patch policy](patches/README.md)とGitHub Actionsを参照してください。Dockerはcustom libvipsのビルド時だけ使用します。
+Windows上のメディアは既存のNTFSフォルダーをそのまま使えます。DBは論理バックアップから復元し、DB内のLinuxパスをWindowsパスへ変更します。

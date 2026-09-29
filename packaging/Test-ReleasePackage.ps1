@@ -15,7 +15,8 @@ foreach ($required in @(
     'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json',
     'installer\Install-RuntimeDependencies.ps1','installer\Install-MachineLearningDependencies.ps1',
     'sharp-libvips-qualification.json','Install.cmd','installer\Update.ps1','runtime\Common.psm1',
-    'tests\Smoke-Windows.ps1','migration\Import-Database.ps1','migration\New-DatabaseBackup.ps1'
+    'tests\Smoke-Windows.ps1','migration\Import-Database.ps1','migration\New-DatabaseBackup.ps1',
+    'README.md','docs\install.md','docs\operations.md','docs\migration.md'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot $required) -PathType Leaf)) { throw "Release package is incomplete: $required" }
 }

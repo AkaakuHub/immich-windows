@@ -1,73 +1,81 @@
 # WSLからWindowsへの移行
 
-この手順は移行を実行するWindows PCで行います。WSL内のPostgreSQLデータディレクトリをコピーせず、論理バックアップを作成します。メディアが既にWindowsのドライブにある場合はコピーしません。移行元と移行先のImmichバージョンはそろえてください。
+移行を行うPC内のWSLを対象にします。移行元と移行先のImmichの版をそろえます。PostgreSQLのLinux用データディレクトリはWindowsへコピーせず、ダンプから復元します。既にWindowsのHDDにある写真・動画はその場で使います。
 
-## 事前に確認する値
+## 1. 移行先と入力値を準備する
 
-- WSLディストリビューション名と、WSL内の`compose.yml`の絶対パス
-- ComposeのDBサービス名とImmichサービス名。既定値は`database`、`immich-server`、`immich-machine-learning`です
-- 移行元DBのユーザー名とDB名。既定値は`postgres`、`immich`です
-- Windows側のインストール先、`immich.env`、メディアフォルダーのパス
-- Docker内の旧メディアルート。通常は`/data`です
+[導入手順](install.md)に従い、WindowsのPostgreSQLを準備します。次の値を移行元の設定から確認してください。
 
-`Export-WslDatabase.ps1`はWindowsからWSLのDocker Composeを呼び出します。Dockerコマンドを手で入力する必要はありません。移行元のImmichサービスを停止してからダンプを取得し、成功後も停止したままにします。失敗した場合はサービスの再起動を試み、途中のダンプを削除します。
+| 入力 | 例・既定値 |
+| --- | --- |
+| WSLディストリビューション名 | `Debian`。`wsl.exe --list --quiet`で一覧表示できます |
+| WSL内のComposeファイル | `/home/user/immich/docker-compose.yml`などの絶対パス |
+| DBのComposeサービス名 | `database` |
+| 停止するComposeサービス名 | `immich-server`、`immich-machine-learning` |
+| DBユーザー名・DB名 | `postgres`、`immich`。既存の`.env`に合わせます |
+| 旧メディアルート | Docker内でImmichが見ていたパス。通常は`/data` |
+| 新メディアルート | 写真があるWindowsのフォルダー。例：`D:\Photos\Immich` |
 
-## 1. 移行元DBのダンプを作る
+対象WSLでDocker Composeを使える状態にします。以降のスクリプトがDocker操作を実行するため、手動のDockerコマンドは不要です。既存の`.env`もWindows側で読める場所に用意します。
 
-WindowsのPowerShellで、解凍したパッケージから実行します。次の値は実際の環境に置き換えてください。
+## 2. Windowsからダンプを作る
+
+メインZIPを展開した場所でWindowsのPowerShellを開きます。以下の例のパス・ユーザー名は実際の値へ置き換えます。ダンプ保存先は事前に作成してください。
 
 ```powershell
+Set-ExecutionPolicy -Scope Process Bypass
 .\migration\Export-WslDatabase.ps1 `
-  -Distro 'Debian' `
-  -ComposeFile '/home/user/immich/compose.yml' `
+  -Distro 'Debian' -ComposeFile '/home/user/immich/docker-compose.yml' `
   -Destination 'D:\immich-migration\immich.dump' `
-  -DatabaseService 'database' `
-  -DatabaseUser 'postgres' `
-  -DatabaseName 'immich'
+  -DatabaseService 'database' -DatabaseUser 'postgres' -DatabaseName 'immich'
 ```
 
-作成先ディレクトリは事前に用意します。同名のダンプがある場合は上書きしません。Windowsの`pg_restore`でダンプを読めることを確認してから完了します。WSLのDocker連携が有効で、対象ディストリビューションから`docker compose`を実行できる必要があります。
+サービス名を変更している場合は`-ApplicationServices 'server','machine-learning'`も指定します。スクリプトは移行元Immichを停止し、DBのバイナリダンプをWindowsへ保存します。同名ファイルは上書きしません。失敗時は途中ファイルを削除し、移行元サービスの再起動を試みます。成功後は移行元を停止したままにします。
 
-## 2. Windows版をインストールする
-
-パッケージの`Install.cmd`を実行し、`AllUsers`または`CurrentUser`を選びます。既存の`.env`を指定すると、DBパスワードなどを引き継げます。`UPLOAD_LOCATION`がLinuxの相対パスなら、実際のWindowsメディアフォルダーを指定します。メディアファイル自体は移動しません。
-
-移行先DBに残したいデータがないことを確認してください。次の復元操作は、`.env`に指定したImmich用DBを削除して作り直します。
-
-## 3. DBを復元し、メディアのパスを変更する
-
-インストール後、Immichを停止した状態で次を実行します。`$installRoot`、`$envFile`、`$mediaRoot`にはインストール時の値を指定します。`AllUsers`の場合は管理者のPowerShellで実行します。
+## 3. Windows版を起動せずに導入する
 
 ```powershell
+.\Install.cmd -Scope AllUsers -EnvFile 'D:\immich-migration\.env' -MediaRoot 'D:\Photos\Immich' -DoNotStart
+```
+
+CurrentUserの場合は`-Scope CurrentUser`にし、先に[拡張の準備](install.md#currentuserの拡張準備)を完了します。導入先を指定した場合は以降も同じパスを使います。自動起動は登録されるため、移行完了まで再起動・サインアウトはしないでください。
+
+## 4. DBを復元してパスを変更する
+
+AllUsersでは管理者のPowerShellを使います。以下は既定のAllUsersのパスです。CurrentUserのパスは[共通の指定](operations.md#共通の指定)を参照してください。
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
 $installRoot = 'C:\Program Files\Immich'
-$envFile = 'C:\ProgramData\Immich\immich.env'
-$mediaRoot = 'D:\Photos\Immich'
+$dataRoot = 'C:\ProgramData\Immich'
+$envFile = Join-Path $dataRoot 'immich.env'
 $release = Join-Path $installRoot 'current'
+$mediaRoot = 'D:\Photos\Immich'
+$backup = 'D:\immich-migration\immich.dump'
 
-& (Join-Path $release 'migration\Import-Database.ps1') `
-  -Backup 'D:\immich-migration\immich.dump' -EnvFile $envFile
-
-& (Join-Path $release 'runtime\launchers\immich-admin.ps1') `
-  -EnvFile $envFile change-media-location
+& "$release\migration\Import-Database.ps1" -Backup $backup -EnvFile $envFile
+& "$release\runtime\launchers\immich-admin.ps1" -EnvFile $envFile change-media-location
 ```
 
-`change-media-location`の質問には、旧メディアルートと`$mediaRoot`を指定します。これは上流Immichの管理コマンドです。Storage Templateの日付形式など、DBに保存された設定はそのまま引き継がれます。
+復元は`immich.env`が指定する移行先DBを削除して作り直します。上流の`change-media-location`では旧ルートと`$mediaRoot`を指定します。メディアファイル自体はコピーしません。Storage TemplateなどDBに保存された設定も復元されます。
 
-外部ライブラリを使っていた場合のみ、各旧ルートに対して次を実行します。まず`-Apply`なしで変更件数を確認し、正しければ同じ引数に`-Apply`を追加します。`-RollbackBackup`には手順1のダンプを指定します。
+外部ライブラリを使っていた場合のみ、各旧ルートを変更します。まず次のプレビューを確認し、正しければ同じコマンドに`-Apply`を追加します。
 
 ```powershell
-& (Join-Path $release 'migration\Change-ExternalLibraryPath.ps1') `
+& "$release\migration\Change-ExternalLibraryPath.ps1" `
   -OldRoot '/external-library' -NewRoot 'D:\Photos\External' `
-  -EnvFile $envFile -RollbackBackup 'D:\immich-migration\immich.dump'
+  -EnvFile $envFile -RollbackBackup $backup
 ```
 
-## 4. 起動前に確認する
+## 5. 確認して起動する
 
 ```powershell
-& (Join-Path $release 'migration\Verify-Migration.ps1') `
-  -MediaRoot $mediaRoot -EnvFile $envFile
-& (Join-Path $release 'migration\Schema-Check.ps1') `
-  -InstallRoot $installRoot -EnvFile $envFile
+& "$release\migration\Verify-Migration.ps1" -MediaRoot $mediaRoot -EnvFile $envFile
+& "$release\migration\Schema-Check.ps1" -InstallRoot $installRoot -EnvFile $envFile
+& "$release\runtime\launchers\Start-Immich.ps1" -InstallRoot $installRoot -DataRoot $dataRoot -EnvFile $envFile
+& "$release\tests\Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot
 ```
 
-パスとスキーマの確認に成功してからWindows版を起動し、API、タイムライン、サムネイル、顔認識、Smart Searchを確認します。顔や検索の再構築ジョブは必要に応じてImmichから実行します。移行元WSLのサービスは、Windows側の確認が終わるまで停止したままにしてください。
+パス確認はDB内の対象パスを確認し、実ファイルは既定で各種最大2,000件を検査します。件数を変更する場合は`-FilesystemSample`を指定します。全ファイルの読み取り検査ではありません。
+
+Windows版で、既存アカウントのログイン、タイムライン、元画像・動画、アルバム、外部ライブラリ、顔認識、Smart Search、Storage Templateの設定を確認します。顔・検索のインデックスはImmichのジョブから再構築できます。確認が終わるまで移行元WSLとダンプは残し、同じメディアへ旧環境と新環境から同時に書き込まないでください。

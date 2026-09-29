@@ -1,39 +1,26 @@
-# Patch policy
+# パッチ方針
 
-This repository is a patch/distribution layer, not an Immich source fork. Upstream Immich source and commit history are never vendored, merged, rebased, or added as a submodule.
+このリポジトリはImmichのWindows配布用です。上流のソースと履歴をマージ・submodule化しません。`upstream.json`の固定tag/commitへ、`patches/series`の順序でパッチを適用します。
 
-`patches/series` is the authoritative ordered stack applied to the exact Immich tag and commit pinned by `upstream.json`.
+- パッチは1つの目的に絞り、Windowsで必要な差分だけにします。
+- DBスキーマ、マイグレーション、API、データモデルは変更しません。
+- Linuxでの動作を維持するクロスプラットフォーム実装を優先します。
+- `.work/immich`を直接変更せず、`patches/`の差分を更新します。
+- `Prepare-Source.ps1`で上流への適用を確認します。適用不能なパッチを無視しません。
+- 同じ対応が上流へ入ったら、このリポジトリのパッチを削除します。
 
-Rules:
+## 対応箇所
 
-- keep one concern per patch;
-- do not change upstream SQL migrations or data models;
-- prefer cross-platform changes that preserve Linux behavior;
-- every patch must be a valid unified diff and pass `git apply --check --whitespace=error-all` against the pinned pristine checkout;
-- an upstream update that breaks a patch is a hard stop until that patch is reviewed;
-- remove a patch when equivalent behavior lands upstream;
-- never commit the disposable patched checkout under `.work/immich`.
+| パッチ | 目的 |
+| --- | --- |
+| `server/0001-*` | FFmpegの出力先にOSのnullデバイスを使います |
+| `server/0002-*` | PostgreSQLコマンドの場所とnull出力に対応します |
+| `server/0003-*` | Windowsのドライブ・UNC絶対パスを扱います |
+| `server/0004-*` | WindowsでGNU gzipへの依存をなくします |
+| `server/0005-*` | メディア移行でWindowsのパス区切りに対応します |
+| `server/0006-*` | メディアルートの内外判定にOSのパス規則を使います |
+| `server/0007-*` | Windowsパスでフォルダー一覧を作成します |
+| `server/0008-*` | 外部ライブラリのパスをglob用に変換します |
+| `machine-learning/0001-*` | Windowsでは同じMLアプリをUvicornで起動します |
 
-## Current v3.2.2 patch stack
-
-1. `server/0001-use-platform-null-device.patch` — use Node's platform null device for FFmpeg two-pass output.
-2. `server/0002-configurable-postgres-bin.patch` — make PostgreSQL client executables and psql null output cross-platform.
-3. `server/0003-cross-platform-absolute-paths.patch` — accept native Windows drive/UNC absolute paths.
-4. `server/0004-use-node-gzip-on-windows.patch` — remove the GNU `gzip` runtime dependency on Windows.
-5. `server/0005-cross-platform-media-location-migration.patch` — make DB file-path prefix rewriting safe for Windows separators.
-6. `server/0006-cross-platform-storage-boundary.patch` — use platform path semantics for Immich media-root containment.
-7. `server/0007-cross-platform-folder-paths.patch` — make folder browsing work with native Windows asset paths.
-8. `server/0008-cross-platform-glob-paths.patch` — convert native Windows library roots to fast-glob patterns before crawling.
-9. `machine-learning/0001-native-windows-uvicorn.patch` — avoid Gunicorn on Windows and launch the same FastAPI app with Uvicorn.
-
-## Update procedure
-
-For a new Immich stable release:
-
-1. update `upstream.json` to the new immutable tag/commit and update dependency pins required by that upstream release;
-2. run `build/Prepare-Source.ps1`; it reuses the single generated checkout, checks upstream tool versions, and fetches the new tag;
-3. remove patches already covered upstream and refresh only hunks that no longer apply;
-4. rerun `build/Prepare-Source.ps1`, then the Windows build and migration qualification gates;
-5. commit the release pins and any patch changes in separate logical commits.
-
-The patched source tree is build input only. The history of this repository must remain independent from `immich-app/immich`.
+上流更新と検証の実行手順は[開発手順](../docs/development.md)にまとめています。

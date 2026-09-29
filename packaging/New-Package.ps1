@@ -78,6 +78,11 @@ New-Item -ItemType Directory -Path (Join-Path $Destination 'tests') -Force | Out
 Copy-Item (Join-Path $root 'tests\Smoke-Windows.ps1') (Join-Path $Destination 'tests\Smoke-Windows.ps1')
 Copy-Item (Join-Path $root 'config\immich.env.example') (Join-Path $Destination 'immich.env.example') -Force
 Copy-Item (Join-Path $root 'packaging\Install.cmd') (Join-Path $Destination 'Install.cmd') -Force
+Copy-Item (Join-Path $root 'README.md') (Join-Path $Destination 'README.md')
+New-Item -ItemType Directory -Path (Join-Path $Destination 'docs') -Force | Out-Null
+foreach ($name in @('install.md','operations.md','migration.md')) {
+    Copy-Item (Join-Path $root "docs\$name") (Join-Path $Destination "docs\$name")
+}
 
 $manifest = [ordered]@{
     schemaVersion = 1

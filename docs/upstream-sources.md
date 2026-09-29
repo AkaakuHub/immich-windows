@@ -1,26 +1,22 @@
-# Upstream and reference projects
+# 上流と参照元
 
-This project reuses upstream behavior and prior native-port work instead of re-implementing Immich.
+Immichの動作は上流実装を使用し、既存のネイティブ移植の構成も参考にしています。
 
-## Primary upstream
+## Immich
 
-- `immich-app/immich`: application source, schema migrations, web UI, ML service, plugin source and release tags.
-- `immich-app/base-images`: authoritative reference for codecs and native libraries bundled by the official Linux image.
+- [immich-app/immich](https://github.com/immich-app/immich)：Server、Web、ML、CLI、プラグイン、DBスキーマの上流です。
+- [immich-app/base-images](https://github.com/immich-app/base-images)：公式Linux版のコーデックとネイティブ依存を確認する参照元です。
 
-## Native installation references
+## ネイティブ構成
 
-- `arter97/immich-native`: current native Linux installation. This is the primary reference for the Server/Web/plugin production build, `pnpm deploy`, ML `uv sync`, geodata layout and runtime directory layout.
-- `daemonless/immich-server`: FreeBSD port. This is the primary reference for treating Sharp/libvips and FFmpeg as replaceable OS-specific build artifacts while retaining upstream Immich application code.
-- `4v3ngR/immich-native-macos`: macOS native port. Used to identify assumptions that are Linux packaging details rather than application requirements.
+- [arter97/immich-native](https://github.com/arter97/immich-native)：LinuxでのServer・Web・MLの構築手順を参照しています。
+- [daemonless/immich-server](https://github.com/daemonless/immich-server)：FreeBSDでのSharp・libvips・FFmpegの扱いを参照しています。
+- [4v3ngR/immich-native-macos](https://github.com/4v3ngR/immich-native-macos)：macOS向けのネイティブ構成を参照しています。
 
-## Windows native dependency references
+## Windows依存
 
-- `pgvector/pgvector`: upstream Windows/MSVC build path.
-- `grimmjoww/vchord-windows-port`: verified native MSVC VectorChord build without Docker/WSL.
-- `valkey-windows/valkey-windows`: Windows build of Valkey 9.x.
-- `jellyfin/jellyfin-ffmpeg`: Windows FFmpeg build definitions used as the codec baseline.
-- `winsw/winsw`: Windows service wrapper.
+- [pgvector](https://github.com/pgvector/pgvector)、[VectorChord](https://github.com/supervc-stack/VectorChord)、[VectorChordのWindows移植例](https://github.com/grimmjoww/vchord-windows-port)
+- [Valkey Windows](https://github.com/valkey-windows/valkey-windows)、[Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg)、[WinSW](https://github.com/winsw/winsw)
+- [libvipsのWindowsビルド](https://github.com/libvips/build-win64-mxe)
 
-## Rule for copying prior work
-
-Do not vendor source from these projects unless its license and attribution are reviewed. Prefer invoking upstream repositories, adapting documented build procedures in our own scripts, and recording source revisions in the package manifest.
+採用するリポジトリと版は`dependencies/versions.json`を正とします。外部コードを取り込む場合はライセンスと帰属表示を確認し、配布物にも必要な表示を残します。
