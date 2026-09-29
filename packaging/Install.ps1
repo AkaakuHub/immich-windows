@@ -23,9 +23,11 @@ param(
     [switch]$ResumeExistingRelease,
     [switch]$PreserveExistingEnv,
     [switch]$ReuseServices,
-    [switch]$DoNotStart
+    [switch]$DoNotStart,
+    [string]$ElevationFailureReport
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+$ErrorActionPreference = 'Stop'
 
 function ConvertTo-WindowsArgument {
     param([Parameter(Mandatory)][string]$Value)
@@ -71,23 +73,33 @@ function Start-ElevatedInstaller {
     }
     $arguments.Add('-Scope')
     $arguments.Add('AllUsers')
-    $argumentLine = ($arguments | ForEach-Object { ConvertTo-WindowsArgument -Value $_ }) -join ' '
     $hostPath = (Get-Process -Id $PID).Path
+    $failureReport = Join-Path $env:TEMP "immich-install-$([guid]::NewGuid().ToString('N')).error.txt"
+    $arguments.Add('-ElevationFailureReport')
+    $arguments.Add($failureReport)
+    $argumentLine = ($arguments | ForEach-Object { ConvertTo-WindowsArgument -Value $_ }) -join ' '
 
     Write-Host 'Requesting administrator permission to install Immich for all users.'
     try {
         $elevated = Start-Process -FilePath $hostPath -ArgumentList $argumentLine -Verb RunAs -Wait -PassThru -ErrorAction Stop
     } catch {
+        Remove-Item -LiteralPath $failureReport -Force -ErrorAction SilentlyContinue
         if ($_.Exception.NativeErrorCode -eq 1223) {
             throw 'Windows administrator permission was not granted. No installation was performed.'
         }
         throw
     }
-    if ($elevated.ExitCode -ne 0) { throw "Elevated installation failed with exit code $($elevated.ExitCode)." }
+    if ($elevated.ExitCode -ne 0) {
+        $detail = if (Test-Path -LiteralPath $failureReport -PathType Leaf) { Get-Content -Raw -LiteralPath $failureReport } else { 'The elevated process did not provide error details.' }
+        Remove-Item -LiteralPath $failureReport -Force -ErrorAction SilentlyContinue
+        throw "Elevated installation failed with exit code $($elevated.ExitCode): $detail"
+    }
+    Remove-Item -LiteralPath $failureReport -Force -ErrorAction SilentlyContinue
     Write-Host 'Elevated installation completed.'
     exit 0
 }
 
+try {
 if (-not $PackageRoot) { $PackageRoot = Split-Path -Parent $PSScriptRoot }
 if (-not $Scope) {
     Write-Host 'Install scope:'
@@ -173,6 +185,23 @@ if(-not $postgresServiceObject){throw "PostgreSQL Windows service was not found:
 if($postgresServiceObject.Status -ne 'Running'){throw "PostgreSQL Windows service must be Running before installation: $PostgresService (current: $($postgresServiceObject.Status))"}
 if (-not (Test-WindowsAbsolutePath $MediaRoot)) { throw 'MediaRoot must be an absolute Windows drive or UNC path.' }
 if (-not (Test-Path -LiteralPath $MediaRoot)) { throw "MediaRoot does not exist: $MediaRoot" }
+if (Test-Path -LiteralPath (Join-Path $InstallRoot 'current')) {
+    $stopScript = Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1'
+    if (-not (Test-Path -LiteralPath $stopScript -PathType Leaf)) {
+        throw "Cannot safely replace the existing Immich installation because its stop script is missing: $stopScript"
+    }
+    $previousInstallScope = $env:IMMICH_WINDOWS_INSTALL_SCOPE
+    $env:IMMICH_WINDOWS_INSTALL_SCOPE = $Scope
+    try {
+        & $stopScript -EnvFile $EnvFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+    } finally {
+        if ($null -eq $previousInstallScope) {
+            Remove-Item Env:IMMICH_WINDOWS_INSTALL_SCOPE -ErrorAction SilentlyContinue
+        } else {
+            $env:IMMICH_WINDOWS_INSTALL_SCOPE = $previousInstallScope
+        }
+    }
+}
 New-Item -ItemType Directory -Path $InstallRoot,$DataRoot -Force | Out-Null
 $release = $null
 if ($ResumeExistingRelease) {
@@ -188,7 +217,7 @@ if ($ResumeExistingRelease) {
     $release = Install-ReleaseDirectory -PackageRoot $PackageRoot -InstallRoot $InstallRoot
 }
 & (Join-Path $release 'installer\Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
-& (Join-Path $release 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
+& (Join-Path $PackageRoot 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $current = Join-Path $InstallRoot 'current'
@@ -375,3 +404,9 @@ if (-not $DoNotStart) {
 }
 Write-Host "Installed native Immich for $Scope from $release"
 Write-Host "Persistent config: $envFile"
+} catch {
+    if ($ElevationFailureReport) {
+        [IO.File]::WriteAllText($ElevationFailureReport, ($_ | Out-String).Trim())
+    }
+    throw
+}
