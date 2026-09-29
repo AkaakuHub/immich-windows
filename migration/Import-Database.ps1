@@ -4,7 +4,7 @@ param(
     [string]$EnvFile='C:\ProgramData\Immich\immich.env',
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18'
 )
-Import-Module (Join-Path $PSScriptRoot '..\packaging\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $Backup=(Resolve-Path $Backup).Path
 $envs=Read-EnvFile $EnvFile
 $psql=Join-Path $PostgresRoot 'bin\psql.exe'; $pgRestore=Join-Path $PostgresRoot 'bin\pg_restore.exe'
@@ -19,9 +19,6 @@ if ($Backup.EndsWith('.dump',[StringComparison]::OrdinalIgnoreCase)) {
 } else { throw 'Supported backup types are .dump, .sql, and .sql.gz.' }
 if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
-    if(-not(Test-Path -LiteralPath $stopScript -PathType Leaf)){
-        $stopScript=Join-Path $PSScriptRoot '..\runtime\Stop-Immich.ps1'
-    }
     if(-not(Test-Path -LiteralPath $stopScript -PathType Leaf)){throw 'CurrentUser Immich stop script was not found.'}
     $dataRoot=Split-Path -Parent (Resolve-Path -LiteralPath $EnvFile).Path
     $currentRoot=if($envs.IMMICH_BUILD_DATA){Split-Path -Parent ([string]$envs.IMMICH_BUILD_DATA)}else{Join-Path $env:LOCALAPPDATA 'Programs\Immich\current'}

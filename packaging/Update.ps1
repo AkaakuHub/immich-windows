@@ -10,7 +10,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 if ($Scope -eq 'AllUsers') {
     Assert-Administrator
 }

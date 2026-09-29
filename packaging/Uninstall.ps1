@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess)]
 param([ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',[string]$DataRoot,[string]$InstallRoot,[switch]$RemovePersistentData)
-Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 if ($Scope -eq 'AllUsers') { Assert-Administrator }
 $paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
 $DataRoot=$paths.DataRoot

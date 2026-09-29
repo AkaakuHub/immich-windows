@@ -62,18 +62,19 @@ if ($customSharp) {
     if (Test-Path -LiteralPath (Join-Path $app 'media-stack')) { Copy-Directory (Join-Path $app 'media-stack') (Join-Path $Destination 'media-stack') }
 }
 
-Copy-Directory (Join-Path $root 'runtime') (Join-Path $Destination 'runtime\launchers')
+Copy-Directory (Join-Path $root 'runtime') (Join-Path $Destination 'runtime')
 $installerDestination = Join-Path $Destination 'installer'
 New-Item -ItemType Directory -Path $installerDestination -Force | Out-Null
 foreach ($name in @(
-    'Common.psm1','Install-MachineLearningDependencies.ps1','Install-PostgresExtensions.ps1',
+    'Install-MachineLearningDependencies.ps1','Install-PostgresExtensions.ps1',
     'Install-RuntimeDependencies.ps1','Install.ps1','Recover-Upgrade.ps1','Test-ReleasePackage.ps1',
     'Uninstall.ps1','Update-FromRelease.ps1','Update.ps1'
 )) {
     Copy-Item (Join-Path $root "packaging\$name") (Join-Path $installerDestination $name) -Force
 }
 if (Test-Path (Join-Path $root 'migration')) { Copy-Directory (Join-Path $root 'migration') (Join-Path $Destination 'migration') }
-if (Test-Path (Join-Path $root 'tests')) { Copy-Directory (Join-Path $root 'tests') (Join-Path $Destination 'tests') }
+New-Item -ItemType Directory -Path (Join-Path $Destination 'tests') -Force | Out-Null
+Copy-Item (Join-Path $root 'tests\Smoke-Windows.ps1') (Join-Path $Destination 'tests\Smoke-Windows.ps1')
 Copy-Item (Join-Path $root 'config\immich.env.example') (Join-Path $Destination 'immich.env.example') -Force
 Copy-Item (Join-Path $root 'packaging\Install.cmd') (Join-Path $Destination 'Install.cmd') -Force
 

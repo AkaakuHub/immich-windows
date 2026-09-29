@@ -11,7 +11,7 @@ param(
     [switch]$RecoveryRestore
 )
 
-Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 Assert-Administrator
 
 $ext = Join-Path $PackageRoot 'dependencies\postgres-extensions'

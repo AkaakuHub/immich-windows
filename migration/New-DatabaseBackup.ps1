@@ -4,7 +4,7 @@ param(
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',
     [string]$DestinationDirectory='C:\ProgramData\Immich\database-backups'
 )
-Import-Module (Join-Path $PSScriptRoot '..\packaging\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $envs=Read-EnvFile $EnvFile
 New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
 $pgDump=Join-Path $PostgresRoot 'bin\pg_dump.exe'

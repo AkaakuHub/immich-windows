@@ -7,7 +7,7 @@ param(
     [switch]$AllowUnqualifiedSharp
 )
 $ErrorActionPreference='Stop'
-Import-Module (Join-Path $PSScriptRoot '..\packaging\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $current=(Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path
 $manifest=Get-Content -Raw -LiteralPath (Join-Path $current 'manifest.json')|ConvertFrom-Json
 if(-not $manifest.mediaStack.productionQualified -and -not $AllowUnqualifiedSharp){throw 'Installed package is marked productionQualified=false because it uses stock Sharp/libvips.'}

@@ -11,7 +11,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-Import-Module (Join-Path $PSScriptRoot '..\packaging\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 
 if([string]::IsNullOrWhiteSpace($OldRoot)){throw 'OldRoot must not be empty.'}
 if(-not(Test-WindowsAbsolutePath $NewRoot)){throw 'NewRoot must be an absolute Windows drive or UNC path.'}

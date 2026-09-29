@@ -26,7 +26,7 @@ param(
     [switch]$DoNotStart,
     [string]$ElevationFailureReport
 )
-Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $ErrorActionPreference = 'Stop'
 
 function ConvertTo-WindowsArgument {

@@ -32,8 +32,8 @@ foreach($requiredFile in @('packaging/Recover-Upgrade.ps1','packaging/Update.ps1
     Assert-True (Test-Path -LiteralPath (Join-Path $root $requiredFile) -PathType Leaf) "Missing release recovery component: $requiredFile"
 }
 
-$packagingCommon=Join-Path $root 'packaging\Common.psm1'
-Import-Module $packagingCommon -Force
+$runtimeCommon=Join-Path $root 'runtime\Common.psm1'
+Import-Module $runtimeCommon -Force
 $envRoundTrip=Join-Path ([IO.Path]::GetTempPath()) ("immich-windows-env-"+[guid]::NewGuid().ToString('N')+".env")
 try {
     $expectedPassword=' leading=middle trailing '
