@@ -43,7 +43,7 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 | Workflow | 実行内容 |
 | --- | --- |
 | `static-windows-port-audit` | mainのコード変更時に構文・設定・上流へのパッチ適用を確認します |
-| `build-windows-native` | 手動実行します。`all`でビルド・インストール確認を行い、mainでのみReleaseを公開します。`codec`と`postgres`は該当依存だけをビルドします |
+| `build-windows-native` | 手動実行します。`all`でビルド・インストール確認を行い、mainでのみReleaseを公開します。`codec`と`postgres`は該当依存だけをビルドし、`migration`は移行ツールZIPだけを公開します |
 | `keep-native-build-cache` | 定期的に現在の設定に一致するキャッシュを参照します |
 | `check-upstream-immich-release` | 上流の新しいstable版をIssueで通知します。自動で版を変更しません |
 

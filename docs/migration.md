@@ -1,6 +1,6 @@
 # WSLからWindowsへの移行
 
-移行を行うPC内のWSLを対象にします。移行元と移行先のImmichの版をそろえます。PostgreSQLのLinux用データディレクトリはWindowsへコピーせず、ダンプから復元します。既にWindowsのHDDにある写真・動画はその場で使います。移行では導入前にDBをエクスポートするため、ReleaseのアプリZIPを展開してスクリプトを使います。導入にはReleaseに別添した`Install.cmd`を使います。
+移行を行うPC内のWSLを対象にします。移行元と移行先のImmichの版をそろえます。PostgreSQLのLinux用データディレクトリはWindowsへコピーせず、ダンプから復元します。既にWindowsのHDDにある写真・動画はその場で使います。移行前のDBエクスポートにはReleaseの`immich-windows-vX.Y.Z-migration-tools.zip`を展開して使います。導入には別添の`Install.cmd`を使います。アプリZIPの手動ダウンロードは不要です。
 
 ## 1. 移行先と入力値を準備する
 
@@ -20,7 +20,7 @@
 
 ## 2. Windowsからダンプを作る
 
-メインZIPを展開した場所でPowerShell 7（`pwsh`）を開きます。以下の例のパス・ユーザー名は実際の値へ置き換えます。ダンプ保存先は事前に作成してください。
+移行ツールZIPを展開した場所でPowerShell 7（`pwsh`）を開きます。以下の例のパス・ユーザー名は実際の値へ置き換えます。ダンプ保存先は事前に作成してください。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass

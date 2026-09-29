@@ -5,7 +5,7 @@ on:
     inputs:
       component:
         type: choice
-        options: [all, codec, postgres]
+        options: [all, codec, postgres, migration]
         default: all
 
 permissions:
@@ -74,6 +74,26 @@ jobs:
           path: artifacts/native/postgres-extensions
           retention-days: 1
           if-no-files-found: error
+  migration:
+    if: inputs.component == 'migration' && github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build migration tools archive
+        shell: pwsh
+        run: |
+          .\tests\Static-RepositoryAudit.ps1
+          .\packaging\New-MigrationToolsArchive.ps1
+      - name: Publish migration tools
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
+          & gh release upload $version "dist/immich-windows-$version-migration-tools.zip" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload migration tools for $version." }
   assemble:
     if: ${{ inputs.component == 'all' && needs.codec.result == 'success' && needs.postgres.result == 'success' }}
     needs: [codec, postgres]
@@ -119,6 +139,7 @@ jobs:
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-NativeDependenciesArchive.ps1
+          .\packaging\New-MigrationToolsArchive.ps1
       - name: Select PostgreSQL runtime cache key
         id: pg-runtime
         shell: pwsh
@@ -182,12 +203,13 @@ jobs:
           $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
           $folder = "immich-windows-$version-win-x64"
           $native = "dist/immich-windows-$version-native-dependencies.zip"
+          $migration = "dist/immich-windows-$version-migration-tools.zip"
           $launcher = "dist/Install.cmd"
           & gh release view $version --json isDraft *> $null
           if ($LASTEXITCODE -eq 0) {
-            & gh release upload $version "dist/$folder.zip" $native $launcher --clobber
+            & gh release upload $version "dist/$folder.zip" $native $migration $launcher --clobber
             if ($LASTEXITCODE -ne 0) { throw "Could not update release $version." }
           } else {
-            & gh release create $version "dist/$folder.zip" $native $launcher --title $version
+            & gh release create $version "dist/$folder.zip" $native $migration $launcher --title $version
             if ($LASTEXITCODE -ne 0) { throw "Could not create release $version." }
           }
