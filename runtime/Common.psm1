@@ -86,7 +86,7 @@ function ConvertTo-MsysPath {
 function Read-EnvFile {
     param([Parameter(Mandatory)][string]$Path)
     $result = [ordered]@{}
-    foreach ($line in Get-Content -LiteralPath $Path) {
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding utf8) {
         $entry = $line.TrimStart()
         if (-not $entry -or $entry.StartsWith('#')) { continue }
         if ($entry.StartsWith('export ')) { $entry = $entry.Substring(7).TrimStart() }
