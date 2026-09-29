@@ -5,11 +5,8 @@ on:
     inputs:
       component:
         type: choice
-        options: [all, codec, postgres, assemble]
+        options: [all, codec, postgres]
         default: all
-      source_run_id:
-        description: Existing run containing the codec and PostgreSQL artifacts; required for assemble
-        type: string
 
 permissions:
   contents: read
@@ -73,7 +70,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
   assemble:
-    if: ${{ always() && ((inputs.component == 'all' && needs.codec.result == 'success' && needs.postgres.result == 'success') || (inputs.component == 'assemble' && inputs.source_run_id != '')) }}
+    if: ${{ inputs.component == 'all' && needs.codec.result == 'success' && needs.postgres.result == 'success' }}
     needs: [codec, postgres]
     runs-on: windows-2025
     timeout-minutes: 180
@@ -86,14 +83,10 @@ jobs:
         with:
           name: libvips
           path: artifacts/native/sharp-libvips-custom
-          github-token: ${{ github.token }}
-          run-id: ${{ (inputs.component == 'assemble' && inputs.source_run_id) || github.run_id }}
       - uses: actions/download-artifact@v7
         with:
           name: postgres-extensions
           path: artifacts/native/postgres-extensions
-          github-token: ${{ github.token }}
-          run-id: ${{ (inputs.component == 'assemble' && inputs.source_run_id) || github.run_id }}
       - name: Build and qualify Windows package
         shell: pwsh
         run: |
