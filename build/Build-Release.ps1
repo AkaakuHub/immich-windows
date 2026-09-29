@@ -13,7 +13,7 @@ Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
 Assert-WindowsX64
 $root=Get-RepositoryRoot
 if(-not $AllowStockSharp -and @($SharpFixture).Count -eq 0){
-    throw 'A production release requires the private Sharp/libvips media fixture matrix. Pass -SharpFixture with the documented files, or use -AllowStockSharp only for an explicitly unqualified bring-up package.'
+    throw 'A production release requires Sharp/libvips media fixture checks. Pass -SharpFixture with the documented files, or use -AllowStockSharp only for an explicitly unqualified bring-up package.'
 }
 if($CustomSharpLibvipsBundle -and -not $SkipCodecBuild){
     Write-Host 'Using the explicitly supplied custom Sharp/libvips bundle; codec build stage will not run.'

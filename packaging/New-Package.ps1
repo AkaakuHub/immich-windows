@@ -18,7 +18,7 @@ $sharpQualificationMarker = Join-Path $app 'sharp-libvips-qualification.json'
 $customSharp = Test-Path -LiteralPath $sharpMarker -PathType Leaf
 $mediaStackQualified = $customSharp -and (Test-Path -LiteralPath $sharpQualificationMarker -PathType Leaf)
 if (-not $mediaStackQualified -and -not $AllowStockSharp) {
-    throw 'The Windows media stack has not completed the required private fixture matrix.'
+    throw 'The Windows media stack has not completed the required media fixture checks.'
 }
 
 $Destination = New-CleanDirectory $Destination

@@ -117,7 +117,7 @@ $qualification=[ordered]@{
     categoryCounts=$counts
     requiredCategoryCounts=$requirements
     fixtures=@($report.fixtures)
-    note='Category counts enforce the private fixture matrix shape. Include normal, auxiliary-image and HDR HEIF fixtures, plus ordinary and Ultra HDR JPEG fixtures.'
+    note='Category counts check file extensions only. Results cover the supplied samples; they do not establish coverage of HDR or other format variants.'
 }
 $qualification|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $qualificationMarker -Encoding utf8
 Write-Host "Sharp/libvips production fixture qualification written: $qualificationMarker"
