@@ -115,6 +115,7 @@ jobs:
           $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'immich-fixtures'))
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
+          .\build\Stage-VcRuntime.ps1
           $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
           $folder = "immich-windows-$version-win-x64"
           .\packaging\New-Package.ps1
