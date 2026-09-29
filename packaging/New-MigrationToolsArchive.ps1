@@ -12,6 +12,7 @@ if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination
 
 $files = @(
     Get-Item -LiteralPath (Join-Path $root 'migration\Export-WslDatabase.ps1')
+    Get-Item -LiteralPath (Join-Path $root 'migration\Export-WslDatabase.cmd')
     Get-Item -LiteralPath (Join-Path $root 'docs\install.md')
     Get-Item -LiteralPath (Join-Path $root 'docs\migration.md')
     Get-Item -LiteralPath (Join-Path $root 'docs\operations.md')
