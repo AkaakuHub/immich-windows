@@ -151,6 +151,18 @@ function Install-ReleaseDirectory {
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'manifest.json') | ConvertFrom-Json
     $version = $manifest.immichVersion
     $release = Join-Path $InstallRoot "releases\$version"
+    $installedManifestPath = Join-Path $release 'manifest.json'
+    if ((Test-Path -LiteralPath $installedManifestPath -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $release '.node-dependencies-installed.json') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $release 'machine-learning\.dependencies-installed.json') -PathType Leaf)) {
+        $installed = Get-Content -Raw -LiteralPath $installedManifestPath | ConvertFrom-Json
+        $samePackage = @('immichVersion','upstreamCommit','builtAtUtc') | Where-Object { [string]$installed.$_ -ne [string]$manifest.$_ }
+        $currentTarget = Get-CurrentReleaseTarget -InstallRoot $InstallRoot
+        if (-not $samePackage -and $currentTarget -eq [IO.Path]::GetFullPath($release)) {
+            Write-Host "Reusing installed release $release"
+            return $release
+        }
+    }
     New-Item -ItemType Directory -Path $release -Force | Out-Null
     & robocopy $PackageRoot $release /MIR /SL /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Host
     if ($LASTEXITCODE -gt 7) { throw "Failed to copy package to $release" }
