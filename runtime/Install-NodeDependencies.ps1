@@ -67,7 +67,14 @@ function Install-ProjectDependencies([string]$Project) {
     Push-Location -LiteralPath $Project
     try {
         Set-BuildScriptPolicy $Project
-        $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--allow-build=esbuild','--allow-build=msgpackr-extract','--store-dir',$store) 2>&1)
+        $approval = @(& $node $pnpm @('config','get','allowBuilds') 2>&1)
+        if ($LASTEXITCODE -ne 0) { throw "Could not read pnpm build-script policy in $Project." }
+        $policy = ($approval -join [Environment]::NewLine) | ConvertFrom-Json
+        if ($policy.'@scarf/scarf' -ne $false -or $policy.esbuild -ne $true -or
+            $policy.'msgpackr-extract' -ne $true -or $policy.protobufjs -ne $false) {
+            throw "pnpm build-script policy was not applied in $Project."
+        }
+        $output = @(& $node $pnpm @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
             $details = ($output | Select-Object -Last 20 | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
