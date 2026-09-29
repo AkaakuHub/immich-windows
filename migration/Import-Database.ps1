@@ -4,8 +4,9 @@ param(
     [string]$EnvFile='C:\ProgramData\Immich\immich.env',
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18'
 )
+$ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
-$Backup=(Resolve-Path $Backup).Path
+$Backup=(Resolve-Path -LiteralPath $Backup).Path
 $envs=Read-EnvFile $EnvFile
 $psql=Join-Path $PostgresRoot 'bin\psql.exe'; $pgRestore=Join-Path $PostgresRoot 'bin\pg_restore.exe'
 foreach($f in @($psql,$pgRestore)){if(-not(Test-Path $f)){throw "PostgreSQL client missing: $f"}}
@@ -17,6 +18,23 @@ if ($Backup.EndsWith('.dump',[StringComparison]::OrdinalIgnoreCase)) {
           $Backup.EndsWith('.gz',[StringComparison]::OrdinalIgnoreCase)) {
     if ((Get-Item -LiteralPath $Backup).Length -eq 0) { throw 'The SQL backup is empty.' }
 } else { throw 'Supported backup types are .dump, .sql, and .sql.gz.' }
+$tempSql=$null
+$sqlBackup=$Backup
+$previousPassword=$env:PGPASSWORD
+try {
+if ($Backup.EndsWith('.gz',[StringComparison]::OrdinalIgnoreCase)) {
+    $tempSql=Join-Path (Split-Path -Parent $Backup) ("immich-restore-"+[guid]::NewGuid().ToString('N')+".sql")
+    $fs=[IO.File]::OpenRead($Backup)
+    try {
+        $gz=[IO.Compression.GZipStream]::new($fs,[IO.Compression.CompressionMode]::Decompress)
+        try {
+            $out=[IO.File]::Create($tempSql)
+            try{$gz.CopyTo($out)}finally{$out.Dispose()}
+        } finally {$gz.Dispose()}
+    } finally {$fs.Dispose()}
+    if ((Get-Item -LiteralPath $tempSql).Length -eq 0) { throw 'The decompressed SQL backup is empty.' }
+    $sqlBackup=$tempSql
+}
 if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
     if(-not(Test-Path -LiteralPath $stopScript -PathType Leaf)){throw 'CurrentUser Immich stop script was not found.'}
@@ -34,7 +52,6 @@ if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     }
 }
 $env:PGPASSWORD=[string]$envs.DB_PASSWORD
-try {
     $adminArgs=@('-h',$envs.DB_HOSTNAME,'-p',$envs.DB_PORT,'-U',$envs.DB_USERNAME,'-d','postgres','-v','ON_ERROR_STOP=1')
     $databaseLiteral=([string]$envs.DB_DATABASE_NAME).Replace("'","''")
     $databaseIdentifier=([string]$envs.DB_DATABASE_NAME).Replace('"','""')
@@ -47,28 +64,12 @@ try {
     if($Backup.EndsWith('.dump',[StringComparison]::OrdinalIgnoreCase)) {
         & $pgRestore -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME --no-owner --exit-on-error $Backup
         if($LASTEXITCODE -ne 0){throw 'pg_restore failed.'}
-    } elseif($Backup.EndsWith('.sql',[StringComparison]::OrdinalIgnoreCase)) {
-        & $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -v ON_ERROR_STOP=1 -f $Backup
+    } else {
+        & $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -v ON_ERROR_STOP=1 -f $sqlBackup
         if($LASTEXITCODE -ne 0){throw 'psql restore failed.'}
-    } elseif($Backup.EndsWith('.sql.gz',[StringComparison]::OrdinalIgnoreCase) -or $Backup.EndsWith('.gz',[StringComparison]::OrdinalIgnoreCase)) {
-        # Decompress with the .NET runtime bundled with PowerShell 7 into a temporary
-        # SQL file, then let psql consume it with -f. This avoids shell quoting,
-        # text transcoding and a GNU gzip dependency during disaster recovery.
-        $tempSql=Join-Path $env:TEMP ("immich-restore-"+[guid]::NewGuid().ToString('N')+".sql")
-        $fs=[IO.File]::OpenRead($Backup)
-        try {
-            $gz=[IO.Compression.GZipStream]::new($fs,[IO.Compression.CompressionMode]::Decompress)
-            try {
-                $out=[IO.File]::Create($tempSql)
-                try{$gz.CopyTo($out)}finally{$out.Dispose()}
-            } finally {$gz.Dispose()}
-        } finally {$fs.Dispose()}
-        try {
-            & $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -v ON_ERROR_STOP=1 -f $tempSql
-            if($LASTEXITCODE -ne 0){throw 'psql restore failed for decompressed SQL backup.'}
-        } finally {
-            Remove-Item -LiteralPath $tempSql -Force -ErrorAction SilentlyContinue
-        }
-    } else { throw 'Supported backup types are .dump, .sql, and .sql.gz.' }
-} finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+    }
+} finally {
+    $env:PGPASSWORD=$previousPassword
+    if ($tempSql) { Remove-Item -LiteralPath $tempSql -Force -ErrorAction SilentlyContinue }
+}
 Write-Host "Database restored from $Backup. Do not start Immich until media-path migration is complete."
