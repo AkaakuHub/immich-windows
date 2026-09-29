@@ -162,18 +162,21 @@ function Protect-ImmichDataRoot {
     $requiredInheritance=[Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
     $hasSystem=$false
     $hasAdministrators=$false
+    $installerSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $hasInstaller=$false
     foreach($rule in $rules){
         $fullControl=($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl
         $inherited=($rule.InheritanceFlags -band $requiredInheritance) -eq $requiredInheritance
         if($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or -not $fullControl -or -not $inherited){continue}
         if($rule.IdentityReference.Value -eq 'S-1-5-18'){$hasSystem=$true}
         if($rule.IdentityReference.Value -eq 'S-1-5-32-544'){$hasAdministrators=$true}
+        if($rule.IdentityReference.Value -eq $installerSid){$hasInstaller=$true}
     }
-    if($acl.AreAccessRulesProtected -and $hasSystem -and $hasAdministrators){return}
-    # immich.env contains the database password. Restrict the persistent config,
-    # service wrappers and logs to LocalSystem and local Administrators using SIDs
-    # so this works on non-English Windows installations as well.
-    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /T /C | Out-Host
+    if($acl.AreAccessRulesProtected -and $hasSystem -and $hasAdministrators -and $hasInstaller){return}
+    # Keep the service account and installer able to read the protected config.
+    & icacls.exe $Path /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*${installerSid}:(OI)(CI)F" | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Failed to protect Immich data directory ACLs: $Path" }
+    & icacls.exe (Join-Path $Path '*') /reset /T /C | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Failed to protect Immich data directory ACLs: $Path" }
 }
 
