@@ -87,6 +87,6 @@ Invoke-CachedBuildStage -Destination $ml -StateName 'build-inputs.json' -Inputs 
 }
 if (-not $SkipNativeDependencies) {
     $native = Join-Path $PSScriptRoot 'Build-NativeDependencies.ps1'
-    & $native -Source $source -Destination (Join-Path $root 'artifacts\native') -PostgresRoot $PostgresRoot -InstallCargoPgrx:$InstallCargoPgrx
+    & $native -Destination (Join-Path $root 'artifacts\native') -PostgresRoot $PostgresRoot -InstallCargoPgrx:$InstallCargoPgrx
 }
 Write-Host 'All requested build stages completed.'

@@ -21,7 +21,6 @@ param(
     [switch]$SkipPostgresExtensionInstall,
     [switch]$AllowUnqualifiedMediaStack,
     [switch]$ResumeExistingRelease,
-    [switch]$PreserveExistingEnv,
     [switch]$ReuseServices,
     [switch]$DoNotStart,
     [string]$ElevationFailureReport

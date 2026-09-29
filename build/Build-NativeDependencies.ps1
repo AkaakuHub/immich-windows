@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [string]$Source,
     [string]$Destination,
     [string]$PostgresRoot = 'C:\Program Files\PostgreSQL\18',
     [switch]$SkipPostgresExtensions,

@@ -2,10 +2,12 @@
 param(
     [string]$EnvFile='C:\ProgramData\Immich\immich.env',
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',
-    [string]$DestinationDirectory='C:\ProgramData\Immich\database-backups'
+    [string]$DestinationDirectory
 )
+$ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $envs=Read-EnvFile $EnvFile
+if (-not $DestinationDirectory) { $DestinationDirectory=Join-Path (Split-Path -Parent (Resolve-Path -LiteralPath $EnvFile).Path) 'database-backups' }
 New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
 $pgDump=Join-Path $PostgresRoot 'bin\pg_dump.exe'
 if(-not(Test-Path $pgDump)){throw "pg_dump.exe not found: $pgDump"}

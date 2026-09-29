@@ -25,7 +25,6 @@ if(-not $previousRelease -or -not(Test-Path -LiteralPath $previousRelease -PathT
 }
 
 $envFile=Join-Path $DataRoot 'immich.env'
-$e=Read-EnvFile $envFile
 $previousManifest=Get-Content -Raw -LiteralPath (Join-Path $previousRelease 'manifest.json')|ConvertFrom-Json
 $candidateManifest=Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'manifest.json')|ConvertFrom-Json
 if($previousManifest.immichVersion -eq $candidateManifest.immichVersion){
@@ -71,31 +70,14 @@ if ($Scope -eq 'CurrentUser') {
 } }
 
 try {
-    $redisMode=if($e.IMMICH_WINDOWS_REDIS_MODE){$e.IMMICH_WINDOWS_REDIS_MODE}else{'BundledValkey'}
-    $redisHost=if($e.REDIS_HOSTNAME){$e.REDIS_HOSTNAME}else{'127.0.0.1'}
-    $redisPort=if($e.REDIS_PORT){[int]$e.REDIS_PORT}else{6379}
-    $serverPort=if($e.IMMICH_PORT){[int]$e.IMMICH_PORT}else{2283}
-    $machineLearningPort=if($e.IMMICH_PORT_ML){[int]$e.IMMICH_PORT_ML}else{3003}
-
     & (Join-Path $PSScriptRoot 'Install.ps1') `
         -PackageRoot $PackageRoot `
         -Scope $Scope `
-        -MediaRoot $e.IMMICH_MEDIA_LOCATION `
-        -DatabasePassword $e.DB_PASSWORD `
+        -EnvFile $envFile `
         -InstallRoot $InstallRoot `
         -DataRoot $DataRoot `
         -PostgresRoot $PostgresRoot `
         -PostgresService $PostgresService `
-        -DatabaseName $e.DB_DATABASE_NAME `
-        -DatabaseUser $e.DB_USERNAME `
-        -DatabaseHost $e.DB_HOSTNAME `
-        -DatabasePort ([int]$e.DB_PORT) `
-        -ServerPort $serverPort `
-        -MachineLearningPort $machineLearningPort `
-        -RedisMode $redisMode `
-        -RedisHost $redisHost `
-        -RedisPort $redisPort `
-        -PreserveExistingEnv `
         -ReuseServices `
         -DoNotStart
 
