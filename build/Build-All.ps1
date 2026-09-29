@@ -29,6 +29,11 @@ function Invoke-CachedBuildStage {
 }
 $app = Join-Path $root 'artifacts\application'
 $versions=Read-JsonFile (Join-Path $root 'dependencies\versions.json')
+$sharedBuildInputs=[ordered]@{
+    source=(& git hash-object (Join-Path $PSScriptRoot 'Prepare-Source.ps1')).Trim()
+    common=(& git hash-object (Join-Path $PSScriptRoot 'Common.psm1')).Trim()
+    bootstrap=(& git hash-object (Join-Path $PSScriptRoot 'Bootstrap-BuildTools.ps1')).Trim()
+}
 $appInputs=[ordered]@{
     serverTree=(& git -C $source rev-parse HEAD:server).Trim()
     webTree=(& git -C $source rev-parse HEAD:web).Trim()
@@ -43,6 +48,7 @@ $appInputs=[ordered]@{
     sharp=$versions.sharp.version
     builder=(& git hash-object (Join-Path $PSScriptRoot 'Build-Immich.ps1')).Trim()
     geodata=(& git hash-object (Join-Path $PSScriptRoot 'Fetch-Geodata.ps1')).Trim()
+    shared=$sharedBuildInputs
 }
 Invoke-CachedBuildStage -Destination $app -StateName 'build-inputs.json' -Inputs $appInputs -Required @('server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','application-manifest.json') -Build {
     & (Join-Path $PSScriptRoot 'Build-Immich.ps1') -Source $source -Destination $app
@@ -74,6 +80,7 @@ $mlInputs=[ordered]@{
     python=$versions.python.version
     uv=$versions.uv.version
     builder=(& git hash-object (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1')).Trim()
+    shared=$sharedBuildInputs
 }
 Invoke-CachedBuildStage -Destination $ml -StateName 'build-inputs.json' -Inputs $mlInputs -Required @('app\immich_ml\__main__.py','requirements.txt','ml-manifest.json') -Build {
     & (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1') -Source $source -Destination $ml

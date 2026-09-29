@@ -51,12 +51,12 @@ jobs:
         id: server-cache
         with:
           path: artifacts/application
-          key: application-${{ runner.os }}-${{ hashFiles('upstream.json', 'dependencies/versions.json', 'patches/server/**', 'patches/series', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1') }}
+          key: application-${{ runner.os }}-${{ hashFiles('upstream.json', 'dependencies/versions.json', 'patches/server/**', 'patches/series', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
       - uses: actions/cache/restore@v6
         id: ml-cache
         with:
           path: artifacts/machine-learning
-          key: machine-learning-${{ runner.os }}-${{ hashFiles('upstream.json', 'dependencies/versions.json', 'patches/machine-learning/**', 'patches/series', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Prepare-Source.ps1') }}
+          key: machine-learning-${{ runner.os }}-${{ hashFiles('upstream.json', 'dependencies/versions.json', 'patches/machine-learning/**', 'patches/series', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
       - name: Report cache status
         shell: pwsh
         run: |
