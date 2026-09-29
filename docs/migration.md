@@ -1,6 +1,6 @@
 # WSLからWindowsへの移行
 
-移行を行うPC内のWSLを対象にします。移行元と移行先のImmichの版をそろえます。PostgreSQLのLinux用データディレクトリはWindowsへコピーせず、ダンプから復元します。既にWindowsのHDDにある写真・動画はその場で使います。
+移行を行うPC内のWSLを対象にします。移行元と移行先のImmichの版をそろえます。PostgreSQLのLinux用データディレクトリはWindowsへコピーせず、ダンプから復元します。既にWindowsのHDDにある写真・動画はその場で使います。移行では導入前にDBをエクスポートするため、ReleaseのアプリZIPを展開してスクリプトを使います。導入にはReleaseに別添した`Install.cmd`を使います。
 
 ## 1. 移行先と入力値を準備する
 
@@ -33,6 +33,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 サービス名を変更している場合は`-ApplicationServices 'server','machine-learning'`も指定します。スクリプトは移行元Immichを停止し、DBのバイナリダンプをWindowsへ保存します。同名ファイルは上書きしません。失敗時は途中ファイルを削除し、移行元サービスの再起動を試みます。成功後は移行元を停止したままにします。
 
 ## 3. Windows版を起動せずに導入する
+
+別にダウンロードした`Install.cmd`がある場所で実行します。
 
 ```powershell
 .\Install.cmd -Scope AllUsers -EnvFile 'D:\immich-migration\.env' -MediaRoot 'D:\Photos\Immich' -DoNotStart

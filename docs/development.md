@@ -36,7 +36,7 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 ./packaging/New-Package.ps1
 ```
 
-配布フォルダーの`Install.cmd`を使って検証します。公開前のネイティブ依存ZIPは、検証用`InstallRoot\cache\downloads`に同じファイル名で置けば、インストーラーが再利用します。稼働環境のメディアとDBは使用しません。起動後は`tests/Smoke-Windows.ps1`を実行し、必要なメディア機能を確認します。
+公開前のローカル検証では`dist/immich-windows-vX.Y.Z-win-x64/installer/Install.ps1`へ`-PackageRoot`を渡して実行します。単独の`dist/Install.cmd`は公開ReleaseのZIPを取得するため、ローカル成果物の検証には使いません。公開前のネイティブ依存ZIPは、検証用`InstallRoot\cache\downloads`に同じファイル名で置けば、インストーラーが再利用します。稼働環境のメディアとDBは使用しません。起動後は`tests/Smoke-Windows.ps1`を実行し、必要なメディア機能を確認します。
 
 ## GitHub Actions
 

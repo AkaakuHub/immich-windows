@@ -182,11 +182,12 @@ jobs:
           $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
           $folder = "immich-windows-$version-win-x64"
           $native = "dist/immich-windows-$version-native-dependencies.zip"
+          $launcher = "dist/Install.cmd"
           & gh release view $version --json isDraft *> $null
           if ($LASTEXITCODE -eq 0) {
-            & gh release upload $version "dist/$folder.zip" $native --clobber
+            & gh release upload $version "dist/$folder.zip" $native $launcher --clobber
             if ($LASTEXITCODE -ne 0) { throw "Could not update release $version." }
           } else {
-            & gh release create $version "dist/$folder.zip" $native --title $version
+            & gh release create $version "dist/$folder.zip" $native $launcher --title $version
             if ($LASTEXITCODE -ne 0) { throw "Could not create release $version." }
           }

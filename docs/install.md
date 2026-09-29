@@ -10,11 +10,11 @@ Windows x64とインターネット接続が必要です。[PowerShell 7](https:
 
 既存の`.env`の`DB_PASSWORD`を引き継ぐ場合、WindowsのPostgreSQLにも同じユーザー名・パスワードを用意します。標準の`postgres`を使う場合はPostgreSQL導入時のパスワードを合わせます。インストーラーは認証情報を利用しますが、既存のPostgreSQLユーザーのパスワードは変更しません。指定ユーザーにはDB・拡張を作成できる権限が必要です。
 
-## 2. ZIPを展開する
+## 2. Install.cmdをダウンロードする
 
-[Releases](https://github.com/AkaakuHub/immich-windows/releases)の`immich-windows-vX.Y.Z-win-x64.zip`をダウンロードし、ZIP全体を展開します。GitHubが表示する`Source code`は導入用ではありません。
+[Releases](https://github.com/AkaakuHub/immich-windows/releases)の`Install.cmd`をダウンロードします。実行すると、同じReleaseのアプリZIPを自動取得・展開します。CMDはZIPに含めません。GitHubが表示する`Source code`は導入用ではありません。
 
-通常はメインZIPだけで十分です。`native-dependencies.zip`はインストーラーが自動取得します。Node.js、Python、pnpm、FFmpeg、Valkeyの手動インストールや、本番PCでのコンパイルは不要です。
+`native-dependencies.zip`もインストーラーが自動取得します。Node.js、Python、pnpm、FFmpeg、Valkeyの手動インストールや、本番PCでのコンパイルは不要です。
 
 ## 3. インストール範囲を選ぶ
 
@@ -45,7 +45,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 4. Install.cmdを実行する
 
-展開先の`Install.cmd`をダブルクリックし、範囲、既存の`.env`、メディアフォルダー、DBパスワードを指定します。AllUsersを選ぶとUAC確認が表示され、承認後に処理が続きます。写真を置くフォルダーは事前に作成してください。
+ダウンロードした`Install.cmd`をダブルクリックし、範囲、既存の`.env`、メディアフォルダー、DBパスワードを指定します。AllUsersを選ぶとUAC確認が表示され、承認後に処理が続きます。写真を置くフォルダーは事前に作成してください。
 
 引数を指定する場合も、同じインストーラーを使います。
 
@@ -61,4 +61,4 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 成功後は`http://127.0.0.1:2283/`へアクセスします。新規DBには最初の管理者を作成します。既存DBを移行する場合は、[移行手順](migration.md)に従って`-DoNotStart`付きで導入してください。これは直後の起動だけを抑止し、自動起動の登録は行います。
 
-依存取得に失敗した場合はエラーを確認し、同じZIP・同じ引数に`-ResumeExistingRelease`を追加して再実行します。コピー済みのアプリから依存の設定を再開します。別のZIPにはこの引数を使いません。
+依存取得に失敗した場合はエラーを確認し、同じReleaseの`Install.cmd`と同じ引数に`-ResumeExistingRelease`を追加して再実行します。コピー済みのアプリから依存の設定を再開します。別のReleaseにはこの引数を使いません。

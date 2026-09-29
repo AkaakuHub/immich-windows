@@ -15,12 +15,13 @@ foreach ($required in @(
     'server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','machine-learning\requirements.txt',
     'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json',
     'installer\Install-RuntimeDependencies.ps1','installer\Install-MachineLearningDependencies.ps1',
-    'sharp-libvips-qualification.json','Install.cmd','installer\Update.ps1','runtime\Common.psm1',
+    'sharp-libvips-qualification.json','installer\Update.ps1','runtime\Common.psm1',
     'tests\Smoke-Windows.ps1','migration\Import-Database.ps1','migration\New-DatabaseBackup.ps1',
     'README.md','docs\install.md','docs\operations.md','docs\migration.md'
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot $required) -PathType Leaf)) { throw "Release package is incomplete: $required" }
 }
+if (Test-Path -LiteralPath (Join-Path $PackageRoot 'Install.cmd')) { throw 'Install.cmd must be distributed as a separate Release asset.' }
 
 foreach ($forbidden in @(
     'server\node_modules','cli\node_modules','machine-learning\python-runtime','machine-learning\uv.exe',

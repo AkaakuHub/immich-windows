@@ -78,7 +78,8 @@ if (Test-Path (Join-Path $root 'migration')) { Copy-Directory (Join-Path $root '
 New-Item -ItemType Directory -Path (Join-Path $Destination 'tests') -Force | Out-Null
 Copy-Item (Join-Path $root 'tests\Smoke-Windows.ps1') (Join-Path $Destination 'tests\Smoke-Windows.ps1')
 Copy-Item (Join-Path $root 'config\immich.env.example') (Join-Path $Destination 'immich.env.example') -Force
-Copy-Item (Join-Path $root 'packaging\Install.cmd') (Join-Path $Destination 'Install.cmd') -Force
+$installCmd = (Get-Content -Raw -LiteralPath (Join-Path $root 'packaging\Install.cmd')).Replace('__IMMICH_VERSION__', $upstream.version)
+Write-Utf8NoBom -Path (Join-Path $root 'dist\Install.cmd') -Content $installCmd
 Copy-Item (Join-Path $root 'README.md') (Join-Path $Destination 'README.md')
 New-Item -ItemType Directory -Path (Join-Path $Destination 'docs') -Force | Out-Null
 foreach ($name in @('install.md','operations.md','migration.md')) {

@@ -4,7 +4,7 @@ ImmichをWindows x64でネイティブ実行する非公式プロジェクトで
 
 ## インストール
 
-PowerShell 7とPostgreSQLを準備し、[Releases](https://github.com/AkaakuHub/immich-windows/releases)から`immich-windows-vX.Y.Z-win-x64.zip`をダウンロードします。展開後に`Install.cmd`を実行します。準備、既存の`.env`の指定、インストール先の選択は[導入手順](docs/install.md)を参照してください。
+PowerShell 7とPostgreSQLを準備し、[Releases](https://github.com/AkaakuHub/immich-windows/releases)から`Install.cmd`だけをダウンロードして実行します。アプリZIPは自動取得します。準備、既存の`.env`の指定、インストール先の選択は[導入手順](docs/install.md)を参照してください。
 
 - `AllUsers`はWindowsサービスとしてPC起動時から常駐します。
 - `CurrentUser`は現在のユーザーのサインイン時に起動します。
