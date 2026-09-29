@@ -56,7 +56,8 @@ jobs:
         if: steps.postgres-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          choco install postgresql18 --version 18.6.3 -y --no-progress
+          $pgVersion = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).postgresql.chocolateyVersion
+          choco install postgresql18 --version $pgVersion -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL 18 installation failed.' }
           $env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
           .\build\Enter-VsDevEnvironment.ps1
@@ -120,7 +121,8 @@ jobs:
           New-Item -ItemType Directory -Path $downloadCache,$mediaRoot -Force | Out-Null
           Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
           $password = [guid]::NewGuid().ToString('N')
-          choco install postgresql18 --version 18.6.3 --params "/Password:$password" -y --no-progress
+          $pgVersion = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).postgresql.chocolateyVersion
+          choco install postgresql18 --version $pgVersion --params "/Password:$password" -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL 18 installation failed.' }
           Start-Service postgresql-x64-18
           & "dist/$folder/installer/Install.ps1" -PackageRoot "dist/$folder" -Scope AllUsers `

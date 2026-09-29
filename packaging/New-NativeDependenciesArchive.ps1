@@ -14,6 +14,7 @@ if (-not (Test-Path -LiteralPath $postgresMetadataPath -PathType Leaf)) { throw 
 $postgresMetadata = Read-JsonFile $postgresMetadataPath
 $postgresInputs = @{
     postgresql = $versions.postgresql.version
+    chocolateyVersion = $versions.postgresql.chocolateyVersion
     pgvector = $versions.pgvector.commit
     vectorchord = $versions.vectorchord.commit
     pgrx = $versions.vectorchord.pgrx

@@ -7,6 +7,7 @@ if (-not $Destination) { $Destination = Join-Path $root 'artifacts\native' }
 $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
 $metadata = [ordered]@{
     postgresql = $versions.postgresql.version
+    chocolateyVersion = $versions.postgresql.chocolateyVersion
     pgvector = $versions.pgvector.commit
     vectorchord = $versions.vectorchord.commit
     pgrx = $versions.vectorchord.pgrx

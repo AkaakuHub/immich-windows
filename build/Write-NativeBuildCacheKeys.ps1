@@ -22,6 +22,7 @@ $codecValue = @(
 $postgresValue = @(
     $versions.postgresql.major,
     $versions.postgresql.version,
+    $versions.postgresql.chocolateyVersion,
     $versions.pgvector.commit,
     $versions.vectorchord.commit,
     $versions.vectorchord.pgrx,

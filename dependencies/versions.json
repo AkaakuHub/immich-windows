@@ -4,6 +4,7 @@
   "postgresql": {
     "major": 18,
     "version": "18.6",
+    "chocolateyVersion": "18.6.3",
     "source": "https://www.postgresql.org/download/windows/"
   },
   "pgvector": {
