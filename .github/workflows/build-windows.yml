@@ -5,7 +5,7 @@ on:
     inputs:
       component:
         type: choice
-        options: [all, codec, application, postgres, assemble]
+        options: [all, codec, postgres, assemble]
         default: all
       source_run_id:
         description: Existing run containing the codec and PostgreSQL artifacts; required for assemble
@@ -40,17 +40,6 @@ jobs:
           path: artifacts/native/sharp-libvips-custom
           retention-days: 1
           if-no-files-found: error
-  build:
-    if: inputs.component == 'application'
-    runs-on: windows-2025
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v5
-      - name: Build server, web, and machine learning
-        shell: pwsh
-        run: |
-          .\build\Enter-VsDevEnvironment.ps1
-          .\build\Build-All.ps1 -SkipNativeDependencies
   postgres:
     if: inputs.component == 'all' || inputs.component == 'postgres'
     runs-on: windows-2025
@@ -118,7 +107,28 @@ jobs:
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-NativeDependenciesArchive.ps1
-      - name: Upload qualified draft release
+      - name: Install and smoke test the thin package
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw upstream.json | ConvertFrom-Json).version
+          $folder = "immich-windows-$version-win-x64"
+          $installRoot = Join-Path $env:RUNNER_TEMP 'immich-install'
+          $dataRoot = Join-Path $env:RUNNER_TEMP 'immich-data'
+          $mediaRoot = Join-Path $env:RUNNER_TEMP 'immich-media'
+          $downloadCache = Join-Path $installRoot 'cache\downloads'
+          New-Item -ItemType Directory -Path $downloadCache,$mediaRoot -Force | Out-Null
+          Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
+          $password = [guid]::NewGuid().ToString('N')
+          choco install postgresql18 --version 18.6.3 --params "/Password:$password" -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL 18 installation failed.' }
+          Start-Service postgresql-x64-18
+          & "dist/$folder/installer/Install.ps1" -PackageRoot "dist/$folder" -Scope AllUsers `
+            -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `
+            -DatabasePassword $password -PostgresRoot 'C:\Program Files\PostgreSQL\18'
+          $fixtures = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'immich-fixtures') -File -Recurse | Select-Object -ExpandProperty FullName)
+          & "dist/$folder/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
+            -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
+      - name: Upload qualified release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -136,6 +146,6 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw "Could not remove obsolete tar.gz asset from $version." }
             }
           } else {
-            & gh release create $version "dist/$folder.zip" $native --draft --title $version
-            if ($LASTEXITCODE -ne 0) { throw "Could not create draft release $version." }
+            & gh release create $version "dist/$folder.zip" $native --title $version
+            if ($LASTEXITCODE -ne 0) { throw "Could not create release $version." }
           }
