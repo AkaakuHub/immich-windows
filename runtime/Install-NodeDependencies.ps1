@@ -47,15 +47,37 @@ $store = Join-Path $InstallRoot 'cache\pnpm-store'
 function Set-BuildScriptPolicy([string]$Project) {
     $workspaceFile = Join-Path $Project 'pnpm-workspace.yaml'
     $original = [IO.File]::ReadAllText($workspaceFile)
-    $updated = $original
-    foreach ($policy in @(
-        @{ pattern = "(?m)^(\s*'@scarf/scarf':\s*)set this to true or false\s*$"; value = 'false' },
-        @{ pattern = '(?m)^(\s*esbuild:\s*)set this to true or false\s*$'; value = 'true' },
-        @{ pattern = '(?m)^(\s*msgpackr-extract:\s*)set this to true or false\s*$'; value = 'true' },
-        @{ pattern = '(?m)^(\s*protobufjs:\s*)set this to true or false\s*$'; value = 'false' }
-    )) {
-        $updated = [regex]::Replace($updated, $policy.pattern, ('${1}' + $policy.value))
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($original -split "`r?`n")) { $lines.Add($line) }
+    if ([IO.Path]::GetFileName($Project) -eq 'server') {
+        $start = -1
+        for ($index = 0; $index -lt $lines.Count; $index++) {
+            if ($lines[$index] -match '^allowBuilds:\s*$') { $start = $index; break }
+        }
+        if ($start -lt 0) {
+            $lines.Add('allowBuilds:')
+            $start = $lines.Count - 1
+        }
+        $end = $start + 1
+        while ($end -lt $lines.Count -and ($lines[$end] -match '^\s+' -or $lines[$end] -eq '')) { $end++ }
+        foreach ($policy in @(
+            @{ name = '@scarf/scarf'; value = 'false' },
+            @{ name = 'esbuild'; value = 'true' },
+            @{ name = 'msgpackr-extract'; value = 'true' },
+            @{ name = 'protobufjs'; value = 'false' }
+        )) {
+            $key = if ($policy.name -eq '@scarf/scarf') { "'@scarf/scarf'" } else { $policy.name }
+            $pattern = '^\s*' + [regex]::Escape($key) + ':\s*.*$'
+            $found = -1
+            for ($index = $start + 1; $index -lt $end; $index++) {
+                if ($lines[$index] -match $pattern) { $found = $index; break }
+            }
+            $line = "  ${key}: $($policy.value)"
+            if ($found -ge 0) { $lines[$found] = $line }
+            else { $lines.Insert($end, $line); $end++ }
+        }
     }
+    $updated = $lines -join [Environment]::NewLine
     if ($updated -match '(?m):\s*set this to true or false\s*$') {
         throw "Unreviewed dependency build script in $workspaceFile"
     }
