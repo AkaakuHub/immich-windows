@@ -9,6 +9,14 @@ $Backup=(Resolve-Path $Backup).Path
 $envs=Read-EnvFile $EnvFile
 $psql=Join-Path $PostgresRoot 'bin\psql.exe'; $pgRestore=Join-Path $PostgresRoot 'bin\pg_restore.exe'
 foreach($f in @($psql,$pgRestore)){if(-not(Test-Path $f)){throw "PostgreSQL client missing: $f"}}
+if ($Backup.EndsWith('.dump',[StringComparison]::OrdinalIgnoreCase)) {
+    & $pgRestore --list $Backup | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'The PostgreSQL custom-format backup cannot be read.' }
+} elseif ($Backup.EndsWith('.sql',[StringComparison]::OrdinalIgnoreCase) -or
+          $Backup.EndsWith('.sql.gz',[StringComparison]::OrdinalIgnoreCase) -or
+          $Backup.EndsWith('.gz',[StringComparison]::OrdinalIgnoreCase)) {
+    if ((Get-Item -LiteralPath $Backup).Length -eq 0) { throw 'The SQL backup is empty.' }
+} else { throw 'Supported backup types are .dump, .sql, and .sql.gz.' }
 if ([string]$envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
     if(-not(Test-Path -LiteralPath $stopScript -PathType Leaf)){
@@ -43,7 +51,7 @@ try {
         & $pgRestore -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME --no-owner --exit-on-error $Backup
         if($LASTEXITCODE -ne 0){throw 'pg_restore failed.'}
     } elseif($Backup.EndsWith('.sql',[StringComparison]::OrdinalIgnoreCase)) {
-        Get-Content -Raw -LiteralPath $Backup | & $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -v ON_ERROR_STOP=1
+        & $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -v ON_ERROR_STOP=1 -f $Backup
         if($LASTEXITCODE -ne 0){throw 'psql restore failed.'}
     } elseif($Backup.EndsWith('.sql.gz',[StringComparison]::OrdinalIgnoreCase) -or $Backup.EndsWith('.gz',[StringComparison]::OrdinalIgnoreCase)) {
         # Decompress with the .NET runtime bundled with PowerShell 7 into a temporary
