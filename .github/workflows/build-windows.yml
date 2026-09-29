@@ -65,7 +65,7 @@ jobs:
         id: postgres-cache
         with:
           path: artifacts/native/postgres-extensions
-          key: postgres-extensions-${{ runner.os }}-${{ steps.postgres-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
+          key: postgres-extensions-${{ runner.os }}-${{ steps.postgres-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Write-PostgresBuildMetadata.ps1', 'build/Common.psm1') }}
       - name: Build PostgreSQL 18 extensions
         if: steps.postgres-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -76,6 +76,7 @@ jobs:
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-PgVector.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18'
           .\build\Build-VectorChord.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' -InstallCargoPgrx
+          .\build\Write-PostgresBuildMetadata.ps1
       - uses: actions/upload-artifact@v7
         with:
           name: postgres-extensions

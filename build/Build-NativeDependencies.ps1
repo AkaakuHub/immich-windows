@@ -19,7 +19,7 @@ function Invoke-CachedNativeStage {
     $inputs=[ordered]@{version=$Version;script=(Get-Item -LiteralPath (Join-Path $PSScriptRoot $Script)).LastWriteTimeUtc.Ticks}
     if($Name -like 'postgres-extensions\*'){
         $inputs.postgresRoot=(Resolve-Path -LiteralPath $PostgresRoot).Path
-        $inputs.postgresqlMajor=$versions.postgresql.major
+        $inputs.postgresqlVersion=$versions.postgresql.version
     }
     $inputJson=$inputs|ConvertTo-Json -Depth 8 -Compress
     if((Test-Path -LiteralPath $statePath -PathType Leaf) -and
@@ -41,5 +41,6 @@ Invoke-CachedNativeStage -Name 'vc-runtime' -Script 'Stage-VcRuntime.ps1' -Versi
 if (-not $SkipPostgresExtensions) {
     Invoke-CachedNativeStage -Name 'postgres-extensions\vector' -Script 'Build-PgVector.ps1' -Version $versions.pgvector -Required 'vector.dll' -Arguments @{PostgresRoot=$PostgresRoot}
     Invoke-CachedNativeStage -Name 'postgres-extensions\vchord' -Script 'Build-VectorChord.ps1' -Version $versions.vectorchord -Required 'vchord.dll' -Arguments @{PostgresRoot=$PostgresRoot;InstallCargoPgrx=$InstallCargoPgrx}
+    & (Join-Path $PSScriptRoot 'Write-PostgresBuildMetadata.ps1') -Destination $Destination
 }
 Write-Host "Native dependency set staged at $Destination"

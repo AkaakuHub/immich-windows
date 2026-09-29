@@ -8,6 +8,20 @@ $native = Join-Path $root 'artifacts\native'
 foreach ($required in @('vc-runtime','postgres-extensions\vector','postgres-extensions\vchord')) {
     if (-not (Test-Path -LiteralPath (Join-Path $native $required) -PathType Container)) { throw "Native dependency build output is missing: $required" }
 }
+$versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
+$postgresMetadataPath = Join-Path $native 'postgres-extensions\build-inputs.json'
+if (-not (Test-Path -LiteralPath $postgresMetadataPath -PathType Leaf)) { throw 'PostgreSQL extension build metadata is missing.' }
+$postgresMetadata = Read-JsonFile $postgresMetadataPath
+$postgresInputs = @{
+    postgresql = $versions.postgresql.version
+    pgvector = $versions.pgvector.commit
+    vectorchord = $versions.vectorchord.commit
+    pgrx = $versions.vectorchord.pgrx
+    rustToolchain = $versions.vectorchord.rustToolchain
+}
+foreach ($field in $postgresInputs.Keys) {
+    if ([string]$postgresMetadata.$field -ne [string]$postgresInputs[$field]) { throw "PostgreSQL extension artifact does not match the pinned $field." }
+}
 $application = Join-Path $root 'artifacts\application'
 $sharpPackages = @(Get-ChildItem -LiteralPath (Join-Path $application 'server\node_modules\.pnpm') -Directory -Filter '@img+sharp-win32-x64@*' -ErrorAction SilentlyContinue)
 if ($sharpPackages.Count -ne 1) { throw "Expected one tested Sharp runtime package; found $($sharpPackages.Count)." }

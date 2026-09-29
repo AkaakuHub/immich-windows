@@ -38,7 +38,7 @@ jobs:
         id: cache
         with:
           path: artifacts/native/postgres-extensions
-          key: postgres-extensions-${{ runner.os }}-${{ steps.cache-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Common.psm1') }}
+          key: postgres-extensions-${{ runner.os }}-${{ steps.cache-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Write-PostgresBuildMetadata.ps1', 'build/Common.psm1') }}
       - name: Report cache status
         shell: pwsh
         run: "\"PostgreSQL cache hit: ${{ steps.cache.outputs.cache-hit }}; restored: ${{ steps.cache.outputs.cache-matched-key }}\" >> $env:GITHUB_STEP_SUMMARY"
