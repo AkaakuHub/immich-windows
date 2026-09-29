@@ -19,7 +19,7 @@ $DataRoot=$paths.DataRoot
 
 $stateFile=Join-Path $DataRoot 'state\upgrade-recovery.json'
 if(-not(Test-Path -LiteralPath $stateFile -PathType Leaf)){throw "Upgrade recovery state not found: $stateFile"}
-$state=Get-Content -Raw -LiteralPath $stateFile|ConvertFrom-Json
+$state=Get-Content -Raw -LiteralPath $stateFile|ConvertFrom-Json -AsHashtable
 if($state.status -eq 'qualified' -and -not $Force){
     throw 'The last upgrade is marked qualified. Recovery is destructive and requires -Force for a qualified release.'
 }
@@ -32,13 +32,12 @@ if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){throw "Paired pre-upgrad
 $previousManifest=Get-Content -Raw -LiteralPath (Join-Path $previousRelease 'manifest.json')|ConvertFrom-Json
 $envFile=Join-Path $DataRoot 'immich.env'
 $envs=Read-EnvFile $envFile
+if ($envs.IMMICH_WINDOWS_INSTALL_SCOPE -ne $Scope) { throw 'The selected scope does not match the installed environment.' }
 
 $description="restore database backup '$backup', restore PostgreSQL extension binaries from '$previousRelease', and switch current back to $($previousManifest.immichVersion)"
 if(-not $PSCmdlet.ShouldProcess('Immich native Windows installation',$description)){return}
 
-if ($Scope -eq 'CurrentUser') {
-    & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
-} else { foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}} }
+& (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
 
 # A Windows PostgreSQL extension DLL is global to the PostgreSQL installation,
 # not release-local. Put back the extension binaries paired with the previous

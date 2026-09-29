@@ -26,11 +26,14 @@ if(-not $previousRelease -or -not(Test-Path -LiteralPath $previousRelease -PathT
 }
 
 $envFile=Join-Path $DataRoot 'immich.env'
+$installedEnv=Read-EnvFile $envFile
+if ($installedEnv.IMMICH_WINDOWS_INSTALL_SCOPE -ne $Scope) { throw 'The selected scope does not match the installed environment.' }
 $previousManifest=Get-Content -Raw -LiteralPath (Join-Path $previousRelease 'manifest.json')|ConvertFrom-Json
 $candidateManifest=Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'manifest.json')|ConvertFrom-Json
 if($previousManifest.immichVersion -eq $candidateManifest.immichVersion){
     throw "Refusing an in-place update to the same Immich version $($candidateManifest.immichVersion). Use Install.ps1 only for an intentional reinstall."
 }
+if ([version]$candidateManifest.immichVersion.TrimStart('v') -lt [version]$previousManifest.immichVersion.TrimStart('v')) { throw 'Use paired backup recovery to restore a previous version; downgrading an existing database is not supported.' }
 
 $stateDirectory=Join-Path $DataRoot 'state'
 New-Item -ItemType Directory -Path $stateDirectory -Force|Out-Null
@@ -53,6 +56,10 @@ function Save-UpgradeState {
 }
 Save-UpgradeState
 
+$stopScript=Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1'
+$backup=$null
+try {
+& $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
 $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot
 $backup=@($backup)[-1]
 if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){throw "Pre-upgrade database backup was not created: $backup"}
@@ -61,16 +68,6 @@ $state.status='backup-created'
 Save-UpgradeState
 Write-Host "Pre-upgrade database backup: $backup"
 
-if ($Scope -eq 'CurrentUser') {
-    & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
-} else { foreach($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')){
-    if(Get-Service $name -ErrorAction SilentlyContinue){
-        Stop-Service $name -Force -ErrorAction SilentlyContinue
-        (Get-Service $name).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(60))
-    }
-} }
-
-try {
     & (Join-Path $PSScriptRoot 'Install.ps1') `
         -PackageRoot $PackageRoot `
         -Scope $Scope `
@@ -95,13 +92,12 @@ try {
     Write-Host "Upgrade qualified: $($state.previousVersion) -> $($state.candidateVersion)"
     Write-Host "Paired rollback backup retained at: $backup"
 } catch {
-    if ($Scope -eq 'CurrentUser') {
-        & (Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
-    } else { foreach($name in @('ImmichServer','ImmichMachineLearning')){if(Get-Service $name -ErrorAction SilentlyContinue){Stop-Service $name -Force -ErrorAction SilentlyContinue}} }
+    $failure=$_
     $state.status='failed'
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')
-    $state.failure=$_.Exception.ToString()
+    $state.failure=$failure.Exception.ToString()
     Save-UpgradeState
-    Write-Error "Upgrade failed and Immich services were stopped. Recovery state: $stateFile. Database backup: $backup. Run installer\Recover-Upgrade.ps1; do not point the previous Immich binary at this database before restoring the paired backup. $($_.Exception.Message)"
-    throw
+    try { & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot }
+    catch { Write-Warning "Immich shutdown also failed: $($_.Exception.Message)" }
+    throw "Upgrade failed. Recovery state: $stateFile. Database backup: $backup. $($failure.Exception.Message)"
 }
