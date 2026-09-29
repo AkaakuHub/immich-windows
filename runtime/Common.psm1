@@ -208,4 +208,16 @@ function Get-CurrentReleaseTarget {
     return [IO.Path]::GetFullPath([string]$target)
 }
 
+function Get-ImmichUserProcess {
+    param([string]$InstallRoot,[string]$DataRoot,[string]$Name)
+    $pidFile=Join-Path $DataRoot "services\$Name.pid"
+    if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { return }
+    $process=Get-Process -Id ([int](Get-Content -Raw -LiteralPath $pidFile)) -ErrorAction SilentlyContinue
+    if (-not $process -or -not $process.Path) { return }
+    $roots=@((Join-Path $InstallRoot 'current'),(Get-CurrentReleaseTarget -InstallRoot $InstallRoot))
+    foreach ($root in $roots) {
+        if ($root -and $process.Path.StartsWith($root.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) { return $process }
+    }
+}
+
 Export-ModuleMember -Function *

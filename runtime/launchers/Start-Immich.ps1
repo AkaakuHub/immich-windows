@@ -9,16 +9,18 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$loader = Join-Path $PSScriptRoot 'Load-ImmichEnv.ps1'
-if (Test-Path -LiteralPath $EnvFile) {
-    . $loader -EnvFile $EnvFile
-}
+. (Join-Path $PSScriptRoot 'Load-ImmichEnv.ps1') -EnvFile $EnvFile
 
 $redisMode = if ($env:IMMICH_WINDOWS_REDIS_MODE) { $env:IMMICH_WINDOWS_REDIS_MODE } else { 'BundledValkey' }
 if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $current = (Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path
     $services = Join-Path $DataRoot 'services'
     New-Item -ItemType Directory -Path $services -Force | Out-Null
+    function Start-UserProcess([string]$Name,[string]$Executable,[string]$Arguments,[string]$WorkingDirectory) {
+        if (Get-ImmichUserProcess -InstallRoot $InstallRoot -DataRoot $DataRoot -Name $Name) { return }
+        $process=Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -PassThru -WindowStyle Hidden
+        $process.Id | Set-Content -LiteralPath (Join-Path $services "$Name.pid")
+    }
     $sharpLib = Join-Path $current 'server\node_modules\@img\sharp-win32-x64\lib'
     if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Sharp runtime is missing: $sharpLib" }
     $env:PATH = (@($sharpLib,(Join-Path $current 'runtime\vc-runtime'),(Join-Path $current 'runtime\node'),(Join-Path $current 'runtime\ffmpeg'),$env:PATH) | Where-Object { $_ }) -join ';'
@@ -29,23 +31,26 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
         $valkeyConfig = Join-Path $DataRoot 'valkey.conf'
         if ($valkeyConfig -notmatch '^([A-Za-z]):[\\/](.*)$') { throw "Valkey requires a drive path for its config: $valkeyConfig" }
         $valkeyConfigPath = '/cygdrive/' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].Replace('\','/')
-        $valkeyProcess = Start-Process -FilePath $valkey -ArgumentList ('"{0}"' -f $valkeyConfigPath) -WorkingDirectory (Split-Path $valkey) -PassThru -WindowStyle Hidden
-        $valkeyProcess.Id | Set-Content -LiteralPath (Join-Path $services 'ImmichValkey.pid')
+        Start-UserProcess 'ImmichValkey' $valkey ('"{0}"' -f $valkeyConfigPath) (Split-Path $valkey)
     }
     $node = Join-Path $current 'runtime\node\node.exe'
     $serverEntry = Join-Path $current 'server\dist\main.js'
-    $serverProcess = Start-Process -FilePath $node -ArgumentList ('"{0}"' -f $serverEntry) -WorkingDirectory $current -PassThru -WindowStyle Hidden
-    $serverProcess.Id | Set-Content -LiteralPath (Join-Path $services 'ImmichServer.pid')
+    Start-UserProcess 'ImmichServer' $node ('"{0}"' -f $serverEntry) $current
     $python = Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
     if (-not $python) { throw 'Packaged machine-learning Python runtime not found.' }
     $serverPort = $env:IMMICH_PORT
-    $env:IMMICH_HOST = '127.0.0.1'
-    $mlPort = if ($env:IMMICH_PORT_ML) { [int]$env:IMMICH_PORT_ML } else { 3003 }
-    $env:IMMICH_PORT = [string]$mlPort
-    $env:PYTHONPATH = Join-Path $current 'machine-learning\app'
-    $mlProcess = Start-Process -FilePath $python.FullName -ArgumentList @('-m','immich_ml') -WorkingDirectory (Join-Path $current 'machine-learning') -PassThru -WindowStyle Hidden
-    $env:IMMICH_PORT = $serverPort
-    $mlProcess.Id | Set-Content -LiteralPath (Join-Path $services 'ImmichMachineLearning.pid')
+    $serverHost = $env:IMMICH_HOST
+    $pythonPath = $env:PYTHONPATH
+    try {
+        $env:IMMICH_HOST = '127.0.0.1'
+        $env:IMMICH_PORT = if ($env:IMMICH_PORT_ML) { $env:IMMICH_PORT_ML } else { '3003' }
+        $env:PYTHONPATH = Join-Path $current 'machine-learning\app'
+        Start-UserProcess 'ImmichMachineLearning' $python.FullName '-m immich_ml' (Join-Path $current 'machine-learning')
+    } finally {
+        $env:IMMICH_PORT = $serverPort
+        $env:IMMICH_HOST = $serverHost
+        $env:PYTHONPATH = $pythonPath
+    }
 } elseif ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'AllUsers') {
     if ($redisMode -eq 'BundledValkey') {
     if (-not (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue)) {

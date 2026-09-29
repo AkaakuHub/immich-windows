@@ -8,38 +8,42 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$redisMode = $null
-if (Test-Path -LiteralPath $EnvFile) {
-    . (Join-Path $PSScriptRoot 'Load-ImmichEnv.ps1') -EnvFile $EnvFile
-    $redisMode = $env:IMMICH_WINDOWS_REDIS_MODE
-}
+. (Join-Path $PSScriptRoot 'Load-ImmichEnv.ps1') -EnvFile $EnvFile
+$redisMode = $env:IMMICH_WINDOWS_REDIS_MODE
 
 $shouldStopValkey = $redisMode -eq 'BundledValkey'
 if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
-    $processRoots=@((Join-Path $InstallRoot 'current'),(Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path)
     $processNames = @('ImmichServer','ImmichMachineLearning')
     if ($shouldStopValkey) {
         $processNames += 'ImmichValkey'
     }
     foreach ($name in $processNames) {
+        $process = Get-ImmichUserProcess -InstallRoot $InstallRoot -DataRoot $DataRoot -Name $name
         if ($name -eq 'ImmichValkey') {
-            $valkeyCli = Join-Path $processRoots[-1] 'dependencies\valkey\valkey-cli.exe'
-            & $valkeyCli -h $env:REDIS_HOSTNAME -p $env:REDIS_PORT shutdown save | Out-Null
+            if ($process) {
+                $valkeyCli = Join-Path $InstallRoot 'current\dependencies\valkey\valkey-cli.exe'
+                & $valkeyCli -h $env:REDIS_HOSTNAME -p $env:REDIS_PORT shutdown save | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Valkey could not save its data before shutdown.' }
+            }
         }
         $pidFile = Join-Path $DataRoot "services\$name.pid"
         if (-not (Test-Path -LiteralPath $pidFile)) { continue }
-        $processId = [int](Get-Content -Raw -LiteralPath $pidFile)
-        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        if ($process -and $process.Path -and @($processRoots|Where-Object{$process.Path.StartsWith($_,[StringComparison]::OrdinalIgnoreCase)}).Count -gt 0) {
-            Stop-Process -Id $processId -Force
+        if ($process -and -not $process.HasExited) {
+            Stop-Process -InputObject $process -Force
+            if (-not $process.WaitForExit(30000)) { throw "Process $name did not stop." }
         }
         Remove-Item -LiteralPath $pidFile -Force
     }
+} elseif ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'AllUsers') {
+    $names=@('ImmichServer','ImmichMachineLearning')
+    if ($shouldStopValkey) { $names += 'ImmichValkey' }
+    foreach ($name in $names) {
+        $service=Get-Service $name -ErrorAction SilentlyContinue
+        if ($service -and $service.Status -ne 'Stopped') {
+            Stop-Service $name -Force
+            $service.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(60))
+        }
+    }
 } else {
-    foreach ($name in @('ImmichServer', 'ImmichMachineLearning')) {
-        if (Get-Service $name -ErrorAction SilentlyContinue) { Stop-Service $name -Force -ErrorAction SilentlyContinue }
-    }
-    if ($shouldStopValkey -and (Get-Service ImmichValkey -ErrorAction SilentlyContinue)) {
-        Stop-Service ImmichValkey -Force -ErrorAction SilentlyContinue
-    }
+    throw "Unsupported IMMICH_WINDOWS_INSTALL_SCOPE: $($env:IMMICH_WINDOWS_INSTALL_SCOPE)"
 }
