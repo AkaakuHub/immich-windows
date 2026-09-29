@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-windows-native-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   codec:
     if: inputs.component == 'all' || inputs.component == 'codec'
@@ -117,6 +121,10 @@ jobs:
           $installRoot = Join-Path $env:RUNNER_TEMP 'immich-install'
           $dataRoot = Join-Path $env:RUNNER_TEMP 'immich-data'
           $mediaRoot = Join-Path $env:RUNNER_TEMP 'immich-media'
+          $expanded = Join-Path $env:RUNNER_TEMP 'immich-package'
+          Expand-Archive -LiteralPath "dist/$folder.zip" -DestinationPath $expanded
+          $packageRoot = Join-Path $expanded $folder
+          & "$packageRoot/installer/Test-ReleasePackage.ps1" -PackageRoot $packageRoot -Version $version
           $downloadCache = Join-Path $installRoot 'cache\downloads'
           New-Item -ItemType Directory -Path $downloadCache,$mediaRoot -Force | Out-Null
           Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
@@ -125,12 +133,22 @@ jobs:
           choco install postgresql18 --version $pgVersion --params "/Password:$password" -y --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL 18 installation failed.' }
           Start-Service postgresql-x64-18
-          & "dist/$folder/installer/Install.ps1" -PackageRoot "dist/$folder" -Scope AllUsers `
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
+          & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope AllUsers `
             -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `
             -DatabasePassword $password -PostgresRoot 'C:\Program Files\PostgreSQL\18'
           $fixtures = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'immich-fixtures') -File -Recurse | Select-Object -ExpandProperty FullName)
-          & "dist/$folder/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
+          & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
             -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
+          & "$installRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $installRoot -DataRoot $dataRoot -EnvFile "$dataRoot/immich.env"
+          $userRoot = Join-Path $env:LOCALAPPDATA 'Programs\Immich'
+          $userData = Join-Path $env:LOCALAPPDATA 'Immich'
+          New-Item -ItemType Directory -Path $userRoot -Force | Out-Null
+          New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
+          & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope CurrentUser `
+            -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env"
+          & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
+          & "$userRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $userRoot -DataRoot $userData -EnvFile "$userData/immich.env"
       - name: Upload qualified release
         shell: pwsh
         env:
