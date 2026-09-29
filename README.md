@@ -8,7 +8,7 @@ ImmichをWindows x64でネイティブ実行する非公式プロジェクトで
 
 公開Releaseの`Install.cmd`を実行します。対話式でインストール範囲や設定を指定できます。
 
-配布アーカイブにはNode.jsの実行時依存を含めず、インストール時に固定pnpmで取得します。依存storeはInstallRoot内に保持して更新時に再利用するため、初回と新しい依存の取得時にはネット接続が必要です。
+メインZIPには`node_modules`、Pythonの`site-packages`、ランタイムを含めません。固定版のNode.js、Python、pnpm、FFmpeg、Valkeyなどはインストール時に取得し、依存キャッシュは更新時に再利用します。Windows向けにビルドするDLLは別のRelease assetから取得します。初回インストールと未キャッシュ依存の取得にはネット接続が必要です。
 
 - `AllUsers`: Windowsサービスとして常駐。管理者権限が必要です。
 - `CurrentUser`: ユーザーのサインイン中に常駐。管理者権限は不要です。
