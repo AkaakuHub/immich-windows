@@ -213,10 +213,9 @@ if ($ResumeExistingRelease) {
 & (Join-Path $release 'installer\Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $PackageRoot 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
-Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $current = Join-Path $InstallRoot 'current'
 if (-not $SkipPostgresExtensionInstall -and $Scope -eq 'AllUsers') {
-    & (Join-Path $PSScriptRoot 'Install-PostgresExtensions.ps1') -PackageRoot $current -PostgresRoot $PostgresRoot -PostgresService $PostgresService -AdminUser $DatabaseUser -DatabaseName $DatabaseName -AdminPassword $DatabasePassword -DatabaseHost $DatabaseHost -DatabasePort $DatabasePort
+    & (Join-Path $PSScriptRoot 'Install-PostgresExtensions.ps1') -PackageRoot $release -PostgresRoot $PostgresRoot -PostgresService $PostgresService -AdminUser $DatabaseUser -DatabaseName $DatabaseName -AdminPassword $DatabasePassword -DatabaseHost $DatabaseHost -DatabasePort $DatabasePort
 }
 # A fresh native installation may not have the Immich database yet. Create only
 # the empty database; upstream Immich remains authoritative for every schema
@@ -249,7 +248,7 @@ if ($Scope -eq 'CurrentUser' -or $SkipPostgresExtensionInstall) {
             throw 'PostgreSQL must already load VectorChord in shared_preload_libraries.'
         }
         foreach ($extension in @('vector','vchord')) {
-            $control = Join-Path $current "dependencies\postgres-extensions\$extension\$extension.control"
+            $control = Join-Path $release "dependencies\postgres-extensions\$extension\$extension.control"
             $versionLine = Select-String -LiteralPath $control -Pattern "default_version\s*=\s*'([^']+)'" | Select-Object -First 1
             if (-not $versionLine) { throw "Could not read packaged $extension version." }
             $expected = $versionLine.Matches[0].Groups[1].Value
@@ -273,7 +272,7 @@ $managedEnvValues = [ordered]@{
     IMMICH_BUILD_DATA = (Join-Path $current 'build')
     IMMICH_MACHINE_LEARNING_URL = "http://127.0.0.1:$MachineLearningPort"
     IMMICH_ENV = 'production'
-    IMMICH_SOURCE_REF = (Get-Content -Raw (Join-Path $current 'manifest.json') | ConvertFrom-Json).immichVersion
+    IMMICH_SOURCE_REF = $packageManifest.immichVersion
     DB_HOSTNAME = $DatabaseHost
     DB_PORT = [string]$DatabasePort
     DB_DATABASE_NAME = $DatabaseName
@@ -297,6 +296,7 @@ foreach ($pair in $sourceEnv.GetEnumerator()) { $envValues[$pair.Key] = $pair.Va
 foreach ($pair in $managedEnvValues.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 Write-EnvFile -Path $envFile -Values $envValues
 if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
+Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $valkeyConfig = Join-Path $DataRoot 'valkey.conf'
 $valkeyServiceExe = Join-Path $current 'dependencies\valkey\ValkeyService.exe'
 $serviceRestartDelays = @(5,15)
