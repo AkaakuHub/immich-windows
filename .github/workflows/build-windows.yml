@@ -113,6 +113,28 @@ jobs:
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-NativeDependenciesArchive.ps1
+      - name: Select PostgreSQL runtime cache key
+        id: pg-runtime
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).postgresql.chocolateyVersion
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache/restore@v6
+        id: pg-runtime-cache
+        with:
+          path: C:\Program Files\PostgreSQL\18
+          key: postgresql-runtime-${{ runner.os }}-${{ steps.pg-runtime.outputs.version }}
+      - name: Start PostgreSQL test service
+        shell: pwsh
+        run: |
+          .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
+            -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
+            -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
+      - uses: actions/cache/save@v6
+        if: steps.pg-runtime-cache.outputs.cache-hit != 'true'
+        with:
+          path: C:\Program Files\PostgreSQL\18
+          key: postgresql-runtime-${{ runner.os }}-${{ steps.pg-runtime.outputs.version }}
       - name: Install and smoke test the thin package
         shell: pwsh
         run: |
@@ -128,11 +150,7 @@ jobs:
           $downloadCache = Join-Path $installRoot 'cache\downloads'
           New-Item -ItemType Directory -Path $downloadCache,$mediaRoot -Force | Out-Null
           Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
-          $password = [guid]::NewGuid().ToString('N')
-          $pgVersion = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).postgresql.chocolateyVersion
-          choco install postgresql18 --version $pgVersion --params "/Password:$password" -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL 18 installation failed.' }
-          Start-Service postgresql-x64-18
+          $password = Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
           & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope AllUsers `
             -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `

@@ -39,9 +39,22 @@ jobs:
         with:
           path: artifacts/native/postgres-extensions
           key: postgres-extensions-${{ runner.os }}-${{ steps.cache-key.outputs.postgres }}-${{ hashFiles('build/Build-PgVector.ps1', 'build/Build-VectorChord.ps1', 'build/Write-PostgresBuildMetadata.ps1', 'build/Common.psm1') }}
+      - name: Select PostgreSQL runtime cache key
+        id: runtime-key
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).postgresql.chocolateyVersion
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache/restore@v6
+        id: runtime-cache
+        with:
+          path: C:\Program Files\PostgreSQL\18
+          key: postgresql-runtime-${{ runner.os }}-${{ steps.runtime-key.outputs.version }}
       - name: Report cache status
         shell: pwsh
-        run: "\"PostgreSQL cache hit: ${{ steps.cache.outputs.cache-hit }}; restored: ${{ steps.cache.outputs.cache-matched-key }}\" >> $env:GITHUB_STEP_SUMMARY"
+        run: |
+          "PostgreSQL extension cache hit: ${{ steps.cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY
+          "PostgreSQL runtime cache hit: ${{ steps.runtime-cache.outputs.cache-hit }}" >> $env:GITHUB_STEP_SUMMARY
 
   application:
     runs-on: windows-2025
