@@ -217,7 +217,7 @@ function Invoke-ImmichValkey {
     param([string]$Executable,[string]$Hostname,[int]$Port,[string]$Password,[string]$Username,[string[]]$Command)
     $previousAuth=$env:VALKEYCLI_AUTH
     try {
-        $env:VALKEYCLI_AUTH=$Password
+        if ($Password) { $env:VALKEYCLI_AUTH=$Password } else { Remove-Item Env:VALKEYCLI_AUTH -ErrorAction SilentlyContinue }
         $arguments=@('-h',$Hostname,'-p',[string]$Port)
         if ($Username) { $arguments += @('--user',$Username) }
         & $Executable @arguments @Command

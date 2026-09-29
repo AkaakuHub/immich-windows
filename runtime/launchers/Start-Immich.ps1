@@ -24,9 +24,6 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     }
     $sharpLib = Join-Path $current 'server\node_modules\@img\sharp-win32-x64\lib'
     if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Sharp runtime is missing: $sharpLib" }
-    $env:PATH = (@($sharpLib,(Join-Path $current 'runtime\vc-runtime'),(Join-Path $current 'runtime\node'),(Join-Path $current 'runtime\ffmpeg'),$env:PATH) | Where-Object { $_ }) -join ';'
-    $env:FFMPEG_PATH = Join-Path $current 'runtime\ffmpeg\ffmpeg.exe'
-    $env:FFPROBE_PATH = Join-Path $current 'runtime\ffmpeg\ffprobe.exe'
     if ($redisMode -eq 'BundledValkey') {
         $valkey = Join-Path $current 'dependencies\valkey\valkey-server.exe'
         $valkeyConfig = Join-Path $DataRoot 'valkey.conf'
@@ -75,15 +72,14 @@ $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
 $serverPort = if ($env:IMMICH_PORT) { [int]$env:IMMICH_PORT } else { 2283 }
 $mlPort = if ($env:IMMICH_PORT_ML) { [int]$env:IMMICH_PORT_ML } else { 3003 }
 while ([DateTime]::UtcNow -lt $deadline) {
-    try {
-        if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
-            foreach ($name in @('ImmichServer','ImmichMachineLearning')) {
-                $pidFile = Join-Path $DataRoot "services\$name.pid"
-                if (-not (Test-Path -LiteralPath $pidFile) -or -not (Get-Process -Id ([int](Get-Content -Raw -LiteralPath $pidFile)) -ErrorAction SilentlyContinue)) {
-                    throw "CurrentUser process $name exited during startup."
-                }
-            }
+    if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
+        $names=@('ImmichServer','ImmichMachineLearning')
+        if ($redisMode -eq 'BundledValkey') { $names += 'ImmichValkey' }
+        foreach ($name in $names) {
+            if (-not (Get-ImmichUserProcess -InstallRoot $InstallRoot -DataRoot $DataRoot -Name $name)) { throw "CurrentUser process $name exited during startup." }
         }
+    }
+    try {
         $ml = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$mlPort/ping" -TimeoutSec 3
         $server = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$serverPort/api/server/ping" -TimeoutSec 3
         if ($ml.StatusCode -eq 200 -and $server.StatusCode -eq 200) {

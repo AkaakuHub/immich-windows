@@ -40,7 +40,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 CurrentUserの場合は`-Scope CurrentUser`にし、先に[拡張の準備](install.md#currentuserの拡張準備)を完了します。導入先を指定した場合は以降も同じパスを使います。自動起動は登録されるため、移行完了まで再起動・サインアウトはしないでください。
 
-## 4. DBを復元してパスを変更する
+## 4. DBを復元する
 
 AllUsersでは管理者のPowerShellを使います。以下は既定のAllUsersのパスです。CurrentUserのパスは[共通の指定](operations.md#共通の指定)を参照してください。
 
@@ -54,10 +54,9 @@ $mediaRoot = 'D:\Photos\Immich'
 $backup = 'D:\immich-migration\immich.dump'
 
 & "$release\migration\Import-Database.ps1" -Backup $backup -EnvFile $envFile
-& "$release\runtime\launchers\immich-admin.ps1" -EnvFile $envFile change-media-location
 ```
 
-復元は`immich.env`が指定する移行先DBを削除して作り直します。上流の`change-media-location`では旧ルートと`$mediaRoot`を指定します。メディアファイル自体はコピーしません。Storage TemplateなどDBに保存された設定も復元されます。
+復元は`immich.env`が指定する移行先DBを削除して作り直します。Immichは次の起動時に、DBに記録された旧メディアルートから`IMMICH_MEDIA_LOCATION`へのパス変更を自動実行します。先に`change-media-location`で書き換えないでください。メディアファイル自体はコピーしません。Storage TemplateなどDBに保存された設定も復元されます。
 
 外部ライブラリを使っていた場合のみ、各旧ルートを変更します。まず次のプレビューを確認し、正しければ同じコマンドに`-Apply`を追加します。
 
@@ -67,12 +66,12 @@ $backup = 'D:\immich-migration\immich.dump'
   -EnvFile $envFile -RollbackBackup $backup
 ```
 
-## 5. 確認して起動する
+## 5. 起動して移行結果を確認する
 
 ```powershell
-& "$release\migration\Verify-Migration.ps1" -MediaRoot $mediaRoot -EnvFile $envFile
 & "$release\migration\Schema-Check.ps1" -InstallRoot $installRoot -EnvFile $envFile
 & "$release\runtime\launchers\Start-Immich.ps1" -InstallRoot $installRoot -DataRoot $dataRoot -EnvFile $envFile
+& "$release\migration\Verify-Migration.ps1" -MediaRoot $mediaRoot -EnvFile $envFile
 & "$release\tests\Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot
 ```
 

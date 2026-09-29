@@ -5,10 +5,8 @@ foreach ($entry in (Read-EnvFile $EnvFile).GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
 }
 
-# Keep the portable native runtime self-contained. This is deliberately process-
-# local; the installer does not modify the machine PATH.
 $release = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$vcRuntime = Join-Path $release 'runtime\vc-runtime'
-if (Test-Path -LiteralPath $vcRuntime -PathType Container) {
-    $env:PATH = "$vcRuntime;$env:PATH"
-}
+$runtimePaths=@('server\node_modules\@img\sharp-win32-x64\lib','runtime\vc-runtime','runtime\node','runtime\ffmpeg') | ForEach-Object { Join-Path $release $_ }
+$env:PATH=(@($runtimePaths)+@($env:PATH)) -join ';'
+$env:FFMPEG_PATH=Join-Path $release 'runtime\ffmpeg\ffmpeg.exe'
+$env:FFPROBE_PATH=Join-Path $release 'runtime\ffmpeg\ffprobe.exe'
