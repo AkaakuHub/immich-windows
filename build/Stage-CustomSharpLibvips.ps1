@@ -7,6 +7,27 @@ Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
 Assert-WindowsX64
 $ApplicationRoot = (Resolve-Path -LiteralPath $ApplicationRoot).Path
 $BundleRoot = (Resolve-Path -LiteralPath $BundleRoot).Path
+$root = Get-RepositoryRoot
+$versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
+$expected = $versions.sharpLibvips
+$metadataPath = Join-Path $BundleRoot 'immich-windows-libvips.json'
+if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Custom Sharp/libvips bundle metadata is missing.' }
+$metadata = Read-JsonFile $metadataPath
+$fields = @{
+    libvips = $expected.version
+    sharp = $versions.sharp.version
+    sourceCommit = $expected.commit
+    target = $expected.target
+    variant = $expected.variant
+    jpeg = $expected.jpeg
+    libvipsRevision = $expected.libvipsRevision
+    immichBaseImagesCommit = $expected.immichBaseImagesCommit
+    immichLoaderPatch = $expected.immichLoaderPatch
+    hevc = $expected.hevc
+}
+foreach ($field in $fields.Keys) {
+    if ([string]$metadata.$field -ne [string]$fields[$field]) { throw "Custom Sharp/libvips bundle does not match the pinned $field." }
+}
 $bundleLib = Join-Path $BundleRoot 'lib'
 if (-not (Test-Path -LiteralPath $bundleLib -PathType Container)) {
     throw "Custom sharp-libvips bundle must mirror @img/sharp-libvips-win32-x64 and contain a lib directory: $bundleLib"

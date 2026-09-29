@@ -14,6 +14,9 @@ $codecValue = @(
     $media.target,
     $media.variant,
     $media.jpeg,
+    $media.hevc,
+    $media.immichBaseImagesCommit,
+    $media.immichLoaderPatch,
     $versions.sharp.version
 ) -join '-'
 $postgresValue = @(
