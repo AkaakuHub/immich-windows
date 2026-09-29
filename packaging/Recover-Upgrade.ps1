@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
 param(
     [ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',

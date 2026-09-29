@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param([string]$Destination)
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force

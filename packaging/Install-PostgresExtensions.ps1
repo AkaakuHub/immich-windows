@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$PackageRoot,
@@ -132,7 +133,7 @@ try {
     }
 } catch {
     foreach ($file in Get-ChildItem -LiteralPath $backupRoot -File -Recurse -ErrorAction SilentlyContinue) {
-        $relative = Get-RelativePathPortable -BasePath $backupRoot -FullPath $file.FullName
+        $relative = [IO.Path]::GetRelativePath($backupRoot, $file.FullName)
         $target = Join-Path $PostgresRoot $relative
         Copy-Item -LiteralPath $file.FullName -Destination $target -Force -ErrorAction SilentlyContinue
     }

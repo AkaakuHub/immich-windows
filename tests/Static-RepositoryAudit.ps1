@@ -1,7 +1,7 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param()
 $ErrorActionPreference='Stop'
-if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 (pwsh.exe) is required.' }
 $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
 function Assert-True([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message}}

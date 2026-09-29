@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$PackageRoot,
@@ -72,7 +73,7 @@ function Start-ElevatedInstaller {
     }
     $arguments.Add('-Scope')
     $arguments.Add('AllUsers')
-    $hostPath = (Get-Process -Id $PID).Path
+    $hostPath = Join-Path $PSHOME 'pwsh.exe'
     $failureReport = Join-Path $env:TEMP "immich-install-$([guid]::NewGuid().ToString('N')).error.txt"
     $arguments.Add('-ElevationFailureReport')
     $arguments.Add($failureReport)

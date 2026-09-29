@@ -1,8 +1,10 @@
 # 導入手順
 
-## 1. PostgreSQLを準備する
+## 1. PowerShell 7とPostgreSQLを準備する
 
-Windows x64とインターネット接続が必要です。[PostgreSQLのWindows版](https://www.postgresql.org/download/windows/)からPostgreSQL 18 x64をインストールし、サービスを起動してください。ImmichのインストーラーはPostgreSQL本体をインストールしません。
+Windows x64とインターネット接続が必要です。[PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)を導入し、`pwsh`を実行できる状態にします。以降の操作はPowerShell 7で行います。
+
+[PostgreSQLのWindows版](https://www.postgresql.org/download/windows/)からPostgreSQL 18 x64をインストールし、サービスを起動してください。ImmichのインストーラーはPostgreSQL本体をインストールしません。
 
 既定の設置先は`C:\Program Files\PostgreSQL\18`、サービス名は`postgresql-x64-18`です。変更した場合は`Install.cmd`に`-PostgresRoot`と`-PostgresService`を渡します。
 
@@ -12,7 +14,7 @@ Windows x64とインターネット接続が必要です。[PostgreSQLのWindows
 
 [Releases](https://github.com/AkaakuHub/immich-windows/releases)の`immich-windows-vX.Y.Z-win-x64.zip`をダウンロードし、ZIP全体を展開します。GitHubが表示する`Source code`は導入用ではありません。
 
-通常はメインZIPだけで十分です。`native-dependencies.zip`はインストーラーが自動取得します。Node.js、Python、pnpm、FFmpeg、Valkeyの手動インストールや、本番PCでのコンパイルは不要です。PowerShell 7がなくてもWindows標準のPowerShell 5.1で導入できます。
+通常はメインZIPだけで十分です。`native-dependencies.zip`はインストーラーが自動取得します。Node.js、Python、pnpm、FFmpeg、Valkeyの手動インストールや、本番PCでのコンパイルは不要です。
 
 ## 3. インストール範囲を選ぶ
 

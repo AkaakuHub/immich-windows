@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments)
 $release = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path

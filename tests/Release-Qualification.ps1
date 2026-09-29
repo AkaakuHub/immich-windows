@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$InstallRoot='C:\Program Files\Immich',

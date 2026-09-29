@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',

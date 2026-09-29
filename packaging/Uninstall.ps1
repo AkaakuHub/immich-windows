@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding(SupportsShouldProcess)]
 param([ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',[string]$DataRoot,[string]$InstallRoot,[switch]$RemovePersistentData)
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force

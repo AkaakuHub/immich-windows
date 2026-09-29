@@ -1,6 +1,6 @@
 # 起動・更新・バックアップ
 
-AllUsersの管理操作は管理者のPowerShellで、CurrentUserは導入したユーザーのPowerShellで行います。以下はPowerShell 5.1でも実行できます。
+すべてPowerShell 7（`pwsh`）で操作します。AllUsersの管理操作は管理者として、CurrentUserは導入したユーザーとして実行します。
 
 ## 共通の指定
 

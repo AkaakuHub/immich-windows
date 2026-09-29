@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param([string]$EnvFile='C:\ProgramData\Immich\immich.env',[string]$InstallRoot='C:\Program Files\Immich')
 $admin=Join-Path $InstallRoot 'current\runtime\launchers\immich-admin.ps1'

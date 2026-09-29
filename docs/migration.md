@@ -20,7 +20,7 @@
 
 ## 2. Windowsからダンプを作る
 
-メインZIPを展開した場所でWindowsのPowerShellを開きます。以下の例のパス・ユーザー名は実際の値へ置き換えます。ダンプ保存先は事前に作成してください。
+メインZIPを展開した場所でPowerShell 7（`pwsh`）を開きます。以下の例のパス・ユーザー名は実際の値へ置き換えます。ダンプ保存先は事前に作成してください。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass

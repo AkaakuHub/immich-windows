@@ -1,3 +1,4 @@
+#requires -Version 7.0
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -18,16 +19,6 @@ function ConvertTo-TrimmedOutput {
         if ($null -ne $item) { $text += [string]$item }
     }
     return $text.Trim()
-}
-
-function Get-RelativePathPortable {
-    param([Parameter(Mandatory)][string]$BasePath,[Parameter(Mandatory)][string]$FullPath)
-    $base = (Resolve-Path -LiteralPath $BasePath).Path.TrimEnd('\') + '\'
-    $full = (Resolve-Path -LiteralPath $FullPath).Path
-    $baseUri = New-Object System.Uri($base)
-    $fullUri = New-Object System.Uri($full)
-    if ($baseUri.Scheme -ne $fullUri.Scheme) { return $full }
-    return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($fullUri).ToString()).Replace('/','\')
 }
 
 function Assert-Administrator {
@@ -69,7 +60,7 @@ function Set-ImmichUserStartup {
         Remove-ItemProperty -LiteralPath $key -Name $name -ErrorAction SilentlyContinue
         return
     }
-    $powershellHost=(Get-Process -Id $PID).Path
+    $powershellHost=Join-Path $PSHOME 'pwsh.exe'
     $entry=Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1'
     $envFile=Join-Path $DataRoot 'immich.env'
     $command='"{0}" -NoProfile -WindowStyle Hidden -File "{1}" -EnvFile "{2}" -InstallRoot "{3}" -DataRoot "{4}"' -f $powershellHost,$entry,$envFile,$InstallRoot,$DataRoot

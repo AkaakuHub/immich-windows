@@ -1,3 +1,4 @@
+#requires -Version 7.0
 param([string]$EnvFile = 'C:\ProgramData\Immich\immich.env')
 Import-Module (Join-Path $PSScriptRoot '..\Common.psm1') -Force
 foreach ($entry in (Read-EnvFile $EnvFile).GetEnumerator()) {
