@@ -205,4 +205,24 @@ function Get-ImmichUserProcess {
     }
 }
 
+function Write-ImmichValkeyConfig {
+    param([string]$Path,[string]$DataPath,[string]$LogPath,[int]$Port,[string]$Password)
+    $values=@($DataPath,$LogPath,$Password) | ForEach-Object { '"'+$_.Replace('\','\\').Replace('"','\"').Replace("`r",'\r').Replace("`n",'\n')+'"' }
+    $lines=@('bind 127.0.0.1 ::1','protected-mode yes',"port $Port","dir $($values[0])",'dbfilename dump.rdb','save 900 1','save 300 10','save 60 10000',"logfile $($values[1])")
+    if ($Password) { $lines += "requirepass $($values[2])" }
+    $lines | Set-Content -LiteralPath $Path -Encoding utf8NoBOM
+}
+
+function Invoke-ImmichValkey {
+    param([string]$Executable,[string]$Hostname,[int]$Port,[string]$Password,[string]$Username,[string[]]$Command)
+    $previousAuth=$env:VALKEYCLI_AUTH
+    try {
+        $env:VALKEYCLI_AUTH=$Password
+        $arguments=@('-h',$Hostname,'-p',[string]$Port)
+        if ($Username) { $arguments += @('--user',$Username) }
+        & $Executable @arguments @Command
+        if ($LASTEXITCODE -ne 0) { throw "Valkey command failed with exit code $LASTEXITCODE." }
+    } finally { $env:VALKEYCLI_AUTH=$previousAuth }
+}
+
 Export-ModuleMember -Function *

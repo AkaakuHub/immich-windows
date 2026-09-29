@@ -55,6 +55,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 `.env`のDB名・ユーザー名・パスワードなどを読み込み、Windowsで必要なホスト名と実行パスを設定します。`DB_HOSTNAME=database`はローカルのPostgreSQLへ、`UPLOAD_LOCATION=/mnt/d/...`は`D:\...`へ変換します。それ以外のLinuxパスはWindowsの実パスを入力してください。元の`.env`は設定先の`immich.env`へ取り込みます。
 
+`DB_URL`・`REDIS_URL`形式は導入時に使用しません。接続先を`DB_HOSTNAME`・`DB_PORT`・`DB_USERNAME`・`DB_PASSWORD`・`DB_DATABASE_NAME`と、`REDIS_HOSTNAME`・`REDIS_PORT`・`REDIS_USERNAME`・`REDIS_PASSWORD`へ分けて指定してください。内蔵Valkeyは既存の`REDIS_PASSWORD`を設定し、ユーザー名は未指定または`default`を使います。独自のRedis ACLユーザーを使う場合は`-RedisMode External`で既存のRedisへ接続します。
+
 メディア・DBのデータはアプリのインストール先と分けます。`current`が現在のアプリを指すため、バージョン更新でも利用するパスは変わりません。設定先を変える場合は`-DataRoot`を指定します。
 
 成功後は`http://127.0.0.1:2283/`へアクセスします。新規DBには最初の管理者を作成します。既存DBを移行する場合は、[移行手順](migration.md)に従って`-DoNotStart`付きで導入してください。これは直後の起動だけを抑止し、自動起動の登録は行います。

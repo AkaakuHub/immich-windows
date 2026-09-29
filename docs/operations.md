@@ -46,11 +46,11 @@ AllUsersのログは`$dataRoot\logs`にあります。設定は`$envFile`を使�
 & "$installRoot\current\installer\Update-FromRelease.ps1" -Scope $scope -InstallRoot $installRoot -DataRoot $dataRoot
 ```
 
-公開済みの最新Releaseを取得し、DBバックアップ、停止、依存の設定、切り替え、起動確認を実施します。版を指定する場合は`-Version 'vX.Y.Z'`を追加します。本番PCでImmichやDLLのコンパイルは行いません。依存のダウンロードキャッシュは`$installRoot\cache`に残して再利用します。
+公開済みの最新Releaseを取得し、Immichの停止、DBバックアップ、依存の設定、切り替え、起動確認を実施します。版を指定する場合は`-Version 'vX.Y.Z'`を追加します。本番PCでImmichやDLLのコンパイルは行いません。依存のダウンロードキャッシュは`$installRoot\cache`に残して再利用します。
 
 同じImmich版のWindows向け修正版を入れる場合、更新コマンドは版が同じとして終了します。新しいZIPを展開し、その`Install.cmd`へ既存の`-Scope`、`-InstallRoot`、`-DataRoot`、`-EnvFile`を渡して再導入してください。既存DBを移行する操作は不要です。
 
-更新失敗時は`$dataRoot\state\upgrade-recovery.json`に旧版とDBバックアップの組を記録します。復旧は次で行います。DBは更新前の状態へ戻るため、対象を確認して応答してください。
+更新失敗時は`$dataRoot\state\upgrade-recovery.json`にエラーと、作成できたDBバックアップを記録します。バックアップ作成前に失敗した場合、候補版の導入は始まっていません。原因を解消して旧版を起動できます。バックアップ作成後に候補版の導入・起動が失敗した場合は次で復旧します。DBは更新前の状態へ戻るため、対象を確認して応答してください。
 
 ```powershell
 & "$installRoot\current\installer\Recover-Upgrade.ps1" -Scope $scope -InstallRoot $installRoot -DataRoot $dataRoot

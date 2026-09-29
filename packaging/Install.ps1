@@ -160,6 +160,8 @@ $MachineLearningPort = if ($PSBoundParameters.ContainsKey('MachineLearningPort')
 $RedisPort = if ($PSBoundParameters.ContainsKey('RedisPort')) { $RedisPort } elseif ($sourceEnv['REDIS_PORT']) { [int]$sourceEnv['REDIS_PORT'] } else { $RedisPort }
 $RedisMode = if ($PSBoundParameters.ContainsKey('RedisMode')) { $RedisMode } elseif ($sourceEnv['IMMICH_WINDOWS_REDIS_MODE']) { [string]$sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] } else { $RedisMode }
 $RedisHost = if ($PSBoundParameters.ContainsKey('RedisHost')) { $RedisHost } elseif ($sourceEnv['REDIS_HOSTNAME'] -and $sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] -eq 'External') { [string]$sourceEnv['REDIS_HOSTNAME'] } else { $RedisHost }
+if ($sourceEnv['DB_URL'] -or $sourceEnv['REDIS_URL']) { throw 'Use DB_HOSTNAME/DB_PORT/DB_USERNAME/DB_PASSWORD/DB_DATABASE_NAME and REDIS_HOSTNAME/REDIS_PORT/REDIS_USERNAME/REDIS_PASSWORD instead of DB_URL or REDIS_URL when installing.' }
+if ($RedisMode -eq 'BundledValkey' -and $sourceEnv['REDIS_USERNAME'] -and $sourceEnv['REDIS_USERNAME'] -ne 'default') { throw 'BundledValkey uses REDIS_USERNAME=default. Use External mode for an existing Redis ACL user.' }
 $MediaRoot = [IO.Path]::GetFullPath($MediaRoot)
 $PackageRoot = (Resolve-Path $PackageRoot).Path
 $packageManifestPath=Join-Path $PackageRoot 'manifest.json'
@@ -310,7 +312,7 @@ if ($RedisMode -eq 'BundledValkey') {
     $valkeyDataPath = if ($Scope -eq 'CurrentUser') { ConvertTo-MsysPath $valkeyData } else { $valkeyData.Replace('\','/') }
     $valkeyLogFile = Join-Path $logs 'valkey.log'
     $valkeyLogPath = if ($Scope -eq 'CurrentUser') { ConvertTo-MsysPath $valkeyLogFile } else { $valkeyLogFile.Replace('\','/') }
-    @("bind 127.0.0.1 ::1","protected-mode yes","port $RedisPort","dir $valkeyDataPath","dbfilename dump.rdb","save 900 1","save 300 10","save 60 10000","logfile $valkeyLogPath") | Set-Content -Encoding ascii -LiteralPath $valkeyConfig
+    Write-ImmichValkeyConfig -Path $valkeyConfig -DataPath $valkeyDataPath -LogPath $valkeyLogPath -Port $RedisPort -Password ([string]$envValues['REDIS_PASSWORD'])
     if ($Scope -eq 'AllUsers' -and (-not $ReuseServices -or -not (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue))) {
         & $valkeyServiceExe install -c $valkeyConfig --dir $valkeyData --port $RedisPort --service-name ImmichValkey --start-mode auto
         if ($LASTEXITCODE -ne 0) { throw 'Valkey service installation failed.' }

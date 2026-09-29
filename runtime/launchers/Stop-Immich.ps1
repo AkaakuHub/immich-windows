@@ -23,8 +23,7 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
         if ($name -eq 'ImmichValkey') {
             if ($process) {
                 $valkeyCli = Join-Path $InstallRoot 'current\dependencies\valkey\valkey-cli.exe'
-                & $valkeyCli -h $env:REDIS_HOSTNAME -p $env:REDIS_PORT shutdown save | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw 'Valkey could not save its data before shutdown.' }
+                Invoke-ImmichValkey -Executable $valkeyCli -Hostname $env:REDIS_HOSTNAME -Port $env:REDIS_PORT -Password $env:REDIS_PASSWORD -Username $env:REDIS_USERNAME -Command @('shutdown','save') | Out-Null
             }
         }
         $pidFile = Join-Path $DataRoot "services\$name.pid"

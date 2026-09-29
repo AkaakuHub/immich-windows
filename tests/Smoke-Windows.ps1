@@ -50,8 +50,8 @@ if(-not($rows -match '^vector\|')){throw 'pgvector extension is not installed in
 $rows|ForEach-Object{Write-Host "PostgreSQL extension: $_"}
 
 $valkeyCli=Join-Path $current 'dependencies\valkey\valkey-cli.exe'
-$pong=(& $valkeyCli -h $envs.REDIS_HOSTNAME -p $envs.REDIS_PORT ping).Trim()
-if($LASTEXITCODE -ne 0 -or $pong -ne 'PONG'){throw "Redis-compatible service ping failed at $($envs.REDIS_HOSTNAME):$($envs.REDIS_PORT): $pong"}
+$pong=Invoke-ImmichValkey -Executable $valkeyCli -Hostname $envs.REDIS_HOSTNAME -Port $envs.REDIS_PORT -Password $envs.REDIS_PASSWORD -Username $envs.REDIS_USERNAME -Command @('ping')
+if($pong -ne 'PONG'){throw "Redis-compatible service ping failed at $($envs.REDIS_HOSTNAME):$($envs.REDIS_PORT): $pong"}
 
 $vcRuntime=Join-Path $current 'runtime\vc-runtime'
 foreach($name in @('vcruntime140.dll','msvcp140.dll')){if(-not(Test-Path -LiteralPath (Join-Path $vcRuntime $name) -PathType Leaf)){throw "Packaged MSVC runtime is missing $name"}}
@@ -69,7 +69,7 @@ const path = require('node:path');
   const req = createRequire(path.join(serverRoot, 'package.json'));
   const { Queue, Worker, QueueEvents } = req('bullmq');
   const queueName = `immich-windows-compat-${process.pid}-${Date.now()}`;
-  const connection = { host: redisHost, port: redisPort, maxRetriesPerRequest: null };
+  const connection = { host: redisHost, port: redisPort, username: process.env.IMMICH_PROBE_REDIS_USERNAME || undefined, password: process.env.IMMICH_PROBE_REDIS_PASSWORD || undefined, maxRetriesPerRequest: null };
   const queue = new Queue(queueName, { connection });
   const events = new QueueEvents(queueName, { connection });
   await events.waitUntilReady();
@@ -87,8 +87,17 @@ const path = require('node:path');
   }
 })().catch((error) => { console.error(error); process.exit(1); });
 '@
-& $node -e $bullProbe (Join-Path $current 'server') $envs.REDIS_HOSTNAME $envs.REDIS_PORT
-if($LASTEXITCODE -ne 0){throw "BullMQ compatibility probe failed against Redis-compatible endpoint $($envs.REDIS_HOSTNAME):$($envs.REDIS_PORT)."}
+$previousProbeUsername=$env:IMMICH_PROBE_REDIS_USERNAME
+$previousProbePassword=$env:IMMICH_PROBE_REDIS_PASSWORD
+try {
+    $env:IMMICH_PROBE_REDIS_USERNAME=[string]$envs.REDIS_USERNAME
+    $env:IMMICH_PROBE_REDIS_PASSWORD=[string]$envs.REDIS_PASSWORD
+    & $node -e $bullProbe (Join-Path $current 'server') $envs.REDIS_HOSTNAME $envs.REDIS_PORT
+    if($LASTEXITCODE -ne 0){throw "BullMQ compatibility probe failed against Redis-compatible endpoint $($envs.REDIS_HOSTNAME):$($envs.REDIS_PORT)."}
+} finally {
+    $env:IMMICH_PROBE_REDIS_USERNAME=$previousProbeUsername
+    $env:IMMICH_PROBE_REDIS_PASSWORD=$previousProbePassword
+}
 
 $ffmpeg=Join-Path $current 'runtime\ffmpeg\ffmpeg.exe'
 $python=Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -Filter python.exe -File -Recurse|Where-Object{$_.FullName -notmatch '\\Scripts\\'}|Select-Object -First 1
