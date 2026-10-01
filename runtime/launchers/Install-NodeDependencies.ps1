@@ -68,6 +68,8 @@ try {
 
     $customSharp = Join-Path $ReleaseRoot 'dependencies\sharp\lib'
     if (Test-Path -LiteralPath $customSharp -PathType Container) {
+        $customVersions = Join-Path (Split-Path -Parent $customSharp) 'versions.json'
+        if (-not (Test-Path -LiteralPath $customVersions -PathType Leaf)) { throw "Custom Sharp version metadata is missing: $customVersions" }
         $sharpLib = Join-Path $ReleaseRoot 'server\node_modules\@img\sharp-win32-x64\lib'
         if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Installed Sharp runtime is missing: $sharpLib" }
         Get-ChildItem -LiteralPath $sharpLib -Filter '*.dll' -File -Recurse | Remove-Item -Force
@@ -77,7 +79,9 @@ try {
             New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
             Copy-Item -LiteralPath $dll.FullName -Destination $target -Force
         }
+        Copy-Item -LiteralPath $customVersions -Destination (Join-Path (Split-Path -Parent $sharpLib) 'versions.json') -Force
         Remove-Item -LiteralPath $customSharp -Recurse -Force
+        Remove-Item -LiteralPath $customVersions -Force
     }
     $expectedState | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $statePath
 } finally {

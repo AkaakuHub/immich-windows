@@ -28,10 +28,13 @@ $application = Join-Path $root 'artifacts\application'
 $sharpPackages = @(Get-ChildItem -LiteralPath (Join-Path $application 'server\node_modules\.pnpm') -Directory -Filter '@img+sharp-win32-x64@*' -ErrorAction SilentlyContinue)
 if ($sharpPackages.Count -ne 1) { throw "Expected one tested Sharp runtime package; found $($sharpPackages.Count)." }
 $sharpSourceLib = Join-Path $sharpPackages[0].FullName 'node_modules\@img\sharp-win32-x64\lib'
+$sharpSourceVersions = Join-Path $sharpPackages[0].FullName 'node_modules\@img\sharp-win32-x64\versions.json'
 foreach ($required in @('sharp-libvips-injection.json','sharp-libvips-qualification.json')) {
     if (-not (Test-Path -LiteralPath (Join-Path $application $required) -PathType Leaf)) { throw "Qualified Sharp build output is missing: $required" }
 }
 if (-not (Test-Path -LiteralPath $sharpSourceLib -PathType Container)) { throw "Tested Sharp runtime output is missing: $sharpSourceLib" }
+if (-not (Test-Path -LiteralPath $sharpSourceVersions -PathType Leaf)) { throw "Tested Sharp version metadata is missing: $sharpSourceVersions" }
+if ([string](Read-JsonFile $sharpSourceVersions).vips -ne [string]$versions.sharpLibvips.version) { throw 'Tested Sharp libvips version does not match the pinned version.' }
 if (-not $Destination) { $Destination = Join-Path $root "dist\immich-windows-$($upstream.version)-native-dependencies.zip" }
 $stage = New-CleanDirectory (Join-Path $root 'dist\native-dependencies')
 $sharpOutput = Join-Path $stage 'dependencies\sharp\lib'
@@ -44,6 +47,7 @@ Get-ChildItem -LiteralPath $sharpSourceLib -Filter '*.dll' -File -Recurse | ForE
 foreach ($required in @('libvips-core.dll','libvips-42.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $sharpOutput $required) -PathType Leaf)) { throw "Tested Sharp DLL payload is incomplete: $required" }
 }
+Copy-Item -LiteralPath $sharpSourceVersions -Destination (Join-Path $stage 'dependencies\sharp\versions.json')
 Copy-Directory (Join-Path $native 'vc-runtime') (Join-Path $stage 'runtime\vc-runtime')
 Copy-Directory (Join-Path $native 'postgres-extensions') (Join-Path $stage 'dependencies\postgres-extensions')
 foreach ($required in @(
