@@ -22,7 +22,7 @@ if(-not(Test-Path -LiteralPath $psql -PathType Leaf)){throw "psql.exe not found:
 $env:PGPASSWORD=[string]$envs.DB_PASSWORD
 
 function Invoke-ImmichSql {
-    param([Parameter(Mandatory)][string]$Sql)
+    param([Parameter(Mandatory)][string]$Sql,[switch]$Utf8Hex)
     $args=@(
         '-X','--no-psqlrc','--set','ON_ERROR_STOP=1',
         '--set',"media_root=$MediaRoot",
@@ -34,6 +34,9 @@ function Invoke-ImmichSql {
     )
     $output=@($Sql | & $psql @args)
     if($LASTEXITCODE -ne 0){throw 'psql failed while verifying migrated paths.'}
+    if($Utf8Hex){
+        return @($output | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromHexString($_)) })
+    }
     return $output
 }
 
@@ -130,7 +133,7 @@ WITH p AS (SELECT rtrim(:'media_root', '/' || chr(92)) AS root), paths AS (
   UNION ALL
   SELECT 'user.profileImagePath', u."profileImagePath" FROM "user" u WHERE u."profileImagePath" IS NOT NULL AND u."profileImagePath" <> ''
 )
-SELECT kind || '|' || path
+SELECT encode(convert_to(kind || '|' || path, 'UTF8'), 'hex')
 FROM paths CROSS JOIN p
 WHERE path IS NOT NULL AND path <> ''
   AND NOT (
@@ -139,7 +142,7 @@ WHERE path IS NOT NULL AND path <> ''
   )
 LIMIT 20;
 '@
-        Invoke-ImmichSql $badManagedSql | ForEach-Object { Write-Error "Managed path outside media root: $_" }
+        Invoke-ImmichSql $badManagedSql -Utf8Hex | ForEach-Object { Write-Error "Managed path outside media root: $_" }
         throw "$managedWrong of $managedTotal Immich-managed database paths are outside Windows media root $MediaRoot"
     }
 
@@ -156,7 +159,7 @@ WITH external_paths AS (
   UNION ALL
   SELECT 'library.importPaths', item.path FROM library l CROSS JOIN LATERAL unnest(l."importPaths") item(path)
 )
-SELECT kind || '|' || path
+SELECT encode(convert_to(kind || '|' || path, 'UTF8'), 'hex')
 FROM external_paths
 WHERE path IS NOT NULL AND path <> ''
   AND NOT (
@@ -165,18 +168,18 @@ WHERE path IS NOT NULL AND path <> ''
   )
 LIMIT 20;
 '@
-        Invoke-ImmichSql $badExternalSql | ForEach-Object { Write-Error "External path is not native Windows absolute: $_" }
+        Invoke-ImmichSql $badExternalSql -Utf8Hex | ForEach-Object { Write-Error "External path is not native Windows absolute: $_" }
         throw "$externalInvalid of $externalTotal external-library database paths are not native Windows absolute paths. Use Change-ExternalLibraryPath.ps1 for each old mount root."
     }
 
     # Every configured external-library root should exist before the first scan.
-    $importPaths=@(Invoke-ImmichSql 'SELECT item.path FROM library l CROSS JOIN LATERAL unnest(l."importPaths") item(path) ORDER BY item.path;' | Where-Object { $_ })
+    $importPaths=@(Invoke-ImmichSql 'SELECT encode(convert_to(item.path, ''UTF8''), ''hex'') FROM library l CROSS JOIN LATERAL unnest(l."importPaths") item(path) ORDER BY item.path;' -Utf8Hex | Where-Object { $_ })
 
     $managedPaths=@()
     $externalPaths=@()
     if($FilesystemSample -gt 0){
         $managedSampleSql=@'
-SELECT path FROM (
+SELECT encode(convert_to(path, 'UTF8'), 'hex') FROM (
   SELECT a."originalPath" AS path FROM asset a WHERE a."isExternal" = false
   UNION
   SELECT af.path FROM asset_file af JOIN asset a ON a.id = af."assetId" WHERE NOT (a."isExternal" = true AND af.type = 'sidecar')
@@ -187,17 +190,17 @@ SELECT path FROM (
 ) p WHERE path IS NOT NULL AND path <> '' ORDER BY path LIMIT __LIMIT__;
 '@
         $managedSampleSql=$managedSampleSql.Replace('__LIMIT__',[string]$FilesystemSample)
-        $managedPaths=@(Invoke-ImmichSql $managedSampleSql | Where-Object { $_ })
+        $managedPaths=@(Invoke-ImmichSql $managedSampleSql -Utf8Hex | Where-Object { $_ })
 
         $externalSampleSql=@'
-SELECT path FROM (
+SELECT encode(convert_to(path, 'UTF8'), 'hex') FROM (
   SELECT a."originalPath" AS path FROM asset a WHERE a."isExternal" = true AND a."isOffline" = false
   UNION
   SELECT af.path FROM asset_file af JOIN asset a ON a.id = af."assetId" WHERE a."isExternal" = true AND a."isOffline" = false AND af.type = 'sidecar'
 ) p WHERE path IS NOT NULL AND path <> '' ORDER BY path LIMIT __LIMIT__;
 '@
         $externalSampleSql=$externalSampleSql.Replace('__LIMIT__',[string]$FilesystemSample)
-        $externalPaths=@(Invoke-ImmichSql $externalSampleSql | Where-Object { $_ })
+        $externalPaths=@(Invoke-ImmichSql $externalSampleSql -Utf8Hex | Where-Object { $_ })
     }
 } finally {
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
