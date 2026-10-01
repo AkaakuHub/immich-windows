@@ -74,4 +74,6 @@ MACHINE_LEARNING_DEVICE_ID=0
 
 `MACHINE_LEARNING_DEVICE_ID`はDirectMLのDXGIアダプター番号です。複数GPUがある場合はWindowsのタスクマネージャーでGPU番号を確認して指定します。画像デコード、リサイズ、NMS、OCRの後処理などONNXモデル外の処理はCPUで実行されます。
 
+インストール引数で指定する場合は、例えば`-MachineLearningAccelerator directml-strict -MachineLearningDeviceId 1`を使用します。設定値は`immich.env`へ保存され、AllUsersではWindowsサービス環境にも反映されます。
+
 依存取得に失敗した場合はエラーを確認し、同じReleaseの`Install.cmd`と同じ引数に`-ResumeExistingRelease`を追加して再実行します。コピー済みのアプリから依存の設定を再開します。別のReleaseにはこの引数を使いません。

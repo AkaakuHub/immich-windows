@@ -16,6 +16,8 @@ param(
     [ValidateRange(1,65535)][int]$DatabasePort = 5432,
     [ValidateRange(1,65535)][int]$ServerPort = 2283,
     [ValidateRange(1,65535)][int]$MachineLearningPort = 3003,
+    [ValidateSet('auto','cpu','directml','directml-strict')][string]$MachineLearningAccelerator = 'auto',
+    [ValidateRange(0,64)][int]$MachineLearningDeviceId = 0,
     [ValidateSet('BundledValkey','External')][string]$RedisMode = 'BundledValkey',
     [string]$RedisHost = '127.0.0.1',
     [int]$RedisPort = 6379,
@@ -157,6 +159,10 @@ $PostgresService = if ($PSBoundParameters.ContainsKey('PostgresService')) { $Pos
 $PostgresRoot = if ($PSBoundParameters.ContainsKey('PostgresRoot')) { $PostgresRoot } elseif ($sourceEnv['POSTGRES_ROOT']) { [string]$sourceEnv['POSTGRES_ROOT'] } else { $PostgresRoot }
 $ServerPort = if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort } elseif ($sourceEnv['IMMICH_PORT']) { [int]$sourceEnv['IMMICH_PORT'] } else { $ServerPort }
 $MachineLearningPort = if ($PSBoundParameters.ContainsKey('MachineLearningPort')) { $MachineLearningPort } elseif ($sourceEnv['IMMICH_PORT_ML']) { [int]$sourceEnv['IMMICH_PORT_ML'] } else { $MachineLearningPort }
+$MachineLearningAccelerator = if ($PSBoundParameters.ContainsKey('MachineLearningAccelerator')) { $MachineLearningAccelerator } elseif ($sourceEnv['MACHINE_LEARNING_ACCELERATOR']) { [string]$sourceEnv['MACHINE_LEARNING_ACCELERATOR'] } else { $MachineLearningAccelerator }
+$MachineLearningDeviceId = if ($PSBoundParameters.ContainsKey('MachineLearningDeviceId')) { $MachineLearningDeviceId } elseif ($sourceEnv['MACHINE_LEARNING_DEVICE_ID']) { [int]$sourceEnv['MACHINE_LEARNING_DEVICE_ID'] } else { $MachineLearningDeviceId }
+if ($MachineLearningAccelerator -notin @('auto','cpu','directml','directml-strict')) { throw "Unknown MachineLearningAccelerator: $MachineLearningAccelerator" }
+if ($MachineLearningDeviceId -lt 0) { throw 'MachineLearningDeviceId must be zero or greater.' }
 $RedisPort = if ($PSBoundParameters.ContainsKey('RedisPort')) { $RedisPort } elseif ($sourceEnv['REDIS_PORT']) { [int]$sourceEnv['REDIS_PORT'] } else { $RedisPort }
 $RedisMode = if ($PSBoundParameters.ContainsKey('RedisMode')) { $RedisMode } elseif ($sourceEnv['IMMICH_WINDOWS_REDIS_MODE']) { [string]$sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] } else { $RedisMode }
 $RedisHost = if ($PSBoundParameters.ContainsKey('RedisHost')) { $RedisHost } elseif ($sourceEnv['REDIS_HOSTNAME'] -and $sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] -eq 'External') { [string]$sourceEnv['REDIS_HOSTNAME'] } else { $RedisHost }
@@ -286,6 +292,8 @@ $managedEnvValues = [ordered]@{
     IMMICH_WINDOWS_INSTALL_SCOPE = $Scope
     MACHINE_LEARNING_CACHE_FOLDER = $cache
     MACHINE_LEARNING_WORKERS = '1'
+    MACHINE_LEARNING_ACCELERATOR = $MachineLearningAccelerator
+    MACHINE_LEARNING_DEVICE_ID = [string]$MachineLearningDeviceId
     IMMICH_HOST_ML = '127.0.0.1'
     IMMICH_PORT_ML = [string]$MachineLearningPort
     NO_COLOR = 'true'
