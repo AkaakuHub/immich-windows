@@ -30,6 +30,15 @@ $directmlRequirement = "onnxruntime-directml==$($versions.onnxruntimeDirectml.ve
 $requirementsLines = @($requirementsLines | ForEach-Object {
     if ($_ -match '^onnxruntime==') { $directmlRequirement } else { $_ }
 })
+foreach ($required in @(
+    "sympy==$($versions.onnxruntimeDirectml.sympy)",
+    "mpmath==$($versions.onnxruntimeDirectml.mpmath)"
+)) {
+    $name = $required.Split('=')[0]
+    if (-not ($requirementsLines -match ("^" + [regex]::Escape($name) + "=="))) {
+        $requirementsLines += $required
+    }
+}
 $requirementsLines | Set-Content -Encoding utf8 -LiteralPath $requirementsPath
 
 $manifest = [ordered]@{
