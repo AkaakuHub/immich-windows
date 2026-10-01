@@ -1,6 +1,6 @@
 # immich-windows
 
-ImmichをWindows x64で動かす非公式プロジェクトです。
+ImmichをWindowsで、WSLを使用することなくネイティブに動かす非公式プロジェクトです。
 
 ## インストール
 
