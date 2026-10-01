@@ -1,10 +1,8 @@
 # 開発と上流更新
 
-通常の導入・更新ではビルド環境は不要です。利用者向けの操作は[導入手順](install.md)と[更新手順](operations.md)にまとめています。
-
 ## ローカル開発環境
 
-Windows x64、Git、PowerShell 7、Visual Studio 2022 Build ToolsのC++ x64ツールとWindows SDK、LLVMの`libclang.dll`、Rustup、PostgreSQL 18が必要です。libvipsを新しくビルドする場合のみLinuxコンテナーを実行できるDockerも使います。Node.js・pnpmなどの版はビルドスクリプトが準備します。
+Windows x64、Git、PowerShell 7、Visual Studio 2022 Build ToolsのC++ x64ツールとWindows SDK、LLVMの`libclang.dll`、Rustup、PostgreSQL 18が必要です。libvipsのビルドにはDockerも使います。
 
 リポジトリのルートで実行します。
 
@@ -25,9 +23,9 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 ./packaging/New-NativeDependenciesArchive.ps1
 ```
 
-`Build-Release.ps1`は`dist/immich-windows-vX.Y.Z-win-x64`に未圧縮のアプリを作ります。ローカルのデバッグでは、このフォルダーを使えます。ZIP作成や全削除を毎回行う必要はありません。既存のlibvipsを明示する場合は`-CustomSharpLibvipsBundle`を指定します。
+ビルド結果は`dist/immich-windows-vX.Y.Z-win-x64`に出力されます。既存のlibvipsを使う場合は`-CustomSharpLibvipsBundle`を指定します。
 
-`Fetch-MediaFixtures.ps1`はJPEG・PNG・WebP・AVIF・HEIC・RAW・JXLの公開サンプルを取得します。これは画像デコード検証用です。顔認識、動画変換、アップロードなどの実機確認は別途必要です。
+`Fetch-MediaFixtures.ps1`は画像デコード検証用のサンプルを取得します。顔認識、動画変換、アップロードは別途確認してください。
 
 ビルド済みコードから配布物だけを作り直す場合は、同じPowerShellセッションで実行します。
 
@@ -36,7 +34,7 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 ./packaging/New-Package.ps1
 ```
 
-公開前のローカル検証では`dist/immich-windows-vX.Y.Z-win-x64/installer/Install.ps1`へ`-PackageRoot`を渡して実行します。単独の`dist/Install.cmd`は公開ReleaseのZIPを取得するため、ローカル成果物の検証には使いません。公開前のネイティブ依存ZIPは、検証用`InstallRoot\cache\downloads`に同じファイル名で置けば、インストーラーが再利用します。稼働環境のメディアとDBは使用しません。起動後は`tests/Smoke-Windows.ps1`を実行し、必要なメディア機能を確認します。
+ローカル検証では生成された`installer/Install.ps1`に`-PackageRoot`を渡して実行します。ネイティブ依存ZIPは検証先の`InstallRoot\cache\downloads`に置いてください。稼働中のメディアとDBは使わず、起動後に`tests/Smoke-Windows.ps1`で確認します。
 
 ## GitHub Actions
 
@@ -47,13 +45,11 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 | `keep-native-build-cache` | 定期的に現在の設定に一致するキャッシュを参照します |
 | `check-upstream-immich-release` | 上流の新しいstable版をIssueで通知します。自動で版を変更しません |
 
-重いビルドはpushのたびには実行しません。キャッシュは上流版・依存・パッチ・ビルドコードに応じて使い分けます。設定が一致しない古いキャッシュを新しい成果物として保存することはありません。GitHub側の容量制限や削除によるキャッシュ消失時は再ビルドが必要です。
-
-`all`は作成したアプリをWindows runnerへ導入し、スモークテスト成功後にZIPを公開します。ユーザー操作、実データ移行、再起動、長時間のジョブ処理の全検証を代替するものではありません。
+`all`はWindows runnerでインストールとスモークテストを行い、成功後にZIPを公開します。実データの移行や再起動は検証しません。
 
 ## 上流版を更新する
 
-1. `upstream.json`のtag/commitと、上流が要求する`dependencies/versions.json`の版を更新します。PostgreSQLのChocolatey配布版もこのファイルで指定します。
+1. `upstream.json`のtag/commitと`dependencies/versions.json`の版を更新します。
 2. `Prepare-Source.ps1`でパッチを確認します。上流で不要になったパッチを削除し、必要な差分だけを修正します。
 3. 静的監査、ビルド、薄型パッケージからの両モード導入、画像・動画・顔認識・検索・バックアップ・復元を確認します。
 4. 論理単位でコミットし、公開する変更を確定してからActionsの`all`を実行します。
