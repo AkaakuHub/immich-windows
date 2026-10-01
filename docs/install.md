@@ -50,7 +50,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 引数を指定する場合も、同じインストーラーを使います。
 
 ```powershell
-.\Install.cmd -Scope AllUsers -EnvFile 'D:\immich\.env' -MediaRoot 'D:\Photos\Immich' -InstallRoot 'C:\SharedC\immich-app'
+.\Install.cmd -Scope AllUsers -EnvFile 'D:\immich\.env' -MediaRoot 'D:\Photos\Immich'
 ```
 
 `.env`のDB名・ユーザー名・パスワードなどを読み込み、Windowsで必要なホスト名と実行パスを設定します。`DB_HOSTNAME=database`はローカルのPostgreSQLへ、`UPLOAD_LOCATION=/mnt/d/...`は`D:\...`へ変換します。それ以外のLinuxパスはWindowsの実パスを入力してください。元の`.env`は設定先の`immich.env`へ取り込みます。
