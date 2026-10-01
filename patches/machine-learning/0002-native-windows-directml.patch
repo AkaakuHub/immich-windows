@@ -9,8 +9,8 @@ diff --git a/machine-learning/immich_ml/config.py b/machine-learning/immich_ml/c
  
      @property
 +    def accelerator(self) -> str:
-+        accelerator = os.environ.get("MACHINE_LEARNING_ACCELERATOR", "auto").lower()
-+        allowed = {"auto", "cpu", "directml", "directml-strict"}
++        accelerator = os.environ.get("MACHINE_LEARNING_ACCELERATOR", "cpu").lower()
++        allowed = {"cpu", "directml", "directml-strict"}
 +        if accelerator not in allowed:
 +            raise ValueError(f"Unknown machine learning accelerator '{accelerator}'. Expected one of {sorted(allowed)}")
 +        return accelerator
@@ -20,22 +20,18 @@ diff --git a/machine-learning/immich_ml/config.py b/machine-learning/immich_ml/c
          return os.environ.get("MACHINE_LEARNING_DEVICE_ID", "0")
  
 
-diff --git a/machine-learning/immich_ml/models/constants.py b/machine-learning/immich_ml/models/constants.py
---- a/machine-learning/immich_ml/models/constants.py
-+++ b/machine-learning/immich_ml/models/constants.py
-@@ -89,6 +89,7 @@
- }
- 
- SUPPORTED_PROVIDERS = [
-+    "DmlExecutionProvider",
-     "CUDAExecutionProvider",
-     "MIGraphXExecutionProvider",
-     "OpenVINOExecutionProvider",
-
 diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immich_ml/sessions/ort.py
 --- a/machine-learning/immich_ml/sessions/ort.py
 +++ b/machine-learning/immich_ml/sessions/ort.py
-@@ -56,6 +56,7 @@
+@@ -9,7 +9,6 @@
+ import onnxruntime as ort
+ from numpy.typing import NDArray
+ 
+-from immich_ml.models.constants import SUPPORTED_PROVIDERS
+ from immich_ml.schemas import ModelPrecision, SessionNode
+ 
+ from ..config import log, settings
+@@ -56,6 +55,7 @@
      ):
          self.model_path = Path(model_path)
          self.providers = providers if providers is not None else self._providers_default
@@ -43,16 +39,20 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
          self.provider_options = provider_options if provider_options is not None else self._provider_options_default
          self.sess_options = sess_options if sess_options is not None else self._sess_options_default
          self.session = ort.InferenceSession(
-@@ -64,6 +65,8 @@
+@@ -64,6 +64,12 @@
              provider_options=self.provider_options,
              sess_options=self.sess_options,
          )
-+        if "DmlExecutionProvider" in self.providers and settings.accelerator == "directml-strict":
++        if "DmlExecutionProvider" in self.providers:
++            active_providers = self.session.get_providers()
++            if "DmlExecutionProvider" not in active_providers:
++                raise RuntimeError(f"DirectML session initialization failed; active providers: {active_providers}")
++            # Keep graph-level CPU fallback in directml mode, but never replace the whole session with CPU after an EP failure.
 +            self.session.disable_fallback()
  
      def get_inputs(self) -> Sequence[SessionNode]:
          inputs: Sequence[SessionNode] = self.session.get_inputs()
-@@ -83,6 +86,10 @@
+@@ -83,6 +89,10 @@
          input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
          run_options: Any = None,
      ) -> list[NDArray[np.float32]]:
@@ -63,26 +63,23 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
          if "MIGraphXExecutionProvider" in self.providers:
              model_key = self.model_path.resolve().as_posix()
              input_key = (model_key, _migraphx_input_signature(input_feed))
-@@ -113,6 +120,18 @@
+@@ -113,7 +123,14 @@
      def _providers_default(self) -> list[str]:
          available_providers = set(ort.get_available_providers())
          log.debug(f"Available ORT providers: {available_providers}")
-+        accelerator = settings.accelerator
-+        if accelerator == "cpu":
++        if settings.accelerator == "cpu":
 +            return ["CPUExecutionProvider"]
-+        if accelerator in {"directml", "directml-strict"}:
-+            if "DmlExecutionProvider" not in available_providers:
-+                raise RuntimeError(
-+                    "DirectML was requested but DmlExecutionProvider is not available in this ONNX Runtime build."
-+                )
-+            providers = ["DmlExecutionProvider"]
-+            if accelerator == "directml":
-+                providers.append("CPUExecutionProvider")
-+            return providers
-         return [provider for provider in SUPPORTED_PROVIDERS if provider in available_providers]
++        if "DmlExecutionProvider" not in available_providers:
++            raise RuntimeError("DirectML was requested but DmlExecutionProvider is not available in this ONNX Runtime build.")
++        providers = ["DmlExecutionProvider"]
++        if settings.accelerator == "directml":
++            providers.append("CPUExecutionProvider")
++        return providers
+-        return [provider for provider in SUPPORTED_PROVIDERS if provider in available_providers]
  
      @property
-@@ -131,6 +150,8 @@
+     def provider_options(self) -> list[dict[str, Any]]:
+@@ -131,6 +148,8 @@
              match provider:
                  case "CPUExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested"}
@@ -91,7 +88,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
                  case "CUDAExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested", "device_id": settings.device_id}
                  case "MIGraphXExecutionProvider":
-@@ -203,4 +224,12 @@
+@@ -203,4 +222,12 @@
          if sess_options.inter_op_num_threads > 1:
              sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
  
@@ -112,7 +109,7 @@ diff --git a/machine-learning/immich_ml/models/facial_recognition/recognition.py
      @property
      def _batch_size_default(self) -> int | None:
          providers = ort.get_available_providers()
-+        directml_active = settings.accelerator != "cpu" and "DmlExecutionProvider" in providers
++        directml_active = settings.accelerator in {"directml", "directml-strict"} and "DmlExecutionProvider" in providers
          if (
              self.model_format == ModelFormat.ONNX
 +            and not directml_active

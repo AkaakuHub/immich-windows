@@ -66,11 +66,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 Windows版は`onnxruntime-directml`を使用し、CLIP、顔検出・顔認識、OCRのONNX推論をDirectML対応GPUへ送ることができます。`immich.env`で次を指定します。
 
 ```text
-MACHINE_LEARNING_ACCELERATOR=auto
+MACHINE_LEARNING_ACCELERATOR=cpu
 MACHINE_LEARNING_DEVICE_ID=0
 ```
 
-`MACHINE_LEARNING_ACCELERATOR`は`auto`、`cpu`、`directml`、`directml-strict`のいずれかです。`auto`はDirectMLが利用できればDirectMLを優先し、未対応ノードはCPUへフォールバックします。`cpu`はCPUだけを使用します。`directml`はDirectMLを明示的に要求し、未対応ノードはCPUへフォールバックします。`directml-strict`はCPU Execution Providerへのフォールバックを禁止し、モデル全体をDirectMLへ割り当てられない場合はモデルのロードを失敗させます。
+`MACHINE_LEARNING_ACCELERATOR`は`cpu`、`directml`、`directml-strict`のいずれかです。既定値の`cpu`は従来どおりCPUだけを使用します。`directml`はDirectMLを明示的に使用し、DirectMLが対応しないグラフノードだけCPU Execution Providerへ割り当てます。`directml-strict`はCPU Execution Providerへのノード割り当ても禁止し、モデル全体をDirectMLへ割り当てられない場合はモデルのロードを失敗させます。
 
 `MACHINE_LEARNING_DEVICE_ID`はDirectMLのDXGIアダプター番号です。複数GPUがある場合はWindowsのタスクマネージャーでGPU番号を確認して指定します。画像デコード、リサイズ、NMS、OCRの後処理などONNXモデル外の処理はCPUで実行されます。
 

@@ -33,12 +33,7 @@
   },
   "onnxruntimeDirectml": {
     "version": "1.24.4",
-    "source": "https://pypi.org/project/onnxruntime-directml/1.24.4/",
-    "python": "cp311",
-    "platform": "win_amd64",
-    "sha256": "96642a787e5a6f33bf043521c0f06eb1eb663f6b830e5862a2026d03f9c90543",
-    "sympy": "1.12",
-    "mpmath": "1.3.0"
+    "source": "https://pypi.org/project/onnxruntime-directml/1.24.4/"
   },
   "node": {
     "version": "24.15.0",
