@@ -2,19 +2,19 @@
 
 ## 1. PowerShell 7とPostgreSQLを準備する
 
-Windows x64とインターネット接続が必要です。[PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)を導入し、`pwsh`を実行できる状態にします。以降の操作はPowerShell 7で行います。
+Windows x64とインターネット接続が必要です。[PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)を導入してください。
 
-[PostgreSQLのWindows版](https://www.postgresql.org/download/windows/)からPostgreSQL 18 x64をインストールし、サービスを起動してください。ImmichのインストーラーはPostgreSQL本体をインストールしません。
+[PostgreSQL 18 x64](https://www.postgresql.org/download/windows/)をインストールし、サービスを起動してください。
 
 既定の設置先は`C:\Program Files\PostgreSQL\18`、サービス名は`postgresql-x64-18`です。変更した場合は`Install.cmd`に`-PostgresRoot`と`-PostgresService`を渡します。
 
-既存の`.env`の`DB_PASSWORD`を引き継ぐ場合、WindowsのPostgreSQLにも同じユーザー名・パスワードを用意します。標準の`postgres`を使う場合はPostgreSQL導入時のパスワードを合わせます。インストーラーは認証情報を利用しますが、既存のPostgreSQLユーザーのパスワードは変更しません。指定ユーザーにはDB・拡張を作成できる権限が必要です。
+既存の`.env`を使う場合、WindowsのPostgreSQLに同じDBユーザーとパスワードを用意してください。指定ユーザーにはDBと拡張の作成権限が必要です。インストーラーは既存ユーザーのパスワードを変更しません。
 
 ## 2. Install.cmdをダウンロードする
 
-[Releases](https://github.com/AkaakuHub/immich-windows/releases)の`Install.cmd`をダウンロードします。実行すると、同じReleaseのアプリZIPを自動取得・展開します。CMDはZIPに含めません。GitHubが表示する`Source code`は導入用ではありません。
+[Releases](https://github.com/AkaakuHub/immich-windows/releases)の`Install.cmd`をダウンロードします。GitHubの`Source code`は導入用ではありません。
 
-`native-dependencies.zip`もインストーラーが自動取得します。Node.js、Python、pnpm、FFmpeg、Valkeyの手動インストールや、本番PCでのコンパイルは不要です。
+必要な依存はインストーラーが取得します。
 
 ## 3. インストール範囲を選ぶ
 
@@ -26,7 +26,7 @@ Windows x64とインターネット接続が必要です。[PowerShell 7](https:
 | 設定・ログの既定位置 | `C:\ProgramData\Immich` | `%LOCALAPPDATA%\Immich` |
 | PostgreSQL拡張の配置 | インストーラーが実施 | 事前に管理者が実施 |
 
-常時稼働するサーバーには、サインアウト後も動くAllUsersを選びます。CurrentUserのインストール先と設定先は`%LOCALAPPDATA%`配下に指定します。両方を同じPCで動かす場合はDB名、メディア、Server・ML・Valkeyのポートを分けてください。
+サインアウト後も動かす場合はAllUsersを選びます。両方を同じPCで動かす場合はDB名、メディア、Server・ML・Valkeyのポートを分けてください。
 
 これらは`-DatabaseName`、`-MediaRoot`、`-ServerPort`、`-MachineLearningPort`、`-RedisPort`で指定できます。
 
@@ -41,11 +41,11 @@ Set-ExecutionPolicy -Scope Process Bypass
   -AdminPassword 'PostgreSQLで設定したパスワード'
 ```
 
-`-PackageRoot`には`dependencies`フォルダーを含む展開先を指定します。pgvector・VectorChordの配置とPostgreSQLの設定変更・再起動を行います。既に対象版の拡張が利用できる場合、この準備は不要です。拡張が更新された場合も管理者による配置が必要です。
+`-PackageRoot`には`dependencies`フォルダーを含む展開先を指定します。対象版の拡張が既に利用できる場合、この操作は不要です。
 
 ## 4. Install.cmdを実行する
 
-ダウンロードした`Install.cmd`をダブルクリックし、範囲、既存の`.env`、メディアフォルダー、DBパスワードを指定します。AllUsersを選ぶとUAC確認が表示され、承認後に処理が続きます。写真を置くフォルダーは事前に作成してください。
+`Install.cmd`を実行し、範囲、`.env`、メディアフォルダー、DBパスワードを指定します。メディアフォルダーは事前に作成してください。
 
 引数を指定する場合も、同じインストーラーを使います。
 
@@ -57,7 +57,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 `DB_URL`・`REDIS_URL`形式は導入時に使用しません。接続先を`DB_HOSTNAME`・`DB_PORT`・`DB_USERNAME`・`DB_PASSWORD`・`DB_DATABASE_NAME`と、`REDIS_HOSTNAME`・`REDIS_PORT`・`REDIS_USERNAME`・`REDIS_PASSWORD`へ分けて指定してください。内蔵Valkeyは既存の`REDIS_PASSWORD`を設定し、ユーザー名は未指定または`default`を使います。独自のRedis ACLユーザーを使う場合は`-RedisMode External`で既存のRedisへ接続します。
 
-メディア・DBのデータはアプリのインストール先と分けます。`current`が現在のアプリを指すため、バージョン更新でも利用するパスは変わりません。設定先を変える場合は`-DataRoot`を指定します。
+設定先を変える場合は`-DataRoot`を指定します。
 
 成功後は`http://127.0.0.1:2283/`へアクセスします。新規DBには最初の管理者を作成します。既存DBを移行する場合は、[移行手順](migration.md)に従って`-DoNotStart`付きで導入してください。これは直後の起動だけを抑止し、自動起動の登録は行います。
 
