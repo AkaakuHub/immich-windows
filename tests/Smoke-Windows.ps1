@@ -104,6 +104,21 @@ $python=Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -Fi
 $nodeVersion=& $node --version; if($LASTEXITCODE -ne 0){throw 'Node runtime failed.'}; Write-Host "Node $nodeVersion"
 $ffmpegVersion=& $ffmpeg -version; if($LASTEXITCODE -ne 0){throw 'FFmpeg runtime failed.'}; Write-Host ($ffmpegVersion|Select-Object -First 1)
 $pythonVersion=& $python.FullName --version; if($LASTEXITCODE -ne 0){throw 'Python runtime failed.'}; Write-Host $pythonVersion
+$ortProbe=@'
+import json
+import sys
+import onnxruntime as ort
+
+expected = sys.argv[1]
+providers = ort.get_available_providers()
+print(json.dumps({"onnxruntime": ort.__version__, "providers": providers}))
+if ort.__version__ != expected:
+    raise SystemExit(f"Unexpected ONNX Runtime version: {ort.__version__}; expected {expected}")
+if "DmlExecutionProvider" not in providers:
+    raise SystemExit(f"DirectML execution provider is unavailable: {providers}")
+'@
+& $python.FullName -c $ortProbe ([string]$manifest.dependencies.onnxruntimeDirectml.version)
+if($LASTEXITCODE -ne 0){throw 'ONNX Runtime DirectML capability probe failed.'}
 
 $statfsProbe=@'
 const fs = require('node:fs/promises');
