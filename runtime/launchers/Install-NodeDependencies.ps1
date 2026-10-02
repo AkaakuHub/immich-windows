@@ -60,7 +60,7 @@ foreach ($project in @('server','cli')) {
         (Test-ImmichDependencyInputsEqual $source $ReleaseRoot $project) -and (Test-NodeProjectComplete $source $project) -and
         (-not $sourceState.PSObject.Properties[$project] -or [string]$sourceState.$project -ceq [string]$expectedState[$project])) {
         try {
-            Copy-ImmichDependencyTree -Source (Join-Path $source "$project\node_modules") -Destination $modules
+            Copy-ImmichDependencyTree -Source (Join-Path $source "$project\node_modules") -Destination $modules -Label "$project Node packages"
             $skip[$project] = $true
             Write-Host "Reused installed $project Node packages (dependency inputs unchanged)."
         } catch { Write-Warning "Cannot reuse $project Node packages. $($_.Exception.Message)" }
@@ -93,13 +93,24 @@ $env:PATH = "$nodeRoot;$oldPath"
 $store = Join-Path $InstallRoot 'cache\pnpm-store'
 function Install-ProjectDependencies([string]$Project) {
     Push-Location -LiteralPath $Project
+    $progress=Start-ImmichProgress -Key node -Detail (Split-Path -Leaf $Project)
     try {
-        $output = @(& $node $pnpmCli @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--store-dir',$store) 2>&1)
+        $output = [Collections.Generic.Queue[string]]::new()
+        & $node $pnpmCli @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--reporter=append-only','--store-dir',$store) 2>&1 | ForEach-Object {
+            $line=[string]$_
+            Write-Host $line
+            $output.Enqueue($line)
+            if ($output.Count -gt 20) { [void]$output.Dequeue() }
+        }
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
             $details = ($output | Select-Object -Last 20 | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
             throw "pnpm install failed in $Project (exit code $exitCode): $details"
         }
+        Update-ImmichProgress -State $progress -Finished
+    } catch {
+        Update-ImmichProgress -State $progress -Failed
+        throw
     } finally { Pop-Location }
 }
 try {

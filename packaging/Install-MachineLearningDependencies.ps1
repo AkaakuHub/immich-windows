@@ -28,19 +28,25 @@ if ($source) { $markers += (Join-Path $source 'machine-learning\.dependencies-in
 foreach ($marker in $markers) {
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
     try { $installedState = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json } catch { continue }
+    if (-not $installedState -or -not $installedState.PSObject.Properties['python'] -or
+        -not $installedState.PSObject.Properties['requirementsSha256']) { continue }
     if ([string]$installedState.python -ne [string]$expectedState.python -or
         [string]$installedState.requirementsSha256 -cne [string]$expectedState.requirementsSha256) { continue }
     # Isolated mode ignores PYTHONHOME/PYTHONPATH. Check actual relocated imports, not only marker existence.
     $probe = 'import sys,pathlib,numpy,onnxruntime,uvicorn; root=pathlib.Path(sys.argv[1]).resolve(); assert pathlib.Path(sys.prefix).resolve().is_relative_to(root); assert pathlib.Path(sys.executable).resolve().is_relative_to(root); assert pathlib.Path(numpy.__file__).resolve().is_relative_to(root); assert pathlib.Path(onnxruntime.__file__).resolve().is_relative_to(root)'
+    $probeProgress=Start-ImmichProgress -Key verify -Detail 'Python imports'
     & $python.FullName -I -c $probe (Join-Path $mlRoot 'python-runtime')
-    if ($LASTEXITCODE -ne 0) { continue }
+    if ($LASTEXITCODE -ne 0) { Update-ImmichProgress -State $probeProgress -Failed; continue }
+    Update-ImmichProgress -State $probeProgress -Finished
     $expectedState | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $statePath
     Write-Host 'Reused installed Machine Learning packages (requirements unchanged; relocated imports verified).'
     return
 }
 $cache = Join-Path $InstallRoot 'cache\uv'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
+$syncProgress=Start-ImmichProgress -Key ml
 & $uv pip sync $requirements --python $python.FullName --system --break-system-packages --cache-dir $cache
-if ($LASTEXITCODE -ne 0) { throw "Could not install Machine Learning dependencies (uv exit code $LASTEXITCODE)." }
+if ($LASTEXITCODE -ne 0) { Update-ImmichProgress -State $syncProgress -Failed; throw "Could not install Machine Learning dependencies (uv exit code $LASTEXITCODE)." }
+Update-ImmichProgress -State $syncProgress -Finished
 $expectedState | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $statePath
 Write-Host 'Machine Learning dependencies installed for this release.'

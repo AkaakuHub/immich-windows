@@ -9,3 +9,6 @@ patches/series text eol=lf
 *.md text eol=lf
 *.ps1 text eol=lf
 *.psm1 text eol=lf
+
+# Byte-exact published legacy requirements fixture.
+tests/fixtures/ml-requirements-v3.2.2.txt text eol=lf

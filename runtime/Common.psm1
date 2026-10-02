@@ -514,6 +514,47 @@ function Invoke-ImmichValkey {
     } finally { $env:VALKEYCLI_AUTH=$previousAuth }
 }
 
+
+function Get-ImmichProgressText {
+    param([string]$Key,[string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+    $ja=$Culture.Replace('_','-').Split('-')[0] -eq 'ja'
+    $messages=@{
+        scan=@('Checking files','ファイルを確認中');copy=@('Copying existing files','既存ファイルをコピー中')
+        python=@('Checking installed Python','既存Pythonを確認中');native=@('Comparing native dependency files','ネイティブ依存ファイルを照合中')
+        node=@('Installing Node dependencies','Nodeの依存ライブラリをインストール中')
+        downloadNeeded=@('Missing or changed native files to acquire','取得が必要な未配置・変更済みネイティブファイル')
+        extract=@('Extracting cached archive','保存済みアーカイブを展開中');cleanup=@('Removing temporary extraction files','展開用一時ファイルを整理中')
+        ml=@('Checking and synchronizing Python dependencies','Pythonの依存ライブラリを確認・同期中')
+        prepare=@('Preparing the new release; current release stays running','新版を準備中（現在の版はまだ稼働中）')
+        stop=@('Stopping Immich','Immichを停止中');backup=@('Backing up the database','データベースをバックアップ中')
+        switch=@('Activating the prepared release','準備した新版へ切り替え中');start=@('Starting Immich','Immichを起動中')
+        verify=@('Checking the updated installation','更新後の動作を確認中')
+        complete=@('Completed','完了');failed=@('Failed','失敗');elapsed=@('elapsed','経過');items=@('items','件')
+        selection=@('If the console title says Select, press Esc to leave selection mode.','タイトルに「選択」と表示された場合はEscで選択を解除してください。')
+    }
+    if (-not $messages.ContainsKey($Key)) { throw "Unknown progress message: $Key" }
+    return $messages[$Key][[int]$ja]
+}
+function Start-ImmichProgress {
+    param([string]$Key,[string]$Detail)
+    $label=Get-ImmichProgressText $Key
+    if ($Detail) { $label+=': '+$Detail }
+    $state=@{Label=$label;Watch=[Diagnostics.Stopwatch]::StartNew();LastReport=0.0;Finished=$false}
+    Write-Host ('[{0:HH:mm:ss}] {1}' -f [DateTime]::Now,$label)
+    return $state
+}
+function Update-ImmichProgress {
+    param([System.Collections.IDictionary]$State,[long]$Completed=0,[long]$Total=-1,[switch]$Force,[switch]$Finished,[switch]$Failed)
+    if ($State.Finished) { return }
+    $seconds=$State.Watch.Elapsed.TotalSeconds
+    if (-not $Force -and -not $Finished -and -not $Failed -and $seconds-$State.LastReport -lt 2) { return }
+    $count=if ($Total -ge 0) { "${Completed}/${Total} $(Get-ImmichProgressText items)" } elseif ($Completed -gt 0) { "$Completed $(Get-ImmichProgressText items)" } else { '' }
+    $status=if($Failed){Get-ImmichProgressText failed}elseif($Finished){(Get-ImmichProgressText complete)+' '+$count}else{$count}
+    Write-Host ('[{0:HH:mm:ss}] {1} — {2} ({3} {4:N0}s)' -f [DateTime]::Now,$State.Label,$status,(Get-ImmichProgressText elapsed),$seconds)
+    $State.LastReport=$seconds
+    if ($Finished -or $Failed) { $State.Finished=$true;$State.Watch.Stop() }
+}
+
 # Dependencies are copied into an isolated candidate; the running release is never modified.
 function Get-ImmichDependencySource {
     param([string]$InstallRoot,[string]$ReleaseRoot)
@@ -584,7 +625,7 @@ function Test-ImmichDependencyInputsEqual {
     catch { return $false }
 }
 function Copy-ImmichDependencyTree {
-    param([string]$Source,[string]$Destination,[string[]]$ExcludeDirectoryNames=@())
+    param([string]$Source,[string]$Destination,[string[]]$ExcludeDirectoryNames=@(),[string]$Label='dependencies')
     $sourcePath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Source))
     $destinationPath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Destination))
     $separator = [IO.Path]::DirectorySeparatorChar
@@ -602,6 +643,7 @@ function Copy-ImmichDependencyTree {
     $root=Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
     if ($root -isnot [IO.DirectoryInfo]) { throw 'Dependency source is not a directory.' }
     if (Test-Path -LiteralPath $destinationPath) { throw 'Dependency destination already exists.' }
+    $scan=Start-ImmichProgress -Key scan -Detail $Label
     $entries=[Collections.Generic.List[IO.FileSystemInfo]]::new()
     $pending=[Collections.Generic.Stack[IO.DirectoryInfo]]::new()
     $pending.Push($root)
@@ -611,13 +653,17 @@ function Copy-ImmichDependencyTree {
             if ($entry -is [IO.DirectoryInfo] -and $entry.Name -in $ExcludeDirectoryNames) { continue }
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked dependency entry: $($entry.FullName)" }
             $entries.Add($entry)
+            Update-ImmichProgress -State $scan -Completed $entries.Count
             if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry) }
         }
     }
+    Update-ImmichProgress -State $scan -Completed $entries.Count -Total $entries.Count -Finished
     $parent=[IO.Path]::GetDirectoryName($destinationPath)
     [void][IO.Directory]::CreateDirectory($parent)
     $stage=Join-Path $parent ('.dependency-copy-'+[guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($stage)
+    $copy=Start-ImmichProgress -Key copy -Detail $Label
+    $copied=0
     try {
         foreach ($entry in $entries) {
             $target=Join-Path $stage ([IO.Path]::GetRelativePath($sourcePath,$entry.FullName))
@@ -626,8 +672,14 @@ function Copy-ImmichDependencyTree {
                 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
                 [IO.File]::Copy($entry.FullName,$target,$false)
             }
+            $copied++
+            Update-ImmichProgress -State $copy -Completed $copied -Total $entries.Count
         }
         [IO.Directory]::Move($stage,$destinationPath)
+        Update-ImmichProgress -State $copy -Completed $copied -Total $entries.Count -Finished
+    } catch {
+        Update-ImmichProgress -State $copy -Failed
+        throw
     } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }
 }
 

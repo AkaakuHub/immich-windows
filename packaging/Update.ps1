@@ -85,25 +85,33 @@ function Save-UpgradeState {
 }
 Save-UpgradeState
 
+Write-Host (Get-ImmichProgressText selection)
 $stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
 $backup=$null
 try {
+    $prepareProgress=Start-ImmichProgress -Key prepare
     $candidateRelease = Join-Path $InstallRoot "releases\v$candidateVersion"
     & (Join-Path $PSScriptRoot 'Install.ps1') -PackageRoot $PackageRoot -Scope $Scope -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService -ReuseServices -PrepareOnly -ResumeExistingRelease:(Test-Path -LiteralPath $candidateRelease)
+    Update-ImmichProgress -State $prepareProgress -Finished
     $state.databaseUnchanged = Test-ImmichDatabasePayloadEqual -PreviousRelease $previousRelease -CandidateRelease $candidateRelease
     $state.candidateRelease = $candidateRelease
     $state.status = 'stopping'
     Save-UpgradeState
+$stopProgress=Start-ImmichProgress -Key stop
 & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+Update-ImmichProgress -State $stopProgress -Finished
 if (-not $state.databaseUnchanged) {
+    $backupProgress=Start-ImmichProgress -Key backup
     $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot
     $backup=@($backup)[-1]
     if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){throw "Pre-upgrade database backup was not created: $backup"}
+    Update-ImmichProgress -State $backupProgress -Finished
     $state.databaseBackup=$backup
     Write-Host "Pre-upgrade database backup: $backup"
 } else {
     Write-Host 'Database-facing payloads are identical. Skipping upgrade-only DB backup and all installer DB changes.'
 }
+$switchProgress=Start-ImmichProgress -Key switch
 $state.status='installing'
 Save-UpgradeState
 
@@ -120,13 +128,18 @@ Save-UpgradeState
         -ResumeExistingRelease `
         -DoNotStart
 
+    Update-ImmichProgress -State $switchProgress -Finished
     $state.candidateRelease=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
     $state.status='candidate-installed'
     Save-UpgradeState
 
+    $startProgress=Start-ImmichProgress -Key start
     & (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+    Update-ImmichProgress -State $startProgress -Finished
+    $verifyProgress=Start-ImmichProgress -Key verify
     & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
 
+    Update-ImmichProgress -State $verifyProgress -Finished
     $state.status='qualified'
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')
     Save-UpgradeState
