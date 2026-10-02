@@ -82,28 +82,13 @@ $menuEnv=Join-Path ([IO.Path]::GetTempPath()) ('immich-menu-'+[guid]::NewGuid().
 $previousSystemRoot=$env:SystemRoot
 try {
     if (-not $env:SystemRoot) { $env:SystemRoot=[IO.Path]::GetTempPath() }
-    foreach ($culture in @('ja-JP','en-US','fr-FR')) {
     foreach ($scope in @('AllUsers','CurrentUser')) {
-        $entries=@(Get-ImmichStartMenuEntries -InstallRoot (Join-Path $root "test install's folder") -DataRoot (Join-Path $root "test data's folder") -Scope $scope -Culture $culture)
-        Assert-True ($entries.Count -eq 4) 'Exactly four daily-use Start menu entries are required.'
-        $expectedNames=if ($culture -eq 'ja-JP') { 'Immichを開く,Immichを起動,Immichを停止,Immichを更新' } else { 'Open Immich,Start Immich,Stop Immich,Update Immich' }
-        Assert-True (($entries.Name -join ',') -eq $expectedNames) 'Start menu labels must follow the UI locale.'
-        foreach ($entry in $entries) {
-            Assert-True ($entry.IconLocation -match 'favicon\.ico,0$') 'Every menu item must use the packaged upstream icon.'
-            Assert-True ($entry.IconLocation -notmatch 'pwsh\.exe') 'PowerShell must not be used as the Start menu icon.'
-            if ($entry.Arguments -match '-EncodedCommand ([A-Za-z0-9+/=]+)$') {
-                $command=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
-                $tokens=$null;$errors=$null
-                [void][System.Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
-                Assert-True (@($errors).Count -eq 0) 'Shortcut command must parse with spaces and apostrophes in paths.'
-                if ($entry.Id -eq 'open') {
-                    Assert-True ($command -match 'Get-ImmichLocalUrl' -and $command -notmatch '-Verb RunAs') 'Open must use current config without browser elevation.'
-                }
-            }
-        }
+        $entry=Get-ImmichTrayEntry -InstallRoot (Join-Path $root "test install's folder") -DataRoot (Join-Path $root "test data's folder") -Scope $scope
+        Assert-True ($entry.TargetPath -match 'ImmichTray\.exe$') 'Startup must use the lightweight tray executable, not a resident PowerShell host.'
+        Assert-True ($entry.IconLocation -match 'favicon\.ico,0$') 'Tray startup must use the packaged upstream icon.'
+        Assert-True ($entry.Arguments.Contains('--install-root') -and $entry.Arguments.Contains('--data-root') -and $entry.Arguments.Contains('--powershell-path')) 'Tray startup must preserve the installed paths.'
     }
-    }
-    Assert-True ((Get-ImmichMenuStrings 'ja_JP').openName -eq 'Immichを開く') 'Locale normalization must accept the upstream underscore form.'
+    Assert-True (@(Get-ImmichManagedShortcutNames).Count -eq 8) 'Legacy cleanup must be limited to the eight names previously created by Immich.'
     Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='0.0.0.0';IMMICH_PORT='2345'})
     Assert-True ((Get-ImmichLocalUrl $menuEnv) -eq 'http://localhost:2345/') 'Open must use the configured port.'
     Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='::1';IMMICH_PORT='3456'})
@@ -111,6 +96,35 @@ try {
 } finally {
     $env:SystemRoot=$previousSystemRoot
     Remove-Item -LiteralPath $menuEnv -Force -ErrorAction SilentlyContinue
+}
+
+# A different UAC administrator must not force the normal desktop user to read
+# database credentials merely to open the browser. Only an HTTP URL is exposed.
+$hintRoot=Join-Path ([IO.Path]::GetTempPath()) ('immich-tray-hint-'+[guid]::NewGuid().ToString('N'))
+$fallbackModule=$null
+try {
+    New-Item -ItemType Directory $hintRoot | Out-Null
+    $modulePath=Join-Path $hintRoot 'TrayHintFixture.psm1'
+    $source=Get-Content -Raw $runtimeCommon
+    $source += "`nfunction Read-EnvFile { param(`$Path) if (`$Path -eq 'invalid') { throw [FormatException]::new('Invalid env') }; throw [UnauthorizedAccessException]::new('Protected env') }`nExport-ModuleMember -Function *`n"
+    Set-Content -LiteralPath $modulePath -Value $source
+    $fallbackModule=Import-Module $modulePath -PassThru -Prefix HintFixture -Force
+    Set-Content (Join-Path $hintRoot 'tray-connection.json') '{"url":"http://localhost:2345/"}'
+    $actual=& $fallbackModule {param($Root) Get-ImmichLocalUrl -EnvFile protected -InstallRoot $Root} $hintRoot
+    Assert-True ($actual -eq 'http://localhost:2345/') 'Protected env must allow the sanitized URL fallback.'
+    foreach ($url in @('https://example.test/','http://user:secret@localhost/','http://localhost/?secret=value','file:///C:/private')) {
+        @{url=$url} | ConvertTo-Json | Set-Content (Join-Path $hintRoot 'tray-connection.json')
+        $rejected=$false
+        try { & $fallbackModule {param($Root) Get-ImmichLocalUrl -EnvFile protected -InstallRoot $Root} $hintRoot | Out-Null } catch { $rejected=$true }
+        Assert-True $rejected 'Unsafe URL metadata must be rejected.'
+    }
+    Set-Content (Join-Path $hintRoot 'tray-connection.json') '{"url":"http://localhost:2345/"}'
+    $rejected=$false
+    try { & $fallbackModule {param($Root) Get-ImmichLocalUrl -EnvFile invalid -InstallRoot $Root} $hintRoot | Out-Null } catch { $rejected=$true }
+    Assert-True $rejected 'Invalid readable env must not be hidden by the public fallback.'
+} finally {
+    if ($fallbackModule) { Remove-Module $fallbackModule }
+    Remove-Item -LiteralPath $hintRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
@@ -294,17 +308,14 @@ if ($IsWindows -and $SourceRoot) {
         New-Item -ItemType Directory $shortcutRoot -Force|Out-Null
         $icon=Join-Path $shortcutRoot '本家.ico'
         Copy-Item (Join-Path $SourceRoot 'web/static/favicon.ico') $icon
-        foreach ($culture in @('en-US','ja-JP')) {
         foreach ($scope in @('AllUsers','CurrentUser')) {
-            foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $shortcutRoot -DataRoot $shortcutRoot -Scope $scope -Culture $culture)) {
-                $entry.IconLocation="$icon,0"
-                $path=Join-Path $shortcutRoot "$culture-$scope-$($entry.Name).lnk"
-                Write-ImmichShortcut -Path $path -Entry $entry
-                $actual=Read-ImmichShortcut $path
-                Assert-True ($actual.TargetPath -ieq $entry.TargetPath -and $actual.Arguments -ceq $entry.Arguments -and $actual.IconLocation -ieq $entry.IconLocation) 'Unicode Start menu shortcut round trip failed.'
-            }
+            $entry=Get-ImmichTrayEntry -InstallRoot $shortcutRoot -DataRoot $shortcutRoot -Scope $scope
+            $entry.IconLocation="$icon,0"
+            $path=Join-Path $shortcutRoot "$scope-トレイ.lnk"
+            Write-ImmichShortcut -Path $path -Entry $entry
+            $actual=Read-ImmichShortcut $path
+            Assert-True ($actual.TargetPath -ieq $entry.TargetPath -and $actual.Arguments -ceq $entry.Arguments -and $actual.IconLocation -ieq $entry.IconLocation) 'Unicode tray startup shortcut round trip failed.'
         }
-        }
-        Write-Host 'Localized Windows shortcuts: sixteen English/Japanese native save/load cases passed.'
+        Write-Host 'Windows tray startup shortcuts: both scope save/load cases passed.'
     } finally { Remove-Item -LiteralPath $shortcutRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

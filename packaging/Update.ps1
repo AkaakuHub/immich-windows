@@ -157,6 +157,9 @@ Save-UpgradeState
     throw "Upgrade failed. Recovery state: $stateFile. Database backup: $backup. $($failure.Exception.Message)"
 }
 
+# Keep a healthy qualified server running if desktop UI startup itself fails.
+Start-ImmichTray -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+
 } finally {
     if ($locked) { $mutex.ReleaseMutex() }
     $mutex.Dispose()

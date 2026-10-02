@@ -25,8 +25,15 @@ function ConvertTo-WindowsArgument {
 }
 
 function Get-ImmichLocalUrl {
-    param([Parameter(Mandatory)][string]$EnvFile)
-    $values=Read-EnvFile $EnvFile
+    param([Parameter(Mandatory)][string]$EnvFile,[string]$InstallRoot)
+    try { $values=Read-EnvFile $EnvFile } catch [UnauthorizedAccessException] {
+        if (-not $InstallRoot) { throw }
+        # Non-administrator desktop users must never receive the private env.
+        $hint=Get-Content -Raw -LiteralPath (Join-Path $InstallRoot 'tray-connection.json') | ConvertFrom-Json
+        $uri=[uri]([string]$hint.url)
+        if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'http' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) { throw 'Invalid public Immich connection hint.' }
+        return $uri.AbsoluteUri
+    }
     $port=if ($values['IMMICH_PORT']) { [int]$values['IMMICH_PORT'] } else { 2283 }
     if ($port -lt 1 -or $port -gt 65535) { throw 'IMMICH_PORT must be between 1 and 65535.' }
     $hostname=[string]$values['IMMICH_HOST']
@@ -34,81 +41,17 @@ function Get-ImmichLocalUrl {
     return [UriBuilder]::new('http',$hostname,$port).Uri.AbsoluteUri
 }
 
-function Get-ImmichMenuStrings {
-    param([string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
-    # As in upstream i18n, keep message keys separate from locale selection and accept regional tags.
-    # Windows menus need only English and Japanese; no web i18n runtime is loaded here.
-    $language=$Culture.Replace('_','-').Split('-')[0].ToLowerInvariant()
-    $strings=@{
-        en=@{
-            openName='Open Immich';openDescription='Open your photo library in the default browser'
-            startName='Start Immich';startDescription='Start the Immich server and machine learning'
-            stopName='Stop Immich';stopDescription='Stop Immich without deleting photos or settings'
-            updateName='Update Immich';updateDescription='Update Immich while preserving photos and settings'
-        }
-        ja=@{
-            openName='Immichを開く';openDescription='ブラウザーで写真ライブラリを開きます'
-            startName='Immichを起動';startDescription='Immichのサーバーと機械学習を起動します'
-            stopName='Immichを停止';stopDescription='Immichを停止します。写真や設定は削除しません'
-            updateName='Immichを更新';updateDescription='既存の写真と設定を維持して最新版へ更新します'
-        }
-    }
-    return [pscustomobject]$strings[$(if ($language -eq 'ja') { 'ja' } else { 'en' })]
+function Write-ImmichTrayConnectionHint {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot)
+    $url=Get-ImmichLocalUrl -EnvFile (Join-Path $DataRoot 'immich.env')
+    $path=Join-Path $InstallRoot 'tray-connection.json'
+    [IO.File]::WriteAllText($path, (@{url=$url} | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 }
 
 function Get-ImmichManagedShortcutNames {
-    foreach ($language in @('en','ja')) {
-        $text=Get-ImmichMenuStrings $language
-        $text.openName; $text.startName; $text.stopName; $text.updateName
-    }
-}
-
-function Get-ImmichStartMenuEntries {
-    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
-          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,
-          [string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
-    $text=Get-ImmichMenuStrings $Culture
-    $hostPath=Join-Path $PSHOME 'pwsh.exe'
-    $current=Join-Path $InstallRoot 'current'
-    $envFile=Join-Path $DataRoot 'immich.env'
-    $icon=Join-Path $current 'build\www\favicon.ico'
-    $quote={ param([string]$Value) "'"+$Value.Replace("'","''")+"'" }
-    $commonArguments=" -InstallRoot $(& $quote $InstallRoot) -DataRoot $(& $quote $DataRoot) -EnvFile $(& $quote $envFile)"
-    $actions=@(
-        @{Id='open';Name=$text.openName;Description=$text.openDescription;Elevate=$false;Command="Import-Module $(& $quote (Join-Path $current 'runtime\Common.psm1')) -Force; Start-Process -FilePath (Get-ImmichLocalUrl -EnvFile $(& $quote $envFile))"},
-        @{Id='start';Name=$text.startName;Description=$text.startDescription;Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Start-Immich.ps1'))$commonArguments"},
-        @{Id='stop';Name=$text.stopName;Description=$text.stopDescription;Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Stop-Immich.ps1'))$commonArguments"},
-        @{Id='update';Name=$text.updateName;Description=$text.updateDescription;Elevate=$true;Command=$null}
-    )
-    $backgroundTemplate=@'
-try {
-    $ErrorActionPreference='Stop'
-    __IMMICH_ACTION__
-} catch {
-    $dialog=New-Object -ComObject WScript.Shell
-    [void]$dialog.Popup($_.Exception.Message,0,'Immich',16)
-    exit 1
-}
-'@
-    foreach ($action in $actions) {
-        $windowStyle=7
-        if ($action.Command) {
-            $command=$backgroundTemplate.Replace('__IMMICH_ACTION__',$action.Command)
-            $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-        } else {
-            $script=Join-Path $current 'installer\Update-FromRelease.ps1'
-            $arguments=(@('-NoProfile','-NoExit','-File',$script,'-Scope',$Scope,'-InstallRoot',$InstallRoot,'-DataRoot',$DataRoot) | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
-            $windowStyle=1
-        }
-        $target=$hostPath
-        if ($action.Elevate -and $Scope -eq 'AllUsers') {
-            $command="Start-Process -FilePath $(& $quote $hostPath) -ArgumentList $(& $quote $arguments) -Verb RunAs"
-            $target=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-            $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-            $windowStyle=7
-        }
-        [pscustomobject]@{Id=$action.Id;Name=$action.Name;TargetPath=$target;Arguments=$arguments;IconLocation="$icon,0";WorkingDirectory=$InstallRoot;Description=$action.Description;WindowStyle=$windowStyle}
-    }
+    # Only the eight names created by previous Immich Windows versions.
+    'Open Immich'; 'Start Immich'; 'Stop Immich'; 'Update Immich'
+    'Immichを開く'; 'Immichを起動'; 'Immichを停止'; 'Immichを更新'
 }
 
 function Initialize-ImmichShellLink {
@@ -197,28 +140,72 @@ function Read-ImmichShortcut {
     return [Immich.Windows.ShortcutStore]::Read($Path)
 }
 
-function Set-ImmichStartMenu {
-    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
-          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true,
-          [string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+function Remove-ImmichLegacyStartMenu {
+    param([Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope)
     $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
     $directory=Join-Path $programs 'Immich'
-    $names=@(Get-ImmichManagedShortcutNames | Sort-Object -Unique)
-    if (-not $Enabled) {
-        foreach ($name in $names) { Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue }
-        return
-    }
-    $icon=Join-Path $InstallRoot 'current\build\www\favicon.ico'
-    if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw "The packaged upstream Immich icon is missing: $icon" }
-    New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $entries=@(Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $Culture)
-    foreach ($entry in $entries) {
-        Write-ImmichShortcut -Path (Join-Path $directory "$($entry.Name).lnk") -Entry $entry
-    }
-    # Remove entries for the previous UI language, but never delete a currently selected name.
-    foreach ($name in $names | Where-Object { $_ -notin $entries.Name }) {
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return }
+    foreach ($name in Get-ImmichManagedShortcutNames) {
         Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue
     }
+    if (-not @(Get-ChildItem -LiteralPath $directory -Force).Count) { Remove-Item -LiteralPath $directory -Force }
+}
+
+function Get-ImmichTrayEntry {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope)
+    $current=Join-Path $InstallRoot 'current'
+    $arguments=(@('--install-root',$InstallRoot,'--data-root',$DataRoot,'--scope',$Scope,
+        '--powershell-path',(Join-Path $PSHOME 'pwsh.exe')) | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+    [pscustomobject]@{
+        Name="Immich Tray - $Scope"
+        TargetPath=(Join-Path $current 'runtime\tray\ImmichTray.exe')
+        Arguments=$arguments
+        IconLocation=((Join-Path $current 'build\www\favicon.ico')+',0')
+        WorkingDirectory=$InstallRoot
+        Description='Immich notification-area controls'
+        WindowStyle=7
+    }
+}
+
+function Set-ImmichTrayStartup {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true)
+    # Desktop UI belongs to this user/session; AllUsers services still start at boot.
+    $entry=Get-ImmichTrayEntry -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+    $startup=[Environment]::GetFolderPath('Startup')
+    $path=Join-Path $startup ($entry.Name+'.lnk')
+    if (-not $Enabled) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; return }
+    if (-not (Test-Path -LiteralPath $entry.TargetPath -PathType Leaf)) { throw "Tray application is missing: $($entry.TargetPath)" }
+    New-Item -ItemType Directory -Path $startup -Force | Out-Null
+    Write-ImmichShortcut -Path $path -Entry $entry
+}
+
+function Test-ImmichElevated {
+    if (-not $IsWindows) { return $false }
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+    return ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Stop-ImmichTray {
+    param([Parameter(Mandatory)][string]$InstallRoot)
+    $executable=Join-Path $InstallRoot 'current\runtime\tray\ImmichTray.exe'
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { return }
+    $arguments=(@('--install-root',$InstallRoot,'--exit-existing') | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+    $process=Start-Process -FilePath $executable -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) { throw "Could not close this session's Immich tray (exit $($process.ExitCode))." }
+}
+
+function Start-ImmichTray {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope)
+    if (Test-ImmichElevated) {
+        Write-Host 'Immich tray is registered for sign-in. Launch its Startup shortcut from your normal desktop session.'
+        return
+    }
+    Stop-ImmichTray -InstallRoot $InstallRoot
+    $entry=Get-ImmichTrayEntry -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+    Start-Process -FilePath $entry.TargetPath -ArgumentList $entry.Arguments -WorkingDirectory $InstallRoot | Out-Null
 }
 
 function Get-WindowsReleaseVersion {

@@ -63,6 +63,7 @@ jobs:
           ./tests/Static-RepositoryAudit.ps1 -SourceRoot $source
           ./tests/Update-Workflow.ps1
           ./tests/Dependency-Reuse.ps1
+          ./tests/Startup-Workflow.ps1
   codec:
     needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
@@ -187,6 +188,8 @@ jobs:
           $folder = "immich-windows-$version-win-x64"
           .\packaging\New-NativeDependenciesArchive.ps1
           .\packaging\New-Package.ps1
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File ./tests/Tray-Controller.ps1 -Executable "dist/$folder/runtime/tray/ImmichTray.exe" -IconPath "dist/$folder/build/www/favicon.ico"
+          if ($LASTEXITCODE -ne 0) { throw 'Notification-area controller tests failed.' }
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-MigrationToolsArchive.ps1

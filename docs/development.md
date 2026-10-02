@@ -44,7 +44,7 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 | `keep-native-build-cache` | 定期的に現在の設定に一致するキャッシュを参照します |
 | `check-upstream-immich-release` | 上流の新しいstable版をIssueで通知します。自動で版を変更しません |
 
-Windows runnerの使い捨てDBで起動・更新・設定保持・同一版拒否を検証します。GPUがないCIではCPUで小さいONNXモデルの推論を検証し、GPUフォールバック制御はモックテストします。RX 550での実モデル推論・PC再起動は実機検証が必要です。
+Windows runnerの使い捨てDBで起動・更新・設定保持・同一版拒否を検証します。トレイは組み込みの.NET Frameworkコンパイラでビルドし、Windows PowerShell 5.1上で日英ラベル、引数の引用、UAC分離、NotifyIconの生成、両スコープのスタートアップ登録、旧メニュー削除を検証します。CurrentUserの起動判定には保持したProcessオブジェクトを使い、ロード直後にPathがまだ取得できない状態を終了扱いしません。GPUがないCIではCPUで小さいONNXモデルの推論を検証し、GPUフォールバック制御はモックテストします。RX 550での実モデル推論・PC再起動は実機検証が必要です。
 
 本体版とWindows改訂は既存`upstream.json`の`version`と`windowsRevision`で管理します。例：`v3.2.2`と`1`から`v3.2.2.1`。配布に影響する変更は改訂番号を増やし、本体変更時は改訂を1へ戻します。公開済みタグより古い版、または公開済み版の配布入力を変えたまま改訂していない場合はビルド前に失敗させます。`.github/`と配布されない`docs/development.md`だけの変更は、同じ版のままCIを検証でき、新しいReleaseは作りません。Releaseは全テスト成功後にdraftを作り、全ファイルのアップロード成功後に公開します。既存assetsは上書きしません。
 

@@ -28,8 +28,11 @@ $current=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
 if(-not $current){throw 'An existing Immich installation is required.'}
 $currentVersion=Get-WindowsPackageVersion (Get-Content -Raw -LiteralPath (Join-Path $current 'manifest.json')|ConvertFrom-Json)
 if ($currentVersion -eq [version]$version.TrimStart('v')) {
-    Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
-    Write-Host "Windows package $version is already installed. Start menu language refreshed."
+    Write-ImmichTrayConnectionHint -InstallRoot $InstallRoot -DataRoot $DataRoot
+    Remove-ImmichLegacyStartMenu -Scope $Scope
+    Set-ImmichTrayStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+    Start-ImmichTray -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+    Write-Host "Windows package $version is already installed. Tray startup registration refreshed."
     return
 }
 if ([version]$version.TrimStart('v') -lt $currentVersion) { throw "Refusing to downgrade from $currentVersion to $version." }

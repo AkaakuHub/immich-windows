@@ -31,7 +31,7 @@ try {
   $env:IMMICH_TEST_FAIL=$mode
   Copy-Item "$repo/packaging/Update.ps1" "$pkg/installer/Update.ps1"
   $common=Get-Content -Raw "$repo/runtime/Common.psm1"
-  $common+="`nfunction Assert-Administrator {} `nfunction Protect-ImmichDataRoot {param(`$Path)}`nExport-ModuleMember -Function *`n"
+  $common+="`nfunction Start-ImmichTray {param(`$InstallRoot,`$DataRoot,`$Scope)} `nfunction Assert-Administrator {} `nfunction Protect-ImmichDataRoot {param(`$Path)}`nExport-ModuleMember -Function *`n"
   if ($mode -like 'same-payload*') { $common += "`nfunction Test-ImmichDatabasePayloadEqual {param(`$PreviousRelease,`$CandidateRelease) return `$true}`nExport-ModuleMember -Function *`n" }
   Set-Content "$pkg/runtime/Common.psm1" $common
   Set-Content "$pkg/installer/Install.ps1" $installStub
