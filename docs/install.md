@@ -74,7 +74,7 @@ MACHINE_LEARNING_ACCELERATOR=cpu
 MACHINE_LEARNING_DEVICE_ID=0
 ```
 
-`MACHINE_LEARNING_ACCELERATOR`は`cpu`または`directml`です。既定の`cpu`は既存環境を維持するための明示的なCPUモードです。`directml`では未対応ノードのCPU実行、初期化失敗時・推論失敗時のCPU再試行をすべて禁止します。対応しないモデル・GPU・ドライバーは明確なエラーになります。以前の試験的な`directml-strict`設定は`directml`へ変更してください。
+`MACHINE_LEARNING_ACCELERATOR`は`cpu`または`directml`です。既定の`cpu`ではCPUを使用します。`directml`では未対応ノードのCPU実行、初期化失敗時・推論失敗時のCPU再試行をすべて禁止します。対応しないモデル・GPU・ドライバーは明確なエラーになります。
 
 `MACHINE_LEARNING_DEVICE_ID`はDirectMLのDXGIアダプター番号です。複数GPUではDXGIのアダプター順を確認してください。タスクマネージャーのGPU番号と一致する保証はありません。画像デコード、リサイズ、NMS、OCRの後処理などONNXモデル外の処理はCPUで実行されます。
 
