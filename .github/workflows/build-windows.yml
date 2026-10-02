@@ -22,46 +22,59 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  validate:
+  plan:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+      reuse: ${{ steps.plan.outputs.reuse }}
+      run_id: ${{ steps.plan.outputs.run_id }}
+      artifact_id: ${{ steps.plan.outputs.artifact_id }}
+      artifact_digest: ${{ steps.plan.outputs.artifact_digest }}
     steps:
-      - uses: actions/checkout@v5
-      - name: Validate package revision before expensive builds
-        id: version
-        shell: pwsh
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Select existing qualification or a fresh build
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ inputs.component }}
+        run: python .github/scripts/qualified_release.py plan
+  validate:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Test artifact promotion and rejection policies
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - name: Verify pins, patches, update policy and dependency reuse once
+        shell: pwsh
         run: |
-          ./tests/Static-RepositoryAudit.ps1
+          $source = Join-Path $env:RUNNER_TEMP 'immich-upstream'
+          ./build/Prepare-Source.ps1 -Destination $source
+          ./tests/Static-RepositoryAudit.ps1 -SourceRoot $source
           ./tests/Update-Workflow.ps1
           ./tests/Dependency-Reuse.ps1
-          Import-Module ./build/Common.psm1 -Force
-          Import-Module ./runtime/Common.psm1 -Force
-          $version = Get-WindowsReleaseVersion (Read-JsonFile ./upstream.json)
-          "version=$version" >> $env:GITHUB_OUTPUT
-          if ('${{ github.event_name }}' -in @('push','pull_request') -or '${{ inputs.component }}' -eq 'all') {
-            $releases = & gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
-            if ($LASTEXITCODE -ne 0) { throw 'Could not check published Windows revisions.' }
-            foreach ($tag in $releases) {
-              if ($tag -match '^v\d+\.\d+\.\d+(\.\d+)?$' -and [version]$tag.TrimStart('v') -ge [version]$version.TrimStart('v')) {
-                throw "Package $version is not newer than $tag. Increment windowsRevision (reset to 1 for a new upstream version)."
-              }
-            }
-          }
   codec:
-    needs: validate
+    needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Select libvips cache key
         id: codec-key
         shell: pwsh
         run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: codec-cache
         with:
           path: artifacts/native/sharp-libvips-custom
@@ -70,24 +83,24 @@ jobs:
         if: steps.codec-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./build/Build-CustomSharpLibvips.ps1
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: libvips
           path: artifacts/native/sharp-libvips-custom
           retention-days: 1
           if-no-files-found: error
   postgres:
-    needs: validate
+    needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'postgres'
     runs-on: windows-2025
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Select PostgreSQL extension cache key
         id: postgres-key
         shell: pwsh
         run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: postgres-cache
         with:
           path: artifacts/native/postgres-extensions
@@ -104,41 +117,41 @@ jobs:
           .\build\Build-PgVector.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18'
           .\build\Build-VectorChord.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' -InstallCargoPgrx
           .\build\Write-PostgresBuildMetadata.ps1
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: postgres-extensions
           path: artifacts/native/postgres-extensions
           retention-days: 1
           if-no-files-found: error
   migration:
-    needs: validate
+    needs: [plan, validate]
     if: inputs.component == 'migration'
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Build migration tools archive
         shell: pwsh
         run: ./packaging/New-MigrationToolsArchive.ps1
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: migration-tools
           path: dist/*-migration-tools.zip
           if-no-files-found: error
   assemble:
     if: ${{ (github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all') && needs.codec.result == 'success' && needs.postgres.result == 'success' }}
-    needs: [validate, codec, postgres]
+    needs: [plan, validate, codec, postgres]
     runs-on: windows-2025
     timeout-minutes: 180
     permissions:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: libvips
           path: artifacts/native/sharp-libvips-custom
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: postgres-extensions
           path: artifacts/native/postgres-extensions
@@ -146,19 +159,19 @@ jobs:
         id: application-key
         shell: pwsh
         run: ./build/Write-AppBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: application-cache
         with:
           path: artifacts/application
           key: application-${{ runner.os }}-${{ steps.application-key.outputs.application }}-${{ hashFiles('upstream.json', 'patches/server/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: application-${{ runner.os }}-
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: ml-cache
         with:
           path: artifacts/machine-learning
           key: machine-learning-${{ runner.os }}-${{ steps.application-key.outputs.machineLearning }}-${{ hashFiles('upstream.json', 'patches/machine-learning/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: machine-learning-${{ runner.os }}-
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: build-downloads
         with:
           path: .cache
@@ -170,24 +183,24 @@ jobs:
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
           .\build\Stage-VcRuntime.ps1
-          $version = '${{ needs.validate.outputs.version }}'
+          $version = '${{ needs.plan.outputs.version }}'
           $folder = "immich-windows-$version-win-x64"
           .\packaging\New-NativeDependenciesArchive.ps1
           .\packaging\New-Package.ps1
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-MigrationToolsArchive.ps1
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.application-cache.outputs.cache-hit != 'true'
         with:
           path: artifacts/application
           key: ${{ steps.application-cache.outputs.cache-primary-key }}
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.ml-cache.outputs.cache-hit != 'true'
         with:
           path: artifacts/machine-learning
           key: ${{ steps.ml-cache.outputs.cache-primary-key }}
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.build-downloads.outputs.cache-hit != 'true'
         with:
           path: .cache
@@ -198,7 +211,7 @@ jobs:
         run: |
           $version = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).postgresql.chocolateyVersion
           "version=$version" >> $env:GITHUB_OUTPUT
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: pg-runtime-cache
         with:
           path: C:\Program Files\PostgreSQL\18
@@ -209,12 +222,12 @@ jobs:
           .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
             -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
             -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.pg-runtime-cache.outputs.cache-hit != 'true'
         with:
           path: C:\Program Files\PostgreSQL\18
           key: postgresql-runtime-${{ runner.os }}-${{ steps.pg-runtime.outputs.version }}
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: runtime-downloads
         with:
           path: |
@@ -227,7 +240,7 @@ jobs:
       - name: Install and smoke test the thin package
         shell: pwsh
         run: |
-          $version = '${{ needs.validate.outputs.version }}'
+          $version = '${{ needs.plan.outputs.version }}'
           $folder = "immich-windows-$version-win-x64"
           $installRoot = Join-Path $env:RUNNER_TEMP 'immich-install'
           $dataRoot = Join-Path $env:RUNNER_TEMP 'immich-data'
@@ -262,7 +275,7 @@ jobs:
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
           ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -UseLegacyMachineLearning
           & "$userRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $userRoot -DataRoot $userData -EnvFile "$userData/immich.env"
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: always() && !cancelled() && steps.runtime-downloads.outputs.cache-primary-key != '' && steps.runtime-downloads.outputs.cache-hit != 'true'
         with:
           path: |
@@ -272,39 +285,60 @@ jobs:
             ${{ runner.temp }}/immich-install/cache/uv
             ${{ runner.temp }}/immich-install/cache/pnpm-store
           key: ${{ steps.runtime-downloads.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v7
+      - name: Record the actual tested checkout and asset hashes
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python .github/scripts/qualified_release.py record --version "$env:VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: qualified-windows-package
+          name: qualified-windows-package-v1
           path: |
             dist/*-win-x64.zip
             dist/*-native-dependencies.zip
             dist/*-migration-tools.zip
             dist/Install.cmd
-          retention-days: 7
+            dist/qualification.json
+          retention-days: 14
           if-no-files-found: error
   publish:
-    needs: [validate, assemble]
-    if: github.ref == 'refs/heads/main'
+    needs: [plan, assemble]
+    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/main' && needs.plan.result == 'success' && needs.plan.outputs.publish == 'true' && (needs.plan.outputs.reuse == 'true' || needs.assemble.result == 'success') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       actions: read
+      pull-requests: read
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          name: qualified-windows-package
-          path: dist
-      - name: Publish qualified release
+          persist-credentials: false
+      - name: Verify the exact qualified artifact before publication
+        id: qualified
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFIED_RUN_ID: ${{ needs.plan.outputs.run_id }}
+          QUALIFIED_ARTIFACT_ID: ${{ needs.plan.outputs.artifact_id }}
+          QUALIFIED_ARTIFACT_DIGEST: ${{ needs.plan.outputs.artifact_digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python .github/scripts/qualified_release.py prepare-publish --version "$VERSION"
+      - name: Publish qualified release without rebuilding or repacking
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          BUILD_COMMIT: ${{ steps.qualified.outputs.source_commit }}
+          SOURCE_TREE: ${{ steps.qualified.outputs.source_tree }}
+          BUILD_RUN: ${{ steps.qualified.outputs.run_id }}
+          ARTIFACT_ID: ${{ steps.qualified.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ steps.qualified.outputs.artifact_digest }}
         run: |
-          $version = '${{ needs.validate.outputs.version }}'
+          $version = $env:VERSION
           $folder = "immich-windows-$version-win-x64"
           $native = "dist/immich-windows-$version-native-dependencies.zip"
           $migration = "dist/immich-windows-$version-migration-tools.zip"
           $launcher = "dist/Install.cmd"
-          & gh release create $version --repo $env:GITHUB_REPOSITORY "dist/$folder.zip" $native $migration $launcher --draft --target $env:GITHUB_SHA --title $version --notes "Immich Windows $version. Source: $env:GITHUB_SHA"
+          $notes = "Immich Windows $version. Release commit: $env:GITHUB_SHA. Actual build commit: $env:BUILD_COMMIT. Source tree: $env:SOURCE_TREE. Qualified run: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:BUILD_RUN. Artifact: $env:ARTIFACT_ID ($env:ARTIFACT_DIGEST). The tested assets are published byte-for-byte."
+          & gh release create $version --repo $env:GITHUB_REPOSITORY "dist/$folder.zip" $native $migration $launcher --draft --target $env:GITHUB_SHA --title $version --notes $notes
           if ($LASTEXITCODE -ne 0) { throw "Could not publish immutable release $version. Never overwrite a published revision." }
           & gh release edit $version --repo $env:GITHUB_REPOSITORY --draft=false --latest
           if ($LASTEXITCODE -ne 0) { throw "Validated assets remain in draft release $version; publication failed." }
