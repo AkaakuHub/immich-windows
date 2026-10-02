@@ -74,6 +74,10 @@ Assert-True ($smokeSource -notmatch '\$envs\.REDIS_(PASSWORD|USERNAME)') 'Option
     Assert-True ([string]$optionalEnv['REDIS_USERNAME'] -eq '') 'Default Redis username must be supported under StrictMode.'
 }
 
+$stopSource=Get-Content -Raw (Join-Path $root 'runtime/launchers/Stop-Immich.ps1')
+Assert-True ($stopSource.TrimEnd().EndsWith('exit 0')) 'A verified successful stop must not propagate a stale taskkill exit code.'
+Assert-True ($stopSource -match "Valkey did not finish its graceful save and shutdown") 'Valkey must finish its save before process cleanup.'
+
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
 Assert-True ($upstream.version -match '^v[0-9]+\.[0-9]+\.[0-9]+$') "Invalid upstream version: $($upstream.version)"
 Assert-True ($upstream.commit -match '^[0-9a-f]{40}$') 'upstream.json must pin a full 40-character commit SHA.'

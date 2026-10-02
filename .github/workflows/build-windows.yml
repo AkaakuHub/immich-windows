@@ -157,10 +157,15 @@ jobs:
           path: artifacts/machine-learning
           key: machine-learning-${{ runner.os }}-${{ steps.application-key.outputs.machineLearning }}-${{ hashFiles('upstream.json', 'patches/machine-learning/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: machine-learning-${{ runner.os }}-
+      - uses: actions/cache/restore@v6
+        id: build-downloads
+        with:
+          path: .cache
+          key: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
       - name: Build and qualify Windows package
         shell: pwsh
         run: |
-          $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'immich-fixtures'))
+          $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures'))
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
           .\build\Stage-VcRuntime.ps1
@@ -181,6 +186,11 @@ jobs:
         with:
           path: artifacts/machine-learning
           key: ${{ steps.ml-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/save@v6
+        if: steps.build-downloads.outputs.cache-hit != 'true'
+        with:
+          path: .cache
+          key: ${{ steps.build-downloads.outputs.cache-primary-key }}
       - name: Select PostgreSQL runtime cache key
         id: pg-runtime
         shell: pwsh
@@ -203,6 +213,16 @@ jobs:
         with:
           path: C:\Program Files\PostgreSQL\18
           key: postgresql-runtime-${{ runner.os }}-${{ steps.pg-runtime.outputs.version }}
+      - uses: actions/cache/restore@v6
+        id: runtime-downloads
+        with:
+          path: |
+            ${{ runner.temp }}/immich-install/cache/downloads
+            !${{ runner.temp }}/immich-install/cache/downloads/immich-windows-*
+            ${{ runner.temp }}/immich-install/cache/npm
+            ${{ runner.temp }}/immich-install/cache/uv
+            ${{ runner.temp }}/immich-install/cache/pnpm-store
+          key: runtime-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'artifacts/machine-learning/requirements.txt', 'dist/**/pnpm-lock.yaml') }}
       - name: Install and smoke test the thin package
         shell: pwsh
         run: |
@@ -217,13 +237,17 @@ jobs:
           & "$packageRoot/installer/Test-ReleasePackage.ps1" -PackageRoot $packageRoot -Version $version
           $downloadCache = Join-Path $installRoot 'cache\downloads'
           New-Item -ItemType Directory -Path $downloadCache,$mediaRoot -Force | Out-Null
+          $pins = Get-Content -Raw dependencies/versions.json | ConvertFrom-Json
+          foreach ($archive in @($pins.node.asset, "uv-$($pins.uv.version)-$($pins.uv.asset)")) {
+            Copy-Item (Join-Path '.cache' $archive) $downloadCache -Force
+          }
           Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
           $password = Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
           & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope AllUsers `
             -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `
             -DatabasePassword $password -PostgresRoot 'C:\Program Files\PostgreSQL\18'
-          $fixtures = @(Get-ChildItem (Join-Path $env:RUNNER_TEMP 'immich-fixtures') -File -Recurse | Select-Object -ExpandProperty FullName)
+          $fixtures = @(Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures') -File -Recurse | Select-Object -ExpandProperty FullName)
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
             -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
           ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $installRoot -DataRoot $dataRoot -Scope AllUsers
@@ -237,6 +261,16 @@ jobs:
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
           ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser
           & "$userRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $userRoot -DataRoot $userData -EnvFile "$userData/immich.env"
+      - uses: actions/cache/save@v6
+        if: always() && !cancelled() && steps.runtime-downloads.outputs.cache-primary-key != '' && steps.runtime-downloads.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ${{ runner.temp }}/immich-install/cache/downloads
+            !${{ runner.temp }}/immich-install/cache/downloads/immich-windows-*
+            ${{ runner.temp }}/immich-install/cache/npm
+            ${{ runner.temp }}/immich-install/cache/uv
+            ${{ runner.temp }}/immich-install/cache/pnpm-store
+          key: ${{ steps.runtime-downloads.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v7
         with:
           name: qualified-windows-package
