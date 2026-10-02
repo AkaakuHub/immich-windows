@@ -34,9 +34,40 @@ function Get-ImmichLocalUrl {
     return [UriBuilder]::new('http',$hostname,$port).Uri.AbsoluteUri
 }
 
+function Get-ImmichMenuStrings {
+    param([string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+    # As in upstream i18n, keep message keys separate from locale selection and accept regional tags.
+    # Windows menus need only English and Japanese; no web i18n runtime is loaded here.
+    $language=$Culture.Replace('_','-').Split('-')[0].ToLowerInvariant()
+    $strings=@{
+        en=@{
+            openName='Open Immich';openDescription='Open your photo library in the default browser'
+            startName='Start Immich';startDescription='Start the Immich server and machine learning'
+            stopName='Stop Immich';stopDescription='Stop Immich without deleting photos or settings'
+            updateName='Update Immich';updateDescription='Update Immich while preserving photos and settings'
+        }
+        ja=@{
+            openName='Immichを開く';openDescription='ブラウザーで写真ライブラリを開きます'
+            startName='Immichを起動';startDescription='Immichのサーバーと機械学習を起動します'
+            stopName='Immichを停止';stopDescription='Immichを停止します。写真や設定は削除しません'
+            updateName='Immichを更新';updateDescription='既存の写真と設定を維持して最新版へ更新します'
+        }
+    }
+    return [pscustomobject]$strings[$(if ($language -eq 'ja') { 'ja' } else { 'en' })]
+}
+
+function Get-ImmichManagedShortcutNames {
+    foreach ($language in @('en','ja')) {
+        $text=Get-ImmichMenuStrings $language
+        $text.openName; $text.startName; $text.stopName; $text.updateName
+    }
+}
+
 function Get-ImmichStartMenuEntries {
     param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
-          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope)
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,
+          [string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+    $text=Get-ImmichMenuStrings $Culture
     $hostPath=Join-Path $PSHOME 'pwsh.exe'
     $current=Join-Path $InstallRoot 'current'
     $envFile=Join-Path $DataRoot 'immich.env'
@@ -44,10 +75,10 @@ function Get-ImmichStartMenuEntries {
     $quote={ param([string]$Value) "'"+$Value.Replace("'","''")+"'" }
     $commonArguments=" -InstallRoot $(& $quote $InstallRoot) -DataRoot $(& $quote $DataRoot) -EnvFile $(& $quote $envFile)"
     $actions=@(
-        @{Name='Immichを開く';Description='ブラウザーで写真ライブラリを開きます';Elevate=$false;Command="Import-Module $(& $quote (Join-Path $current 'runtime\Common.psm1')) -Force; Start-Process -FilePath (Get-ImmichLocalUrl -EnvFile $(& $quote $envFile))"},
-        @{Name='Immichを起動';Description='Immichのサーバーと機械学習を起動します';Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Start-Immich.ps1'))$commonArguments"},
-        @{Name='Immichを停止';Description='Immichを停止します。写真や設定は削除しません';Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Stop-Immich.ps1'))$commonArguments"},
-        @{Name='Immichを更新';Description='既存の写真と設定を維持して最新版へ更新します';Elevate=$true;Command=$null}
+        @{Id='open';Name=$text.openName;Description=$text.openDescription;Elevate=$false;Command="Import-Module $(& $quote (Join-Path $current 'runtime\Common.psm1')) -Force; Start-Process -FilePath (Get-ImmichLocalUrl -EnvFile $(& $quote $envFile))"},
+        @{Id='start';Name=$text.startName;Description=$text.startDescription;Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Start-Immich.ps1'))$commonArguments"},
+        @{Id='stop';Name=$text.stopName;Description=$text.stopDescription;Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Stop-Immich.ps1'))$commonArguments"},
+        @{Id='update';Name=$text.updateName;Description=$text.updateDescription;Elevate=$true;Command=$null}
     )
     $backgroundTemplate=@'
 try {
@@ -76,7 +107,7 @@ try {
             $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
             $windowStyle=7
         }
-        [pscustomobject]@{Name=$action.Name;TargetPath=$target;Arguments=$arguments;IconLocation="$icon,0";WorkingDirectory=$InstallRoot;Description=$action.Description;WindowStyle=$windowStyle}
+        [pscustomobject]@{Id=$action.Id;Name=$action.Name;TargetPath=$target;Arguments=$arguments;IconLocation="$icon,0";WorkingDirectory=$InstallRoot;Description=$action.Description;WindowStyle=$windowStyle}
     }
 }
 
@@ -168,10 +199,11 @@ function Read-ImmichShortcut {
 
 function Set-ImmichStartMenu {
     param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
-          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true)
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true,
+          [string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
     $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
     $directory=Join-Path $programs 'Immich'
-    $names=@('Immichを開く','Immichを起動','Immichを停止','Immichを更新','Update Immich')
+    $names=@(Get-ImmichManagedShortcutNames | Sort-Object -Unique)
     if (-not $Enabled) {
         foreach ($name in $names) { Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue }
         return
@@ -179,11 +211,14 @@ function Set-ImmichStartMenu {
     $icon=Join-Path $InstallRoot 'current\build\www\favicon.ico'
     if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw "The packaged upstream Immich icon is missing: $icon" }
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope)) {
+    $entries=@(Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $Culture)
+    foreach ($entry in $entries) {
         Write-ImmichShortcut -Path (Join-Path $directory "$($entry.Name).lnk") -Entry $entry
     }
-    # Replace the single English update entry from Windows revision 1 without leaving a duplicate.
-    Remove-Item -LiteralPath (Join-Path $directory 'Update Immich.lnk') -Force -ErrorAction SilentlyContinue
+    # Remove entries for the previous UI language, but never delete a currently selected name.
+    foreach ($name in $names | Where-Object { $_ -notin $entries.Name }) {
+        Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-WindowsReleaseVersion {

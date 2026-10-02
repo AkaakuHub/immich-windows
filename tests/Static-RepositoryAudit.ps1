@@ -82,10 +82,12 @@ $menuEnv=Join-Path ([IO.Path]::GetTempPath()) ('immich-menu-'+[guid]::NewGuid().
 $previousSystemRoot=$env:SystemRoot
 try {
     if (-not $env:SystemRoot) { $env:SystemRoot=[IO.Path]::GetTempPath() }
+    foreach ($culture in @('ja-JP','en-US','fr-FR')) {
     foreach ($scope in @('AllUsers','CurrentUser')) {
-        $entries=@(Get-ImmichStartMenuEntries -InstallRoot (Join-Path $root "test install's folder") -DataRoot (Join-Path $root "test data's folder") -Scope $scope)
+        $entries=@(Get-ImmichStartMenuEntries -InstallRoot (Join-Path $root "test install's folder") -DataRoot (Join-Path $root "test data's folder") -Scope $scope -Culture $culture)
         Assert-True ($entries.Count -eq 4) 'Exactly four daily-use Start menu entries are required.'
-        Assert-True (($entries.Name -join ',') -eq 'Immichを開く,Immichを起動,Immichを停止,Immichを更新') 'Start menu labels must be explicit.'
+        $expectedNames=if ($culture -eq 'ja-JP') { 'Immichを開く,Immichを起動,Immichを停止,Immichを更新' } else { 'Open Immich,Start Immich,Stop Immich,Update Immich' }
+        Assert-True (($entries.Name -join ',') -eq $expectedNames) 'Start menu labels must follow the UI locale.'
         foreach ($entry in $entries) {
             Assert-True ($entry.IconLocation -match 'favicon\.ico,0$') 'Every menu item must use the packaged upstream icon.'
             Assert-True ($entry.IconLocation -notmatch 'pwsh\.exe') 'PowerShell must not be used as the Start menu icon.'
@@ -94,12 +96,14 @@ try {
                 $tokens=$null;$errors=$null
                 [void][System.Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
                 Assert-True (@($errors).Count -eq 0) 'Shortcut command must parse with spaces and apostrophes in paths.'
-                if ($entry.Name -eq 'Immichを開く') {
+                if ($entry.Id -eq 'open') {
                     Assert-True ($command -match 'Get-ImmichLocalUrl' -and $command -notmatch '-Verb RunAs') 'Open must use current config without browser elevation.'
                 }
             }
         }
     }
+    }
+    Assert-True ((Get-ImmichMenuStrings 'ja_JP').openName -eq 'Immichを開く') 'Locale normalization must accept the upstream underscore form.'
     Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='0.0.0.0';IMMICH_PORT='2345'})
     Assert-True ((Get-ImmichLocalUrl $menuEnv) -eq 'http://localhost:2345/') 'Open must use the configured port.'
     Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='::1';IMMICH_PORT='3456'})
@@ -290,15 +294,17 @@ if ($IsWindows -and $SourceRoot) {
         New-Item -ItemType Directory $shortcutRoot -Force|Out-Null
         $icon=Join-Path $shortcutRoot '本家.ico'
         Copy-Item (Join-Path $SourceRoot 'web/static/favicon.ico') $icon
+        foreach ($culture in @('en-US','ja-JP')) {
         foreach ($scope in @('AllUsers','CurrentUser')) {
-            foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $shortcutRoot -DataRoot $shortcutRoot -Scope $scope)) {
+            foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $shortcutRoot -DataRoot $shortcutRoot -Scope $scope -Culture $culture)) {
                 $entry.IconLocation="$icon,0"
-                $path=Join-Path $shortcutRoot "$scope-$($entry.Name).lnk"
+                $path=Join-Path $shortcutRoot "$culture-$scope-$($entry.Name).lnk"
                 Write-ImmichShortcut -Path $path -Entry $entry
                 $actual=Read-ImmichShortcut $path
                 Assert-True ($actual.TargetPath -ieq $entry.TargetPath -and $actual.Arguments -ceq $entry.Arguments -and $actual.IconLocation -ieq $entry.IconLocation) 'Unicode Start menu shortcut round trip failed.'
             }
         }
-        Write-Host 'Unicode Windows shortcuts: eight native save/load cases passed.'
+        }
+        Write-Host 'Localized Windows shortcuts: sixteen English/Japanese native save/load cases passed.'
     } finally { Remove-Item -LiteralPath $shortcutRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

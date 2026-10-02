@@ -11,19 +11,27 @@ $ErrorActionPreference='Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This destructive fixture is restricted to disposable CI installations.' }
 Import-Module (Join-Path $PSScriptRoot '..\..\runtime\Common.psm1') -Force
 function Assert-StartMenu {
+    param([string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
     $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
     $directory=Join-Path $programs 'Immich'
-    foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope)) {
+    $entries=@(Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $Culture)
+    foreach ($entry in $entries) {
         $path=Join-Path $directory "$($entry.Name).lnk"
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing Start menu shortcut: $path" }
         $shortcut=Read-ImmichShortcut $path
         if ($shortcut.IconLocation -ine $entry.IconLocation -or -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'current\build\www\favicon.ico'))) { throw "Invalid Immich icon: $path" }
         if ($shortcut.TargetPath -ine $entry.TargetPath -or $shortcut.Arguments -cne $entry.Arguments) { throw "Incorrect shortcut launch command: $path" }
     }
-    if (Test-Path -LiteralPath (Join-Path $directory 'Update Immich.lnk')) { throw 'Obsolete English update shortcut was not removed.' }
+    foreach ($name in (Get-ImmichManagedShortcutNames | Where-Object { $_ -notin $entries.Name })) {
+        if (Test-Path -LiteralPath (Join-Path $directory "$name.lnk")) { throw "Obsolete localized shortcut was not removed: $name" }
+    }
     Write-Host "Start menu verified for ${Scope}: four shortcuts using upstream Immich icon."
 }
 Assert-StartMenu
+foreach ($culture in @('ja-JP','en-US',[Globalization.CultureInfo]::CurrentUICulture.Name)) {
+    Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $culture
+    Assert-StartMenu -Culture $culture
+}
 $envFile=Join-Path $DataRoot 'immich.env'
 $current=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
 $manifest=Get-Content -Raw (Join-Path $current 'manifest.json')|ConvertFrom-Json
