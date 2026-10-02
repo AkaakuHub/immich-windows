@@ -78,6 +78,37 @@ $stopSource=Get-Content -Raw (Join-Path $root 'runtime/launchers/Stop-Immich.ps1
 Assert-True ($stopSource.TrimEnd().EndsWith('exit 0')) 'A verified successful stop must not propagate a stale taskkill exit code.'
 Assert-True ($stopSource -match "Valkey did not finish its graceful save and shutdown") 'Valkey must finish its save before process cleanup.'
 
+$menuEnv=Join-Path ([IO.Path]::GetTempPath()) ('immich-menu-'+[guid]::NewGuid().ToString('N')+'.env')
+$previousSystemRoot=$env:SystemRoot
+try {
+    if (-not $env:SystemRoot) { $env:SystemRoot=[IO.Path]::GetTempPath() }
+    foreach ($scope in @('AllUsers','CurrentUser')) {
+        $entries=@(Get-ImmichStartMenuEntries -InstallRoot (Join-Path $root "test install's folder") -DataRoot (Join-Path $root "test data's folder") -Scope $scope)
+        Assert-True ($entries.Count -eq 4) 'Exactly four daily-use Start menu entries are required.'
+        Assert-True (($entries.Name -join ',') -eq 'Immichを開く,Immichを起動,Immichを停止,Immichを更新') 'Start menu labels must be explicit.'
+        foreach ($entry in $entries) {
+            Assert-True ($entry.IconLocation -match 'favicon\.ico,0$') 'Every menu item must use the packaged upstream icon.'
+            Assert-True ($entry.IconLocation -notmatch 'pwsh\.exe') 'PowerShell must not be used as the Start menu icon.'
+            if ($entry.Arguments -match '-EncodedCommand ([A-Za-z0-9+/=]+)$') {
+                $command=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
+                $tokens=$null;$errors=$null
+                [void][System.Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
+                Assert-True (@($errors).Count -eq 0) 'Shortcut command must parse with spaces and apostrophes in paths.'
+                if ($entry.Name -eq 'Immichを開く') {
+                    Assert-True ($command -match 'Get-ImmichLocalUrl' -and $command -notmatch '-Verb RunAs') 'Open must use current config without browser elevation.'
+                }
+            }
+        }
+    }
+    Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='0.0.0.0';IMMICH_PORT='2345'})
+    Assert-True ((Get-ImmichLocalUrl $menuEnv) -eq 'http://localhost:2345/') 'Open must use the configured port.'
+    Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='::1';IMMICH_PORT='3456'})
+    Assert-True ((Get-ImmichLocalUrl $menuEnv) -eq 'http://[::1]:3456/') 'Open must reread changed IPv6/port settings.'
+} finally {
+    $env:SystemRoot=$previousSystemRoot
+    Remove-Item -LiteralPath $menuEnv -Force -ErrorAction SilentlyContinue
+}
+
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
 Assert-True ($upstream.version -match '^v[0-9]+\.[0-9]+\.[0-9]+$') "Invalid upstream version: $($upstream.version)"
 Assert-True ($upstream.commit -match '^[0-9a-f]{40}$') 'upstream.json must pin a full 40-character commit SHA.'

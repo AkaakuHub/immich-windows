@@ -10,6 +10,21 @@ param(
 $ErrorActionPreference='Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This destructive fixture is restricted to disposable CI installations.' }
 Import-Module (Join-Path $PSScriptRoot '..\..\runtime\Common.psm1') -Force
+function Assert-StartMenu {
+    $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
+    $directory=Join-Path $programs 'Immich'
+    $shell=New-Object -ComObject WScript.Shell
+    foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope)) {
+        $path=Join-Path $directory "$($entry.Name).lnk"
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing Start menu shortcut: $path" }
+        $shortcut=$shell.CreateShortcut($path)
+        if ($shortcut.IconLocation -ine $entry.IconLocation -or -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'current\build\www\favicon.ico'))) { throw "Invalid Immich icon: $path" }
+        if ($shortcut.TargetPath -ine $entry.TargetPath -or $shortcut.Arguments -cne $entry.Arguments) { throw "Incorrect shortcut launch command: $path" }
+    }
+    if (Test-Path -LiteralPath (Join-Path $directory 'Update Immich.lnk')) { throw 'Obsolete English update shortcut was not removed.' }
+    Write-Host "Start menu verified for ${Scope}: four shortcuts using upstream Immich icon."
+}
+Assert-StartMenu
 $envFile=Join-Path $DataRoot 'immich.env'
 $current=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
 $manifest=Get-Content -Raw (Join-Path $current 'manifest.json')|ConvertFrom-Json
@@ -59,3 +74,5 @@ try { & (Join-Path $PackageRoot 'installer\Update.ps1') -PackageRoot $PackageRoo
 if (-not $rejected) { throw 'Equal-version update was accepted.' }
 Wait-HttpOk -Uri "http://127.0.0.1:$($after['IMMICH_PORT'])/api/server/ping" -TimeoutSeconds 10
 Write-Host "Running $Scope installation: legacy-to-revision update, config preservation, invalid/equal-version rejection passed."
+
+Assert-StartMenu

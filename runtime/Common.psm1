@@ -24,37 +24,83 @@ function ConvertTo-WindowsArgument {
     $builder.ToString()
 }
 
-function Set-ImmichUpdateShortcut {
+function Get-ImmichLocalUrl {
+    param([Parameter(Mandatory)][string]$EnvFile)
+    $values=Read-EnvFile $EnvFile
+    $port=if ($values['IMMICH_PORT']) { [int]$values['IMMICH_PORT'] } else { 2283 }
+    if ($port -lt 1 -or $port -gt 65535) { throw 'IMMICH_PORT must be between 1 and 65535.' }
+    $hostname=[string]$values['IMMICH_HOST']
+    if (-not $hostname -or $hostname -in @('0.0.0.0','::','[::]')) { $hostname='localhost' }
+    return [UriBuilder]::new('http',$hostname,$port).Uri.AbsoluteUri
+}
+
+function Get-ImmichStartMenuEntries {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope)
+    $hostPath=Join-Path $PSHOME 'pwsh.exe'
+    $current=Join-Path $InstallRoot 'current'
+    $envFile=Join-Path $DataRoot 'immich.env'
+    $icon=Join-Path $current 'build\www\favicon.ico'
+    $quote={ param([string]$Value) "'"+$Value.Replace("'","''")+"'" }
+    $commonArguments=" -InstallRoot $(& $quote $InstallRoot) -DataRoot $(& $quote $DataRoot) -EnvFile $(& $quote $envFile)"
+    $actions=@(
+        @{Name='Immichを開く';Description='ブラウザーで写真ライブラリを開きます';Elevate=$false;Command="Import-Module $(& $quote (Join-Path $current 'runtime\Common.psm1')) -Force; Start-Process -FilePath (Get-ImmichLocalUrl -EnvFile $(& $quote $envFile))"},
+        @{Name='Immichを起動';Description='Immichのサーバーと機械学習を起動します';Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Start-Immich.ps1'))$commonArguments"},
+        @{Name='Immichを停止';Description='Immichを停止します。写真や設定は削除しません';Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Stop-Immich.ps1'))$commonArguments"},
+        @{Name='Immichを更新';Description='既存の写真と設定を維持して最新版へ更新します';Elevate=$true;Command=$null}
+    )
+    $backgroundTemplate=@'
+try {
+    $ErrorActionPreference='Stop'
+    __IMMICH_ACTION__
+} catch {
+    $dialog=New-Object -ComObject WScript.Shell
+    [void]$dialog.Popup($_.Exception.Message,0,'Immich',16)
+    exit 1
+}
+'@
+    foreach ($action in $actions) {
+        $windowStyle=7
+        if ($action.Command) {
+            $command=$backgroundTemplate.Replace('__IMMICH_ACTION__',$action.Command)
+            $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        } else {
+            $script=Join-Path $current 'installer\Update-FromRelease.ps1'
+            $arguments=(@('-NoProfile','-NoExit','-File',$script,'-Scope',$Scope,'-InstallRoot',$InstallRoot,'-DataRoot',$DataRoot) | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+            $windowStyle=1
+        }
+        $target=$hostPath
+        if ($action.Elevate -and $Scope -eq 'AllUsers') {
+            $command="Start-Process -FilePath $(& $quote $hostPath) -ArgumentList $(& $quote $arguments) -Verb RunAs"
+            $target=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+            $windowStyle=7
+        }
+        [pscustomobject]@{Name=$action.Name;TargetPath=$target;Arguments=$arguments;IconLocation="$icon,0";WorkingDirectory=$InstallRoot;Description=$action.Description;WindowStyle=$windowStyle}
+    }
+}
+
+function Set-ImmichStartMenu {
     param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
           [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true)
-    $programs = [Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
-    $directory = Join-Path $programs 'Immich'
-    $path = Join-Path $directory 'Update Immich.lnk'
+    $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
+    $directory=Join-Path $programs 'Immich'
+    $names=@('Immichを開く','Immichを起動','Immichを停止','Immichを更新','Update Immich')
     if (-not $Enabled) {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        foreach ($name in $names) { Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue }
         return
     }
+    $icon=Join-Path $InstallRoot 'current\build\www\favicon.ico'
+    if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw "The packaged upstream Immich icon is missing: $icon" }
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $hostPath = Join-Path $PSHOME 'pwsh.exe'
-    $script = Join-Path $InstallRoot 'current\installer\Update-FromRelease.ps1'
-    $arguments = (@('-NoProfile','-NoExit','-File',$script,'-Scope',$Scope,'-InstallRoot',$InstallRoot,'-DataRoot',$DataRoot) |
-        ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($path)
-    $shortcut.WorkingDirectory = $InstallRoot
-    $shortcut.IconLocation = "$hostPath,0"
-    $shortcut.Description = 'Update Immich while preserving existing settings and media.'
-    if ($Scope -eq 'AllUsers') {
-        # A hidden non-elevated launcher opens one visible elevated update window with the usual UAC prompt.
-        $command = "Start-Process -FilePath '" + $hostPath.Replace("'","''") + "' -ArgumentList '" + $arguments.Replace("'","''") + "' -Verb RunAs"
-        $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-        $shortcut.WindowStyle = 7
-    } else {
-        $shortcut.TargetPath = $hostPath
-        $shortcut.Arguments = $arguments
+    $shell=New-Object -ComObject WScript.Shell
+    foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope)) {
+        $shortcut=$shell.CreateShortcut((Join-Path $directory "$($entry.Name).lnk"))
+        foreach ($property in @('TargetPath','Arguments','IconLocation','WorkingDirectory','Description','WindowStyle')) { $shortcut.$property=$entry.$property }
+        $shortcut.Save()
     }
-    $shortcut.Save()
+    # Replace the single English update entry from Windows revision 1 without leaving a duplicate.
+    Remove-Item -LiteralPath (Join-Path $directory 'Update Immich.lnk') -Force -ErrorAction SilentlyContinue
 }
 
 function Get-WindowsReleaseVersion {
