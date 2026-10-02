@@ -80,6 +80,10 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Select libvips cache key
@@ -91,16 +95,56 @@ jobs:
         with:
           path: artifacts/native/sharp-libvips-custom
           key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/NativeMediaValidation.psm1', 'build/Common.psm1', 'media-patches/**') }}
+      - name: Reuse qualified raw libvips from the merged PR base
+        if: steps.codec-cache.outputs.cache-hit != 'true' && github.event_name == 'pull_request'
+        id: native-reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/qualified_release.py prepare-native
       - name: Cross-build Windows libvips
-        if: steps.codec-cache.outputs.cache-hit != 'true'
+        if: steps.codec-cache.outputs.cache-hit != 'true' && steps.native-reuse.outputs.reused != 'true'
         shell: pwsh
         run: ./build/Build-CustomSharpLibvips.ps1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: libvips
           path: artifacts/native/sharp-libvips-custom
-          retention-days: 1
+          retention-days: 14
           if-no-files-found: error
+  seed-codec-cache:
+    needs: plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Select libvips cache key
+        id: codec-key
+        shell: pwsh
+        run: ./build/Write-NativeBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: codec-cache
+        with:
+          path: artifacts/native/sharp-libvips-custom
+          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/NativeMediaValidation.psm1', 'build/Common.psm1', 'media-patches/**') }}
+      - name: Verify raw libvips from the selected qualification
+        if: steps.codec-cache.outputs.cache-hit != 'true'
+        id: native-reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFIED_RUN_ID: ${{ needs.plan.outputs.run_id }}
+          QUALIFIED_ARTIFACT_ID: ${{ needs.plan.outputs.artifact_id }}
+          QUALIFIED_ARTIFACT_DIGEST: ${{ needs.plan.outputs.artifact_digest }}
+        run: python .github/scripts/qualified_release.py prepare-native
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: steps.native-reuse.outputs.reused == 'true'
+        with:
+          path: artifacts/native/sharp-libvips-custom
+          key: ${{ steps.codec-cache.outputs.cache-primary-key }}
   postgres:
     needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'postgres'
