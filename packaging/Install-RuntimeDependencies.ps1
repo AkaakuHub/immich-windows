@@ -160,6 +160,13 @@ $inventoryProperty = $manifest.PSObject.Properties['nativeDependencyFiles']
 if (-not $inventoryProperty -or -not @($inventoryProperty.Value.PSObject.Properties).Count) { throw 'Native dependency file inventory is missing.' }
 $missing = [System.Collections.Generic.List[string]]::new()
 $reused = 0
+# Sharp injection replaces a complete DLL set, so staging must never contain only a changed subset.
+$sharpNeedsStage = Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\sharp\lib')
+foreach ($entry in ($inventoryProperty.Value.PSObject.Properties | Where-Object { $_.Name.StartsWith('dependencies/sharp/') })) {
+    $path = Join-Path $ReleaseRoot $entry.Name.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ine $entry.Value) { $sharpNeedsStage=$true }
+}
 foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
     $relative = [string]$entry.Name
     if ($relative -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or $relative.Contains('\')) { throw "Invalid native payload path: $relative" }
@@ -170,7 +177,13 @@ foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
     foreach ($path in $candidatePaths) {
         if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ieq $entry.Value) { $ready=$true; break }
     }
-    if ($ready) { continue }
+    if ($ready) {
+        if ($sharpNeedsStage -and $relative.StartsWith('dependencies/sharp/') -and $path -ne $target) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath $path -Destination $target -Force
+        }
+        continue
+    }
     $source = if ($reuseSource) { Join-Path $reuseSource $installedRelative } else { $null }
     if ($source -and (Test-Path -LiteralPath $source -PathType Leaf) -and
         (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ieq $entry.Value) {

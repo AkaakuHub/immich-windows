@@ -65,13 +65,20 @@ try {
     Wait-HttpOk -Uri "http://127.0.0.1:$($envs['IMMICH_PORT'])/api/server/ping" -TimeoutSeconds 10
 } finally { Remove-Item -LiteralPath $invalid -Recurse -Force }
 
+# Build provenance differs across real releases even when all runtime DLLs are identical.
+$oldVcMetadata=Join-Path $legacyRelease 'runtime\vc-runtime\vc-runtime.json'
+@{source='old-build-machine';builtAtUtc='2026-01-01T00:00:00Z'} | ConvertTo-Json | Set-Content $oldVcMetadata
 # A legacy installation need not retain archive/package caches. It must still reuse installed payloads.
 $cacheBackups = @{}
 $oldUvOffline = $env:UV_OFFLINE
 $oldNpmOffline = $env:npm_config_offline
 $env:UV_OFFLINE = '1'
 $env:npm_config_offline = 'true'
-function global:Invoke-WebRequest { throw 'Unexpected dependency download during identical-payload update.' }
+function global:Invoke-WebRequest {
+    param([uri]$Uri,[switch]$UseBasicParsing,[int]$TimeoutSec,[string]$OutFile)
+    if ($Uri.Scheme -ne 'http' -or -not $Uri.IsLoopback) { throw "Unexpected dependency download during identical-payload update: $Uri" }
+    Microsoft.PowerShell.Utility\Invoke-WebRequest @PSBoundParameters
+}
 try {
     foreach ($name in @('downloads','uv','pnpm-store','npm')) {
         $path=Join-Path $InstallRoot "cache\$name"

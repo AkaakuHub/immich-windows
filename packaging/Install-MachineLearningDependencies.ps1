@@ -27,7 +27,7 @@ $markers = @($statePath)
 if ($source) { $markers += (Join-Path $source 'machine-learning\.dependencies-installed.json') }
 foreach ($marker in $markers) {
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
-    $installedState = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json
+    try { $installedState = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json } catch { continue }
     if ([string]$installedState.python -ne [string]$expectedState.python -or
         [string]$installedState.requirementsSha256 -cne [string]$expectedState.requirementsSha256) { continue }
     # Isolated mode ignores PYTHONHOME/PYTHONPATH. Check actual relocated imports, not only marker existence.
