@@ -77,7 +77,7 @@ namespace Immich.Windows {
 
     public sealed class TrayText {
         public string Open, Start, Stop, Update, Exit, Busy, Failed, Cancelled, Continue, NotElevated;
-        public string Started, Stopped, Updated;
+        public string Started, Stopped, Updated, Language;
 
         public static TrayText ForCulture(string culture) {
             bool japanese = (culture ?? "").Replace('_', '-').Split('-')[0].Equals("ja", StringComparison.OrdinalIgnoreCase);
@@ -87,7 +87,8 @@ namespace Immich.Windows {
                     Exit = "トレイを終了（サーバーは停止しません）", Busy = "処理中…", Failed = "操作に失敗しました。",
                     Cancelled = "操作はキャンセルされました。", Continue = "Enterキーを押して閉じます",
                     NotElevated = "トレイは管理者として実行できません。スタートアップのImmich Trayショートカットを通常の方法で開くか、サインインし直してください。",
-                    Started = "Immichを起動しました。", Stopped = "Immichを停止しました。", Updated = "Immichの更新処理が完了しました。"
+                    Started = "Immichを起動しました。", Stopped = "Immichを停止しました。", Updated = "Immichの更新処理が完了しました。",
+                    Language = "ja"
                 };
             }
             return new TrayText {
@@ -95,7 +96,8 @@ namespace Immich.Windows {
                 Exit = "Exit tray (keep server running)", Busy = "Working…", Failed = "The action failed.",
                 Cancelled = "The action was cancelled.", Continue = "Press Enter to close",
                 NotElevated = "The tray cannot run as administrator. Open the Immich Tray Startup shortcut normally, or sign out and sign in again.",
-                Started = "Immich started.", Stopped = "Immich stopped.", Updated = "Immich update completed."
+                Started = "Immich started.", Stopped = "Immich stopped.", Updated = "Immich update completed.",
+                Language = "en"
             };
         }
     }
@@ -117,7 +119,7 @@ namespace Immich.Windows {
                     common + " -EnvFile " + Quote(options.EnvFile);
             } else if (action == "update") {
                 command = "& " + Quote(Path.Combine(options.CurrentRoot, @"installer\Update-FromRelease.ps1")) +
-                    common + " -Scope " + Quote(options.Scope);
+                    common + " -Scope " + Quote(options.Scope) + " -Interactive -Language " + Quote(text.Language);
             } else { throw new ArgumentException("Unknown tray action: " + action); }
 
             // Management actions have a real console for progress and a persistent error on failure,
@@ -125,7 +127,9 @@ namespace Immich.Windows {
             string failure = action == "open"
                 ? "[Console]::Error.WriteLine($_.Exception.Message); exit 1"
                 : "Write-Host ($_ | Out-String) -ForegroundColor Red; [void](Read-Host " + Quote(text.Continue) + "); exit 1";
-            return "$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try { " + command +
+            // Update results are acknowledged by the updater itself, even if it replaces this tray.
+            string result = action == "update" ? "; if ($LASTEXITCODE -in @(10,20)) { exit $LASTEXITCODE }" : "";
+            return "$ErrorActionPreference='Stop'; $global:LASTEXITCODE=0; try { " + command + result +
                 "; if ($LASTEXITCODE -ne 0) { throw ('Exit code: ' + $LASTEXITCODE) }; exit 0 } catch { " + failure + " }";
         }
 
@@ -323,6 +327,7 @@ namespace Immich.Windows {
             ThreadPool.QueueUserWorkItem(delegate {
                 string failure = null;
                 bool cancelled = false;
+                bool updateApplied = false;
                 try {
                     var errors = new StringBuilder();
                     using (var process = new Process()) {
@@ -339,7 +344,11 @@ namespace Immich.Windows {
                         if (!process.Start()) { throw new InvalidOperationException(text.Failed); }
                         if (action == "open") { process.BeginOutputReadLine(); process.BeginErrorReadLine(); }
                         process.WaitForExit();
-                        if (process.ExitCode != 0) {
+                        updateApplied = action == "update" && process.ExitCode == 0;
+                        // 10 = already current; 20 = failure acknowledged in the update shell.
+                        // Neither is a completed update and neither should restart this tray.
+                        bool acknowledged = action == "update" && (process.ExitCode == 10 || process.ExitCode == 20);
+                        if (process.ExitCode != 0 && !acknowledged) {
                             lock (errors) { failure = errors.Length > 0 ? errors.ToString() : text.Failed + " (" + process.ExitCode.ToString(CultureInfo.InvariantCulture) + ")"; }
                         }
                     }
@@ -353,10 +362,10 @@ namespace Immich.Windows {
                     tray.Text = "Immich";
                     if (failure != null) {
                         MessageBox.Show(failure, "Immich", MessageBoxButtons.OK, cancelled ? MessageBoxIcon.Information : MessageBoxIcon.Error);
-                    } else if (action == "update") {
+                    } else if (updateApplied) {
                         RestartRequested = true;
                         ExitThread();
-                    } else if (action != "open") {
+                    } else if (action == "start" || action == "stop") {
                         string completed = action == "start" ? text.Started : action == "stop" ? text.Stopped : text.Updated;
                         tray.ShowBalloonTip(4000, "Immich", completed, ToolTipIcon.Info);
                     }

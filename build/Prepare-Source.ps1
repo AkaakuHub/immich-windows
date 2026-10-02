@@ -15,7 +15,11 @@ if (-not (Test-Path $Destination)) {
     Invoke-Native git @('clone', '--depth=1', '--branch', $upstream.version, $upstream.repository, $Destination)
 }
 
-$commit = (& git -C $Destination rev-parse HEAD).Trim()
+$commit = (& git -C $Destination rev-parse HEAD)
+if ($LASTEXITCODE -ne 0) { throw "Could not inspect the source commit: $Destination" }
+$commit = $commit.Trim()
+$actualTag = (& git -C $Destination describe --tags --exact-match HEAD 2>$null)
+$tagMatches = $LASTEXITCODE -eq 0 -and $actualTag -eq $upstream.version
 
 $seriesPath = Join-Path $root 'patches\series'
 if (-not (Test-Path -LiteralPath $seriesPath -PathType Leaf)) { throw "Patch series file is missing: $seriesPath" }
@@ -39,7 +43,7 @@ if ($unlisted.Count) {
 }
 
 $patchNames = @($patches | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\','/') })
-$patchFiles = @($patches | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+$patchFiles = @($patches | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
 $expectedChangedFiles = [System.Collections.Generic.List[string]]::new()
 foreach ($patch in $patches) {
     foreach ($line in Get-Content -LiteralPath $patch.FullName) {
@@ -57,13 +61,15 @@ $actualDiff = (@(& git -C $Destination diff --binary) -join "`n")
 if ($LASTEXITCODE -ne 0) { throw "Could not inspect source changes: $Destination" }
 $statePath = Join-Path $root '.work\source-state.json'
 $stateMatches = $false
+$oldState = $null
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     $oldState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     $samePatches = ($oldState.patches -join "`n") -ceq ($patchNames -join "`n")
     $samePatchFiles = ($oldState.patchFiles -join "`n") -ceq ($patchFiles -join "`n")
     $sameFiles = ($oldState.patchedFiles -join "`n") -ceq ($expectedChangedFiles -join "`n")
     $stateMatches = $oldState.version -eq $upstream.version -and
-        $oldState.commit -eq $commit -and $samePatches -and $samePatchFiles -and $sameFiles
+        $oldState.commit -eq $commit -and $commit -eq $upstream.commit -and $tagMatches -and
+        $samePatches -and $samePatchFiles -and $sameFiles
 }
 
 function Assert-UpstreamVersions {
@@ -110,14 +116,13 @@ if ($actualChangedFiles.Count -gt 0 -or $untrackedFiles.Count -gt 0) {
     $generated = $null -ne $oldState -and $oldState.commit -eq $commit -and
         ($actualChangedFiles -join "`n") -ceq ($oldState.patchedFiles -join "`n") -and
         $untrackedFiles.Count -eq 0 -and $stagedFiles.Count -eq 0 -and
-        ($null -eq $oldState.appliedDiff -or $oldState.appliedDiff -ceq $actualDiff)
+        $null -ne $oldState.appliedDiff -and $oldState.appliedDiff -ceq $actualDiff
     if (-not $generated) { throw "Source checkout has unrecognized changes; refusing to overwrite it: $Destination" }
     Invoke-Native git @('-C', $Destination, 'restore', '--worktree', '--', '.')
 }
 if ($stagedFiles.Count -gt 0) { throw "Source checkout has staged changes; refusing to overwrite it: $Destination" }
 
-$actualTag = (& git -C $Destination describe --tags --exact-match HEAD 2>$null)
-if ($commit -ne $upstream.commit -or $actualTag -ne $upstream.version) {
+if ($commit -ne $upstream.commit -or -not $tagMatches) {
     Invoke-Native git @('-C', $Destination, 'fetch', '--depth=1', 'origin', 'tag', $upstream.version)
     Invoke-Native git @('-C', $Destination, 'checkout', '--detach', $upstream.version)
     $commit = (& git -C $Destination rev-parse HEAD).Trim()

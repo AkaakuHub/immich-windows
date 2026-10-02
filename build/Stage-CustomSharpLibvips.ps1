@@ -5,10 +5,12 @@ param(
     [Parameter(Mandatory)][string]$BundleRoot
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1') -Force
 Assert-WindowsX64
 $ApplicationRoot = (Resolve-Path -LiteralPath $ApplicationRoot).Path
 $BundleRoot = (Resolve-Path -LiteralPath $BundleRoot).Path
 $root = Get-RepositoryRoot
+Assert-NativeMediaBundleIdentity -BundleRoot $BundleRoot -RepositoryRoot $root
 $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
 $expected = $versions.sharpLibvips
 $metadataPath = Join-Path $BundleRoot 'immich-windows-libvips.json'

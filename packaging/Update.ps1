@@ -40,6 +40,8 @@ if (-not $PostgresService) { $PostgresService = if ($installedEnv['POSTGRES_SERV
 $lockKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($InstallRoot)).ToUpperInvariant())))
 $mutex = [Threading.Mutex]::new($false, "Global\ImmichWindowsUpdate-$lockKey")
 $locked = $false
+$startupMutex=$null
+$startupLocked=$false
 try {
     try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'Another update is already running for this installation.' }
@@ -65,6 +67,8 @@ $state=[ordered]@{
     previousServices=$previousServices
     previousValkeyConfig=$(if (Test-Path (Join-Path $DataRoot 'valkey.conf')) { Get-Content -Raw (Join-Path $DataRoot 'valkey.conf') } else { $null })
     status='preparing'
+    controllerProcessId=$PID
+    controllerMutexName="Global\ImmichWindowsStartup-$lockKey-$([guid]::NewGuid().ToString('N'))"
     previousRelease=$previousRelease
     previousVersion="v$previousVersion"
     candidatePackageRoot=$PackageRoot
@@ -76,6 +80,9 @@ $state=[ordered]@{
     completedAtUtc=$null
     failure=$null
 }
+$startupMutex=[Threading.Mutex]::new($false,$state.controllerMutexName)
+$startupLocked=$startupMutex.WaitOne(0)
+if (-not $startupLocked) { throw 'Could not acquire this update startup gate.' }
 function Save-UpgradeState {
     $temporary = "$stateFile.tmp"
     try {
@@ -91,18 +98,24 @@ $backup=$null
 try {
     $prepareProgress=Start-ImmichProgress -Key prepare
     $candidateRelease = Join-Path $InstallRoot "releases\v$candidateVersion"
+    $global:LASTEXITCODE=0
     & (Join-Path $PSScriptRoot 'Install.ps1') -PackageRoot $PackageRoot -Scope $Scope -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService -ReuseServices -PrepareOnly -ResumeExistingRelease:(Test-Path -LiteralPath $candidateRelease)
+    if ($LASTEXITCODE -ne 0) { throw "Candidate preparation failed with exit code $LASTEXITCODE." }
     Update-ImmichProgress -State $prepareProgress -Finished
     $state.databaseUnchanged = Test-ImmichDatabasePayloadEqual -PreviousRelease $previousRelease -CandidateRelease $candidateRelease
     $state.candidateRelease = $candidateRelease
     $state.status = 'stopping'
     Save-UpgradeState
 $stopProgress=Start-ImmichProgress -Key stop
+$global:LASTEXITCODE=0
 & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+if ($LASTEXITCODE -ne 0) { throw "Immich shutdown failed with exit code $LASTEXITCODE." }
 Update-ImmichProgress -State $stopProgress -Finished
 if (-not $state.databaseUnchanged) {
     $backupProgress=Start-ImmichProgress -Key backup
+    $global:LASTEXITCODE=0
     $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot
+    if ($LASTEXITCODE -ne 0) { throw "Database backup failed with exit code $LASTEXITCODE." }
     $backup=@($backup)[-1]
     if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){throw "Pre-upgrade database backup was not created: $backup"}
     Update-ImmichProgress -State $backupProgress -Finished
@@ -115,6 +128,7 @@ $switchProgress=Start-ImmichProgress -Key switch
 $state.status='installing'
 Save-UpgradeState
 
+    $global:LASTEXITCODE=0
     & (Join-Path $PSScriptRoot 'Install.ps1') `
         -PackageRoot $PackageRoot `
         -Scope $Scope `
@@ -127,6 +141,7 @@ Save-UpgradeState
         -ApplicationOnly:$state.databaseUnchanged `
         -ResumeExistingRelease `
         -DoNotStart
+    if ($LASTEXITCODE -ne 0) { throw "Candidate installation failed with exit code $LASTEXITCODE." }
 
     Update-ImmichProgress -State $switchProgress -Finished
     $state.candidateRelease=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
@@ -134,10 +149,14 @@ Save-UpgradeState
     Save-UpgradeState
 
     $startProgress=Start-ImmichProgress -Key start
-    & (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+    $global:LASTEXITCODE=0
+    & (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot -UpgradeInProgress
+    if ($LASTEXITCODE -ne 0) { throw "Immich startup failed with exit code $LASTEXITCODE." }
     Update-ImmichProgress -State $startProgress -Finished
     $verifyProgress=Start-ImmichProgress -Key verify
+    $global:LASTEXITCODE=0
     & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
+    if ($LASTEXITCODE -ne 0) { throw "Updated installation verification failed with exit code $LASTEXITCODE." }
 
     Update-ImmichProgress -State $verifyProgress -Finished
     $state.status='qualified'
@@ -161,6 +180,9 @@ Save-UpgradeState
 Start-ImmichTray -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
 
 } finally {
+    if ($startupLocked) { $startupMutex.ReleaseMutex() }
+    if ($startupMutex) { $startupMutex.Dispose() }
     if ($locked) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
 }
+$global:LASTEXITCODE=0

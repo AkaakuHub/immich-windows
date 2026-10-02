@@ -11,38 +11,49 @@ diff --git a/server/src/repositories/view-repository.ts b/server/src/repositorie
  import { DummyValue, GenerateSql } from 'src/decorators';
  import { AssetVisibility } from 'src/enum';
  import { DB } from 'src/schema';
-@@ -12,7 +13,9 @@
+@@ -12,7 +13,14 @@
    async getUniqueOriginalPaths(userId: string) {
      const results = await this.db
        .selectFrom('asset')
 -      .select((eb) => eb.fn<string>('substring', ['asset.originalPath', eb.val('^(.*/)[^/]*$')]).as('directoryPath'))
 +      .select((eb) =>
-+        eb.fn<string>('substring', ['asset.originalPath', eb.val('^(.+[\\\\/])[^\\\\/]*$')]).as('directoryPath'),
++        eb
++          .fn<string>('substring', [
++            'asset.originalPath',
++            eb.val(sep === '\\' ? '^(.*[\\\\/])[^\\\\/]*$' : '^(.*/)[^/]*$'),
++          ])
++          .as('directoryPath'),
 +      )
        .distinct()
        .where('ownerId', '=', asUuid(userId))
        .where('visibility', '=', AssetVisibility.Timeline)
-@@ -23,12 +26,17 @@
+@@ -23,12 +31,23 @@
        .orderBy('directoryPath', 'asc')
        .execute();
- 
+
 -    return results.map((row) => row.directoryPath.replaceAll(/\/$/g, ''));
-+    return results.map((row) => row.directoryPath.replaceAll(/[\\/]$/g, '').replaceAll('\\', '/'));
++    return results.map((row) =>
++      sep === '\\'
++        ? row.directoryPath.replaceAll(/[\\/]$/g, '').replaceAll('\\', '/')
++        : row.directoryPath.replaceAll(/\/$/g, ''),
++    );
    }
- 
+
    @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
    async getAssetsByOriginalPath(userId: string, partialPath: string) {
 -    const normalizedPath = partialPath.replaceAll(/\/$/g, '');
-+    const normalizedPath = normalize(partialPath.replaceAll(/[\\/]$/g, ''));
++    // Add the separator before normalizing so a drive root ('D:') stays a root, not 'D:.'.
++    const normalizedPath =
++      sep === '\\' ? normalize(`${partialPath}${sep}`).slice(0, -1) : partialPath.replaceAll(/\/$/g, '');
 +    const escapeLike = (value: string) => value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 +    const escapedPath = escapeLike(normalizedPath);
 +    const escapedSeparator = sep === '\\' ? '\\\\' : sep;
 +    const directChildPattern = `%${escapedPath}${escapedSeparator}%`;
 +    const nestedChildPattern = `%${escapedPath}${escapedSeparator}%${escapedSeparator}%`;
- 
+
      return this.db
        .selectFrom('asset')
-@@ -40,10 +48,10 @@
+@@ -40,10 +59,15 @@
        .where('fileCreatedAt', 'is not', null)
        .where('fileModifiedAt', 'is not', null)
        .where('localDateTime', 'is not', null)
@@ -52,7 +63,12 @@ diff --git a/server/src/repositories/view-repository.ts b/server/src/repositorie
 +      .where('originalPath', 'not like', nestedChildPattern)
        .orderBy(
 -        (eb) => eb.fn('regexp_replace', ['asset.originalPath', eb.val('.*/(.+)'), eb.val(String.raw`\1`)]),
-+        (eb) => eb.fn('regexp_replace', ['asset.originalPath', eb.val(String.raw`.*[\\/](.+)`), eb.val(String.raw`\1`)]),
++        (eb) =>
++          eb.fn('regexp_replace', [
++            'asset.originalPath',
++            eb.val(sep === '\\' ? String.raw`.*[\\/](.+)` : '.*/(.+)'),
++            eb.val(String.raw`\1`),
++          ]),
          'asc',
        )
        .execute();

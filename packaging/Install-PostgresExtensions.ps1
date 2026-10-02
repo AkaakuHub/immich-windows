@@ -12,6 +12,7 @@ param(
     [switch]$RecoveryRestore
 )
 
+$ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 Assert-Administrator
 

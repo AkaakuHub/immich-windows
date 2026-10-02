@@ -19,7 +19,7 @@ foreach ($required in @(
     'runtime\tray\ImmichTray.exe','build\www\favicon.ico','server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','machine-learning\requirements.txt',
     'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json',
     'installer\Install-RuntimeDependencies.ps1','installer\Install-MachineLearningDependencies.ps1',
-    'sharp-libvips-qualification.json','installer\Update.ps1','runtime\Common.psm1',
+    'sharp-libvips-qualification.json','installer\Update.ps1','runtime\Common.psm1','runtime\Native-Probe.psm1',
     'runtime\launchers\Start-Immich.ps1','runtime\launchers\Stop-Immich.ps1','runtime\launchers\Load-ImmichEnv.ps1',
     'tests\Smoke-Windows.ps1','migration\Import-Database.ps1','migration\New-DatabaseBackup.ps1',
     'README.md','docs\install.md','docs\operations.md','docs\migration.md'

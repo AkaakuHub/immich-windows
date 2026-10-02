@@ -10,23 +10,8 @@ foreach ($entry in (Read-EnvFile $EnvFile).GetEnumerator()) {
 }
 
 if ($ServiceRole) {
-    $statePath = Join-Path (Split-Path -Parent $EnvFile) 'state\upgrade-recovery.json'
-    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-        $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-        if ($state.status -notin @('qualified','recovered','preparation-failed','backup-failed')) {
-            $installRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-            $key = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([IO.Path]::TrimEndingDirectorySeparator($installRoot).ToUpperInvariant())))
-            $gate = [Threading.Mutex]::new($false, "Global\ImmichWindowsUpdate-$key")
-            $available = $false
-            try {
-                try { $available = $gate.WaitOne(0) } catch [Threading.AbandonedMutexException] { $available = $true }
-                if ($state.status -notin @('candidate-installed','recovery-starting') -or $available) { throw "Upgrade is incomplete ($($state.status)); explicit recovery is required before service startup." }
-            } finally {
-                if ($available) { $gate.ReleaseMutex() }
-                $gate.Dispose()
-            }
-        }
-    }
+    $installRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+    Assert-ImmichStartupAllowed -EnvFile $EnvFile -InstallRoot $installRoot -ServiceProcess
 }
 
 $release = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path

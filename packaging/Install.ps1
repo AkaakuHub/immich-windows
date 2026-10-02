@@ -153,7 +153,7 @@ $DatabasePort = if ($PSBoundParameters.ContainsKey('DatabasePort')) { $DatabaseP
 $DatabaseName = if ($PSBoundParameters.ContainsKey('DatabaseName')) { $DatabaseName } elseif ($sourceEnv['DB_DATABASE_NAME']) { [string]$sourceEnv['DB_DATABASE_NAME'] } else { $DatabaseName }
 $DatabaseUser = if ($PSBoundParameters.ContainsKey('DatabaseUser')) { $DatabaseUser } elseif ($sourceEnv['DB_USERNAME']) { [string]$sourceEnv['DB_USERNAME'] } else { $DatabaseUser }
 $PostgresService = if ($PSBoundParameters.ContainsKey('PostgresService')) { $PostgresService } elseif ($sourceEnv['POSTGRES_SERVICE']) { [string]$sourceEnv['POSTGRES_SERVICE'] } else { $PostgresService }
-$PostgresRoot = if ($PSBoundParameters.ContainsKey('PostgresRoot')) { $PostgresRoot } elseif ($sourceEnv['POSTGRES_ROOT']) { [string]$sourceEnv['POSTGRES_ROOT'] } else { $PostgresRoot }
+$PostgresRoot = if ($PSBoundParameters.ContainsKey('PostgresRoot')) { $PostgresRoot } elseif ($sourceEnv['POSTGRES_ROOT']) { [string]$sourceEnv['POSTGRES_ROOT'] } elseif ($sourceEnv['IMMICH_POSTGRES_BIN_DIR']) { Split-Path -Parent $sourceEnv['IMMICH_POSTGRES_BIN_DIR'] } else { $PostgresRoot }
 $ServerPort = if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort } elseif ($sourceEnv['IMMICH_PORT']) { [int]$sourceEnv['IMMICH_PORT'] } else { $ServerPort }
 $MachineLearningPort = if ($PSBoundParameters.ContainsKey('MachineLearningPort')) { $MachineLearningPort } elseif ($sourceEnv['IMMICH_PORT_ML']) { [int]$sourceEnv['IMMICH_PORT_ML'] } else { $MachineLearningPort }
 $MachineLearningAccelerator = if ($PSBoundParameters.ContainsKey('MachineLearningAccelerator')) { $MachineLearningAccelerator } elseif ($sourceEnv['MACHINE_LEARNING_ACCELERATOR']) { [string]$sourceEnv['MACHINE_LEARNING_ACCELERATOR'] } else { $MachineLearningAccelerator }
@@ -400,6 +400,7 @@ function New-WinSWServiceXml {
 $winswSource = Join-Path $current 'runtime\winsw\WinSW-x64.exe'
 $serverExe = Join-Path $services 'ImmichServer.exe'; Copy-Item $winswSource $serverExe -Force
 $serverXml = Join-Path $services 'ImmichServer.xml'
+$previousServerConfiguration=if (Test-Path -LiteralPath $serverXml -PathType Leaf) { Get-Content -Raw -LiteralPath $serverXml } else { $null }
 $serverDepends=@($PostgresService)
 if($RedisMode -eq 'BundledValkey'){$serverDepends += 'ImmichValkey'}
 $serviceHost = Join-Path $PSHOME 'pwsh.exe'
@@ -415,6 +416,8 @@ foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
     if (-not $existingService -or -not $ReuseServices) {
         & $svc[0] install
         if ($LASTEXITCODE -ne 0) { throw "Failed to install $name" }
+    } elseif ($name -eq 'ImmichServer') {
+        Set-ImmichServerDependencies -Configuration (Get-Content -Raw -LiteralPath $serverXml) -PreviousConfiguration $previousServerConfiguration
     }
 }
 }

@@ -23,6 +23,7 @@ function New-TestProcess([string]$Name, [int]$ProcessId, [string]$PathValue = ''
 
 $loaderStub = @'
 param($EnvFile)
+function Assert-ImmichStartupAllowed { param($EnvFile,$InstallRoot,[switch]$UpgradeInProgress) }
 function Get-Process {
     [CmdletBinding()]
     param([int]$Id)
@@ -228,9 +229,13 @@ try {
         Write-Host "PASS startup workflow: $($case.Name)"
     }
 } finally {
-    foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+    foreach ($name in $environmentNames) {
+        if ($null -eq $previousEnvironment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+    }
     if ($previousState) { Set-Variable -Name ImmichStartupTest -Scope Global -Value $previousState.Value }
     else { Remove-Variable -Name ImmichStartupTest -Scope Global -ErrorAction SilentlyContinue }
     if ($driveName) { Remove-PSDrive -Name $driveName -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
 }
+& (Join-Path $PSScriptRoot 'Startup-Recovery.ps1')

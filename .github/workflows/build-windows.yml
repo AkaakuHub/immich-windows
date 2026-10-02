@@ -60,10 +60,21 @@ jobs:
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'immich-upstream'
           ./build/Prepare-Source.ps1 -Destination $source
-          ./tests/Static-RepositoryAudit.ps1 -SourceRoot $source
-          ./tests/Update-Workflow.ps1
-          ./tests/Dependency-Reuse.ps1
-          ./tests/Startup-Workflow.ps1
+          # Independent checks get separate processes and all report once. A failure
+          # must fail this gate, but should not hide failures in later checks.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $failed = [Collections.Generic.List[string]]::new()
+          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Update-FromRelease','Dependency-Reuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
+            $arguments = @('-NoLogo','-NoProfile','-File',"./tests/$name.ps1")
+            if ($name -eq 'Static-RepositoryAudit') { $arguments += @('-SourceRoot',$source) }
+            & "$PSHOME/pwsh.exe" @arguments
+            if ($LASTEXITCODE -ne 0) { $failed.Add($name) }
+          }
+          node ./tests/Server-Portability.cjs $source
+          if ($LASTEXITCODE -ne 0) { $failed.Add('Server-Portability') }
+          python ./tests/MachineLearning-Lifecycle.py $source
+          if ($LASTEXITCODE -ne 0) { $failed.Add('MachineLearning-Lifecycle') }
+          if ($failed.Count) { throw "Validation failed: $($failed -join ', ')" }
   codec:
     needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
@@ -79,7 +90,7 @@ jobs:
         id: codec-cache
         with:
           path: artifacts/native/sharp-libvips-custom
-          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/NativeMediaValidation.psm1', 'build/Common.psm1', 'media-patches/**') }}
       - name: Cross-build Windows libvips
         if: steps.codec-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -225,6 +236,15 @@ jobs:
           .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
             -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
             -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
+          $env:PGHOST='127.0.0.1'
+          $env:PGPORT='5432'
+          $env:PGUSER='postgres'
+          $env:PGDATABASE='postgres'
+          $env:PGPASSWORD=Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
+          try {
+            & ./.tools/node/node.exe ./tests/Server-Portability.cjs .work/immich --server-root artifacts/application/server --psql 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
+            if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL path portability checks failed.' }
+          } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.pg-runtime-cache.outputs.cache-hit != 'true'
         with:
@@ -240,7 +260,7 @@ jobs:
             ${{ runner.temp }}/immich-install/cache/uv
             ${{ runner.temp }}/immich-install/cache/pnpm-store
           key: runtime-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'artifacts/machine-learning/requirements.txt', 'dist/**/pnpm-lock.yaml') }}
-      - name: Install and smoke test the thin package
+      - name: Install, upgrade and test both Windows scopes
         shell: pwsh
         run: |
           $version = '${{ needs.plan.outputs.version }}'
@@ -261,6 +281,8 @@ jobs:
           Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
           $password = Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
+          $scopeTimer = [Diagnostics.Stopwatch]::StartNew()
+          Write-Host 'Qualifying AllUsers: fresh install, smoke, legacy upgrade and ML lifecycle'
           & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope AllUsers `
             -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `
             -DatabasePassword $password -PostgresRoot 'C:\Program Files\PostgreSQL\18'
@@ -268,16 +290,70 @@ jobs:
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
             -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
           ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $installRoot -DataRoot $dataRoot -Scope AllUsers
-          & "$installRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $installRoot -DataRoot $dataRoot -EnvFile "$dataRoot/immich.env"
-          $userRoot = Join-Path $env:LOCALAPPDATA 'Programs\Immich'
-          $userData = Join-Path $env:LOCALAPPDATA 'Immich'
-          New-Item -ItemType Directory -Path $userRoot -Force | Out-Null
-          New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
-          & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope CurrentUser `
-            -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env"
-          & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
-          ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -UseLegacyMachineLearning
-          & "$userRoot/current/runtime/launchers/Stop-Immich.ps1" -InstallRoot $userRoot -DataRoot $userData -EnvFile "$userData/immich.env"
+          ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $installRoot -DataRoot $dataRoot -LeaveStopped
+          Write-Host ('AllUsers qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
+
+          # Verify the real profile before using the disposable CI profile.
+          # Verify both default paths and the product's existing containment guard.
+          Import-Module "$packageRoot/runtime/Common.psm1" -Force
+          $originalLocalAppData = $env:LOCALAPPDATA
+          $defaultUserPaths = Resolve-ImmichInstallPaths -Scope CurrentUser
+          if ($defaultUserPaths.InstallRoot -cne (Join-Path $originalLocalAppData 'Programs\Immich') -or
+              $defaultUserPaths.DataRoot -cne (Join-Path $originalLocalAppData 'Immich')) {
+            throw 'CurrentUser default paths do not match the real user profile.'
+          }
+          $outsideProfile = Join-Path (Split-Path $originalLocalAppData -Parent) 'immich-ci-outside-profile'
+          foreach ($parameter in @('InstallRoot','DataRoot')) {
+            $pathArguments = @{ Scope = 'CurrentUser' }
+            $pathArguments[$parameter] = $outsideProfile
+            $rejected = $false
+            try { Resolve-ImmichInstallPaths @pathArguments | Out-Null } catch {
+              if ($_.Exception.Message -ne 'CurrentUser installation paths must remain under LOCALAPPDATA.') { throw }
+              $rejected = $true
+            }
+            if (-not $rejected) { throw "CurrentUser accepted $parameter outside LOCALAPPDATA." }
+          }
+          Write-Host 'CurrentUser real-profile defaults and both path containment guards passed.'
+
+          # Keep disposable payloads on the runner's work volume with their cache.
+          # The real HKCU and Startup shortcut tests still run with explicit roots.
+          $scopeTimer.Restart()
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'immich-user-profile'
+            $userPaths = Resolve-ImmichInstallPaths -Scope CurrentUser
+            $userRoot = $userPaths.InstallRoot
+            $userData = $userPaths.DataRoot
+            if ([IO.Path]::GetPathRoot($userRoot) -ine [IO.Path]::GetPathRoot($installRoot)) {
+              throw 'Disposable CurrentUser installation and dependency cache must share a volume.'
+            }
+            Write-Host 'Qualifying CurrentUser: fresh install, smoke, legacy upgrade and ML lifecycle'
+            New-Item -ItemType Directory -Path $userRoot -Force | Out-Null
+            New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
+            & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope CurrentUser `
+              -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env"
+            & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
+            ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -UseLegacyMachineLearning
+            ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $userRoot -DataRoot $userData -LeaveStopped
+            Write-Host ('CurrentUser qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
+          } finally {
+            $env:LOCALAPPDATA = $originalLocalAppData
+          }
+      - name: Collect sanitized ML failure diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $scopes = @(
+            @{ Name = 'AllUsers'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-install'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-data') },
+            @{ Name = 'CurrentUser'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-user-profile\Programs\Immich'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-user-profile\Immich') }
+          )
+          foreach ($scope in $scopes) {
+            Write-Host "::group::Sanitized $($scope.Name) ML failure diagnostics"
+            try {
+              ./tests/actions/Write-MachineLearningDiagnostics.ps1 -InstallRoot $scope.InstallRoot -DataRoot $scope.DataRoot
+            } catch {
+              Write-Warning "Sanitized $($scope.Name) ML diagnostics could not be collected."
+            } finally { Write-Host '::endgroup::' }
+          }
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: always() && !cancelled() && steps.runtime-downloads.outputs.cache-primary-key != '' && steps.runtime-downloads.outputs.cache-hit != 'true'
         with:

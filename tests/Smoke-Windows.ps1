@@ -10,6 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Native-Probe.psm1') -Force
 $current=(Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path
 $manifest=Get-Content -Raw -LiteralPath (Join-Path $current 'manifest.json')|ConvertFrom-Json
 if(-not $manifest.mediaStack.productionQualified -and -not $AllowUnqualifiedSharp){throw 'Installed package is marked productionQualified=false because it uses stock Sharp/libvips.'}
@@ -174,8 +175,7 @@ const path = require('node:path');
   }
 })().catch((error) => { console.error(error); process.exit(1); });
 '@
-& $node -e $probe (Join-Path $current 'server') @SharpFixture
-if($LASTEXITCODE -ne 0){throw 'Sharp/libvips runtime capability test failed.'}
+Invoke-ImmichNativeProbe -FilePath $node -ArgumentList (@('-e',$probe,(Join-Path $current 'server'))+@($SharpFixture | Where-Object { $_ })) -ProbeName 'Sharp/libvips runtime capability test' | Write-Host
 
 $geodataDate = (Get-Content -Raw -LiteralPath (Join-Path $current 'build\geodata\geodata-date.txt')).Trim()
 $importDate = ''
@@ -189,5 +189,7 @@ for ($attempt = 0; $attempt -lt 120; $attempt++) {
     Start-Sleep -Seconds 5
 }
 if ($importDate -ne $geodataDate) { throw 'Geodata import did not finish within 10 minutes.' }
-& (Join-Path $current 'migration\Schema-Check.ps1') -EnvFile (Join-Path $DataRoot 'immich.env') -InstallRoot $InstallRoot
+# Run the admin import in its own PowerShell process. Its env loader must not
+# change this process, the installed env file, or any running service's G_DEBUG.
+Invoke-ImmichNativeProbe -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $current 'migration\Schema-Check.ps1'),'-EnvFile',(Join-Path $DataRoot 'immich.env'),'-InstallRoot',$InstallRoot) -ProbeName 'Immich schema-check' | Write-Host
 Write-Host "Native Windows smoke test passed for Immich $($manifest.immichVersion)."
