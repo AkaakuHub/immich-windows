@@ -52,4 +52,6 @@ if(-not $CustomSharpLibvipsBundle -and -not $AllowStockSharp){
 $packageArgs=@{}
 if($PackageDestination){$packageArgs.Destination=$PackageDestination}
 if($AllowStockSharp){$packageArgs.AllowStockSharp=$true}
+& (Join-Path $PSScriptRoot 'Stage-VcRuntime.ps1')
+if (-not $AllowStockSharp) { & (Join-Path $root 'packaging\New-NativeDependenciesArchive.ps1') }
 & (Join-Path $root 'packaging\New-Package.ps1') @packageArgs

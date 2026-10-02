@@ -6,10 +6,12 @@ param(
 )
 
 Import-Module (Join-Path $PSScriptRoot '..\build\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $root = Get-RepositoryRoot
 $upstream = Read-JsonFile (Join-Path $root 'upstream.json')
+$packageVersion = Get-WindowsReleaseVersion $upstream
 $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
-if (-not $Destination) { $Destination = Join-Path $root "dist\immich-windows-$($upstream.version)-win-x64" }
+if (-not $Destination) { $Destination = Join-Path $root "dist\immich-windows-$packageVersion-win-x64" }
 $app = Join-Path $root 'artifacts\application'
 $ml = Join-Path $root 'artifacts\machine-learning'
 foreach ($required in @($app,$ml)) { if (-not (Test-Path $required)) { throw "Build artifact missing: $required" } }
@@ -78,7 +80,7 @@ if (Test-Path (Join-Path $root 'migration')) { Copy-Directory (Join-Path $root '
 New-Item -ItemType Directory -Path (Join-Path $Destination 'tests') -Force | Out-Null
 Copy-Item (Join-Path $root 'tests\Smoke-Windows.ps1') (Join-Path $Destination 'tests\Smoke-Windows.ps1')
 Copy-Item (Join-Path $root 'config\immich.env.example') (Join-Path $Destination 'immich.env.example') -Force
-$installCmd = (Get-Content -Raw -LiteralPath (Join-Path $root 'packaging\Install.cmd')).Replace('__IMMICH_VERSION__', $upstream.version)
+$installCmd = (Get-Content -Raw -LiteralPath (Join-Path $root 'packaging\Install.cmd')).Replace('__IMMICH_VERSION__', $packageVersion)
 Write-Utf8NoBom -Path (Join-Path $root 'dist\Install.cmd') -Content $installCmd
 Copy-Item (Join-Path $root 'README.md') (Join-Path $Destination 'README.md')
 New-Item -ItemType Directory -Path (Join-Path $Destination 'docs') -Force | Out-Null
@@ -87,7 +89,11 @@ foreach ($name in @('install.md','operations.md','migration.md')) {
 }
 
 $manifest = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
+    packageVersion = $packageVersion
+    windowsRevision = [int]$upstream.windowsRevision
+    sourceCommit = (& git -C $root rev-parse HEAD).Trim()
+    nativeDependenciesSha256 = $(if ($mediaStackQualified) { (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root "dist\immich-windows-$packageVersion-native-dependencies.zip")).Hash.ToLowerInvariant() } else { $null })
     immichVersion = $upstream.version
     upstreamRepository = $upstream.repository
     upstreamCommit = (Get-Content -Raw (Join-Path $app 'application-manifest.json') | ConvertFrom-Json).upstreamCommit

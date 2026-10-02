@@ -80,6 +80,7 @@ $mlInputs=[ordered]@{
     sourceDiff=(@(& git -C $source diff --binary -- machine-learning) -join "`n")
     python=$versions.python.version
     uv=$versions.uv.version
+    onnxruntimeDirectml=$versions.onnxruntimeDirectml.version
     builder=(& git hash-object (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1')).Trim()
     shared=$sharedBuildInputs
 }

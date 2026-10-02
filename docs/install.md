@@ -61,4 +61,23 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 成功後は`http://127.0.0.1:2283/`へアクセスします。新規DBには最初の管理者を作成します。既存DBを移行する場合は、[移行手順](migration.md)に従って`-DoNotStart`付きで導入してください。これは直後の起動だけを抑止し、自動起動の登録は行います。
 
+### Machine LearningのDirectML
+
+Windows版は`onnxruntime-directml`を使用し、CLIP、顔検出・顔認識、OCRのONNX推論をDirectML対応GPUへ送ることができます。`immich.env`で次を指定します。
+
+```text
+MACHINE_LEARNING_ACCELERATOR=cpu
+MACHINE_LEARNING_DEVICE_ID=0
+```
+
+`MACHINE_LEARNING_ACCELERATOR`は`cpu`または`directml`です。既定の`cpu`は既存環境を維持するための明示的なCPUモードです。`directml`では未対応ノードのCPU実行、初期化失敗時・推論失敗時のCPU再試行をすべて禁止します。対応しないモデル・GPU・ドライバーは明確なエラーになります。以前の試験的な`directml-strict`設定は`directml`へ変更してください。
+
+`MACHINE_LEARNING_DEVICE_ID`はDirectMLのDXGIアダプター番号です。複数GPUではDXGIのアダプター順を確認してください。タスクマネージャーのGPU番号と一致する保証はありません。画像デコード、リサイズ、NMS、OCRの後処理などONNXモデル外の処理はCPUで実行されます。
+
+インストール引数で指定する場合は、例えば`-MachineLearningAccelerator directml -MachineLearningDeviceId 1`を使用します。新規導入時の値は`immich.env`へ保存されます。導入後はこのファイルを編集し、停止→起動で反映してください。AllUsersでも毎回のサービス起動時（PC起動時を含む）に読み直します。DirectMLの指定だけで全モデルの動作を保証するものではなく、RX 550上のCLIP・顔認識・OCRは実機で確認が必要です。
+
 依存取得に失敗した場合はエラーを確認し、同じReleaseの`Install.cmd`と同じ引数に`-ResumeExistingRelease`を追加して再実行します。コピー済みのアプリから依存の設定を再開します。別のReleaseにはこの引数を使いません。
+
+## 次回からの更新
+
+スタートメニューの **Immich → Update Immich** を開きます。AllUsersはWindowsの管理者確認に応答してください。既存の設置先・設定を使って最新のWindows改訂へ更新します。詳しくは[更新手順](operations.md)を参照してください。

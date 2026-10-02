@@ -31,6 +31,10 @@
     "distribution": "uv-managed CPython / python-build-standalone",
     "architecture": "x86_64-pc-windows-msvc"
   },
+  "onnxruntimeDirectml": {
+    "version": "1.24.4",
+    "source": "https://pypi.org/project/onnxruntime-directml/1.24.4/"
+  },
   "node": {
     "version": "24.15.0",
     "architecture": "win-x64",

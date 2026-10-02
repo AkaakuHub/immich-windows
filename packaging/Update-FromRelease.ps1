@@ -5,8 +5,8 @@ param(
     [ValidateSet('AllUsers','CurrentUser')][string]$Scope='AllUsers',
     [string]$InstallRoot,
     [string]$DataRoot,
-    [string]$PostgresRoot='C:\Program Files\PostgreSQL\18',
-    [string]$PostgresService='postgresql-x64-18'
+    [string]$PostgresRoot,
+    [string]$PostgresService
 )
 
 Set-StrictMode -Version Latest
@@ -18,17 +18,17 @@ $InstallRoot=$paths.InstallRoot
 $DataRoot=$paths.DataRoot
 New-Item -ItemType Directory -Path $DataRoot -Force|Out-Null
 
-if($Version -and $Version -notmatch '^v\d+\.\d+\.\d+$'){throw "Invalid Immich version: $Version"}
+if($Version -and $Version -notmatch '^v\d+\.\d+\.\d+\.[1-9]\d*$'){throw "Invalid Immich version: $Version"}
 $releaseUri=if($Version){"https://api.github.com/repos/AkaakuHub/immich-windows/releases/tags/$Version"}else{'https://api.github.com/repos/AkaakuHub/immich-windows/releases/latest'}
 $release=Invoke-RestMethod -Uri $releaseUri -Headers @{'User-Agent'='immich-windows'}
 $version=[string]$release.tag_name
-if($version -notmatch '^v\d+\.\d+\.\d+$'){throw "Unexpected release tag: $version"}
+if($version -notmatch '^v\d+\.\d+\.\d+\.[1-9]\d*$'){throw "Unexpected release tag: $version"}
 
 $current=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
 if(-not $current){throw 'An existing Immich installation is required.'}
-$currentVersion=[string](Get-Content -Raw -LiteralPath (Join-Path $current 'manifest.json')|ConvertFrom-Json).immichVersion
-if($currentVersion -eq $version){Write-Host "Immich $version is already installed.";return}
-if([version]$version.TrimStart('v') -lt [version]$currentVersion.TrimStart('v')){throw "Refusing to downgrade from $currentVersion to $version."}
+$currentVersion=Get-WindowsPackageVersion (Get-Content -Raw -LiteralPath (Join-Path $current 'manifest.json')|ConvertFrom-Json)
+if ($currentVersion -eq [version]$version.TrimStart('v')) { Write-Host "Windows package $version is already installed."; return }
+if ([version]$version.TrimStart('v') -lt $currentVersion) { throw "Refusing to downgrade from $currentVersion to $version." }
 
 $folder="immich-windows-$version-win-x64"
 $assetName="$folder.zip"

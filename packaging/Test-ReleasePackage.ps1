@@ -7,7 +7,11 @@ $PackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
 $manifestPath = Join-Path $PackageRoot 'manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Package manifest is missing: $manifestPath" }
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if ($manifest.immichVersion -notmatch '^v\d+\.\d+\.\d+$' -or ($Version -and $manifest.immichVersion -ne $Version) -or
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
+$packageVersion = 'v' + (Get-WindowsPackageVersion $manifest).ToString(4)
+if ($manifest.schemaVersion -ne 2 -or $manifest.sourceCommit -notmatch '^[0-9a-f]{40}$' -or
+    $manifest.nativeDependenciesSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid Windows package provenance.' }
+if ($manifest.immichVersion -notmatch '^v\d+\.\d+\.\d+$' -or ($Version -and $packageVersion -ne $Version) -or
     $manifest.target -ne 'windows-x64-native' -or $manifest.mediaStack.sharpLibvips -ne 'custom-immich-compatible' -or
     -not $manifest.mediaStack.productionQualified) { throw 'The package is not a qualified Windows native release.' }
 
@@ -16,6 +20,7 @@ foreach ($required in @(
     'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json',
     'installer\Install-RuntimeDependencies.ps1','installer\Install-MachineLearningDependencies.ps1',
     'sharp-libvips-qualification.json','installer\Update.ps1','runtime\Common.psm1',
+    'runtime\launchers\Start-Immich.ps1','runtime\launchers\Stop-Immich.ps1','runtime\launchers\Load-ImmichEnv.ps1',
     'tests\Smoke-Windows.ps1','migration\Import-Database.ps1','migration\New-DatabaseBackup.ps1',
     'README.md','docs\install.md','docs\operations.md','docs\migration.md'
 )) {
@@ -46,4 +51,4 @@ foreach ($project in @('server','cli')) {
 }
 $requirements = Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'machine-learning\requirements.txt')
 if (-not $requirements.Trim()) { throw 'Machine Learning dependency lock export is empty.' }
-Write-Host "Thin Windows application package: $($manifest.immichVersion)"
+Write-Host "Thin Windows application package: $packageVersion"

@@ -4,7 +4,9 @@ param([string]$Destination)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$version = (Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json') | ConvertFrom-Json).version
+Import-Module (Join-Path $root 'build\Common.psm1') -Force
+Import-Module (Join-Path $root 'runtime\Common.psm1') -Force
+$version = Get-WindowsReleaseVersion (Read-JsonFile (Join-Path $root 'upstream.json'))
 if (-not $Destination) { $Destination = Join-Path $root "dist\immich-windows-$version-migration-tools.zip" }
 $Destination = [IO.Path]::GetFullPath($Destination)
 New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null

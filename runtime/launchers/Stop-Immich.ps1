@@ -24,12 +24,14 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
             if ($process) {
                 $valkeyCli = Join-Path $InstallRoot 'current\dependencies\valkey\valkey-cli.exe'
                 Invoke-ImmichValkey -Executable $valkeyCli -Hostname $env:REDIS_HOSTNAME -Port $env:REDIS_PORT -Password $env:REDIS_PASSWORD -Username $env:REDIS_USERNAME -Command @('shutdown','save') | Out-Null
+                if (-not $process.WaitForExit(30000)) { throw 'Valkey did not finish its graceful save and shutdown.' }
             }
         }
         $pidFile = Join-Path $DataRoot "services\$name.pid"
         if (-not (Test-Path -LiteralPath $pidFile)) { continue }
         if ($process -and -not $process.HasExited) {
-            Stop-Process -InputObject $process -Force
+            & taskkill.exe /PID $process.Id /T /F | Out-Host
+            if ($LASTEXITCODE -ne 0 -and -not $process.HasExited) { throw "Could not stop process tree $name." }
             if (-not $process.WaitForExit(30000)) { throw "Process $name did not stop." }
         }
         Remove-Item -LiteralPath $pidFile -Force
@@ -47,3 +49,6 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
 } else {
     throw "Unsupported IMMICH_WINDOWS_INSTALL_SCOPE: $($env:IMMICH_WINDOWS_INSTALL_SCOPE)"
 }
+
+# Native process races that are verified as already exited are successful stops.
+exit 0
