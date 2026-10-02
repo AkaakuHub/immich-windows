@@ -88,11 +88,23 @@ foreach ($name in @('install.md','operations.md','migration.md')) {
     Copy-Item (Join-Path $root "docs\$name") (Join-Path $Destination "docs\$name")
 }
 
+# File identity, not ZIP timestamps or upstream version, determines native reuse.
+$nativeFiles = [ordered]@{}
+if ($mediaStackQualified) {
+    $nativeStage = Join-Path $root 'dist\native-dependencies'
+    foreach ($file in (Get-ChildItem -LiteralPath $nativeStage -File -Recurse | Where-Object { $_.Name -ne 'vc-runtime.json' } | Sort-Object FullName)) {
+        $relative = [IO.Path]::GetRelativePath($nativeStage,$file.FullName).Replace('\','/')
+        $nativeFiles[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+    }
+    if ($nativeFiles.Count -eq 0) { throw 'Native dependency content inventory is empty.' }
+
+}
 $manifest = [ordered]@{
     schemaVersion = 2
     packageVersion = $packageVersion
     windowsRevision = [int]$upstream.windowsRevision
     sourceCommit = (& git -C $root rev-parse HEAD).Trim()
+    nativeDependencyFiles = $nativeFiles
     nativeDependenciesSha256 = $(if ($mediaStackQualified) { (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root "dist\immich-windows-$packageVersion-native-dependencies.zip")).Hash.ToLowerInvariant() } else { $null })
     immichVersion = $upstream.version
     upstreamRepository = $upstream.repository

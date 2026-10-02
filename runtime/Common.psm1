@@ -279,7 +279,7 @@ function Test-ImmichDatabasePayloadEqual {
         foreach ($relative in $requiredDirectories) {
             $path = Join-Path $root $relative
             if (-not (Test-Path -LiteralPath $path -PathType Container)) { return $false }
-            $entries = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force | Where-Object { $_.Name -ne 'build-inputs.json' })
+            $entries = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force | Where-Object { $_.Name -ne 'build-inputs.json' -and $_.FullName -notmatch '[\\/]runtime[\\/]vc-runtime[\\/]vc-runtime\.json$' })
             if (-not $entries.Count) { return $false }
             $files += $entries
         }
@@ -513,5 +513,123 @@ function Invoke-ImmichValkey {
         if ($LASTEXITCODE -ne 0) { throw "Valkey command failed with exit code $LASTEXITCODE." }
     } finally { $env:VALKEYCLI_AUTH=$previousAuth }
 }
+
+# Dependencies are copied into an isolated candidate; the running release is never modified.
+function Get-ImmichDependencySource {
+    param([string]$InstallRoot,[string]$ReleaseRoot)
+    $source = Get-CurrentReleaseTarget -InstallRoot $InstallRoot
+    if (-not $source) { return $null }
+    $source = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($source))
+    $candidate = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($ReleaseRoot))
+    if ($source.Equals($candidate,[StringComparison]::OrdinalIgnoreCase)) { return $null }
+    if (-not (Test-Path -LiteralPath (Join-Path $source 'manifest.json') -PathType Leaf)) { return $null }
+    return $source
+}
+function Test-ImmichDependencyPinEqual {
+    param($Previous,$Candidate,[string]$Name)
+    function Canonical($Value) {
+        if ($null -eq $Value) { return 'null' }
+        if ($Value -is [pscustomobject]) {
+            $parts = @(foreach ($p in ($Value.PSObject.Properties | Where-Object { $_.Name -notin @('notes','source') } | Sort-Object Name -CaseSensitive)) {
+                (ConvertTo-Json -InputObject $p.Name -Compress) + ':' + (Canonical $p.Value)
+            })
+            return '{' + ($parts -join ',') + '}'
+        }
+        if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+            return '[' + (@(foreach ($v in $Value) { Canonical $v }) -join ',') + ']'
+        }
+        return ConvertTo-Json -InputObject $Value -Depth 100 -Compress
+    }
+    foreach ($m in @($Previous,$Candidate)) {
+        if ($null -eq $m -or -not $m.PSObject.Properties['target'] -or
+            -not $m.PSObject.Properties['dependencies'] -or -not $m.dependencies.PSObject.Properties[$Name]) { return $false }
+    }
+    if ([string]$Previous.target -cne [string]$Candidate.target) { return $false }
+    return (Canonical $Previous.dependencies.$Name) -ceq (Canonical $Candidate.dependencies.$Name)
+}
+function Get-ImmichDependencyInputHash {
+    param([string]$ReleaseRoot,[ValidateSet('server','cli')][string]$Project)
+    $projectRoot = Join-Path $ReleaseRoot $Project
+    $files = [Collections.Generic.List[IO.FileInfo]]::new()
+    foreach ($name in @('package.json','pnpm-lock.yaml','pnpm-workspace.yaml')) {
+        $item = Get-Item -LiteralPath (Join-Path $projectRoot $name) -Force -ErrorAction Stop
+        if ($item -isnot [IO.FileInfo] -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid dependency metadata.' }
+        $files.Add($item)
+    }
+    if (Test-Path -LiteralPath (Join-Path $projectRoot '.npmrc')) { $files.Add((Get-Item -LiteralPath (Join-Path $projectRoot '.npmrc') -Force)) }
+    if ($Project -eq 'server') {
+        $sdk = Get-Item -LiteralPath (Join-Path $projectRoot '.immich/plugin-sdk') -Force -ErrorAction Stop
+        if ($sdk -isnot [IO.DirectoryInfo] -or ($sdk.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid plugin SDK.' }
+        $pending = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+        $pending.Push($sdk)
+        $sdkFiles = 0
+        while ($pending.Count) {
+            $directory = $pending.Pop()
+            foreach ($entry in (Get-ChildItem -LiteralPath $directory.FullName -Force)) {
+                if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked dependency metadata cannot be reused.' }
+                if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry) } else { $files.Add($entry); $sdkFiles++ }
+            }
+        }
+        if (-not $sdkFiles) { throw 'Plugin SDK input is empty.' }
+    }
+    $lines = @($files | ForEach-Object {
+        $relative = [IO.Path]::GetRelativePath($projectRoot,$_.FullName).Replace('\','/')
+        "$relative=$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)"
+    } | Sort-Object -CaseSensitive)
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($lines -join [char]10))))
+}
+function Test-ImmichDependencyInputsEqual {
+    param([string]$PreviousRelease,[string]$CandidateRelease,[ValidateSet('server','cli')][string]$Project)
+    try { return (Get-ImmichDependencyInputHash $PreviousRelease $Project) -ceq (Get-ImmichDependencyInputHash $CandidateRelease $Project) }
+    catch { return $false }
+}
+function Copy-ImmichDependencyTree {
+    param([string]$Source,[string]$Destination,[string[]]$ExcludeDirectoryNames=@())
+    $sourcePath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Source))
+    $destinationPath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Destination))
+    $separator = [IO.Path]::DirectorySeparatorChar
+    if ($sourcePath.Equals($destinationPath,[StringComparison]::OrdinalIgnoreCase) -or
+        $destinationPath.StartsWith($sourcePath+$separator,[StringComparison]::OrdinalIgnoreCase) -or
+        $sourcePath.StartsWith($destinationPath+$separator,[StringComparison]::OrdinalIgnoreCase)) { throw 'Dependency source and destination overlap.' }
+    foreach ($path in @($sourcePath,$destinationPath)) {
+        $cursor=$path
+        while ($cursor) {
+            $item=Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+            if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Linked dependency path: $cursor" }
+            $cursor=[IO.Path]::GetDirectoryName($cursor)
+        }
+    }
+    $root=Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
+    if ($root -isnot [IO.DirectoryInfo]) { throw 'Dependency source is not a directory.' }
+    if (Test-Path -LiteralPath $destinationPath) { throw 'Dependency destination already exists.' }
+    $entries=[Collections.Generic.List[IO.FileSystemInfo]]::new()
+    $pending=[Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $pending.Push($root)
+    while ($pending.Count) {
+        $directory=$pending.Pop()
+        foreach ($entry in (Get-ChildItem -LiteralPath $directory.FullName -Force)) {
+            if ($entry -is [IO.DirectoryInfo] -and $entry.Name -in $ExcludeDirectoryNames) { continue }
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked dependency entry: $($entry.FullName)" }
+            $entries.Add($entry)
+            if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry) }
+        }
+    }
+    $parent=[IO.Path]::GetDirectoryName($destinationPath)
+    [void][IO.Directory]::CreateDirectory($parent)
+    $stage=Join-Path $parent ('.dependency-copy-'+[guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($stage)
+    try {
+        foreach ($entry in $entries) {
+            $target=Join-Path $stage ([IO.Path]::GetRelativePath($sourcePath,$entry.FullName))
+            if ($entry -is [IO.DirectoryInfo]) { [void][IO.Directory]::CreateDirectory($target) }
+            else {
+                [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
+                [IO.File]::Copy($entry.FullName,$target,$false)
+            }
+        }
+        [IO.Directory]::Move($stage,$destinationPath)
+    } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }
+}
+
 
 Export-ModuleMember -Function *

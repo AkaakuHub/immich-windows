@@ -11,6 +11,25 @@ $manifest = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $packageVersion = 'v' + (Get-WindowsPackageVersion $manifest).ToString(4)
 $versions = $manifest.dependencies
+$reuseSource = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot
+$reuseManifest = if ($reuseSource) { Get-Content -Raw -LiteralPath (Join-Path $reuseSource 'manifest.json') | ConvertFrom-Json } else { $null }
+
+function Reuse-Runtime([string]$Name,[string]$RelativePath,[string[]]$Required) {
+    if (-not $reuseSource -or -not (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name $Name)) { return }
+    $source = Join-Path $reuseSource $RelativePath
+    $destination = Join-Path $ReleaseRoot $RelativePath
+    if (Test-Path -LiteralPath $destination) { return }
+    foreach ($file in $Required) { if (-not (Test-Path -LiteralPath (Join-Path $source $file) -PathType Leaf)) { return } }
+    if ($Name -eq 'node') {
+        $actual = & (Join-Path $source 'node.exe') --version
+        if ($LASTEXITCODE -ne 0 -or ([string]$actual).Trim().TrimStart('v') -ne $versions.node.version) { return }
+    }
+    try {
+        Copy-ImmichDependencyTree -Source $source -Destination $destination
+        Write-Host "Reused installed $Name runtime (no download)."
+    } catch { Write-Warning "Cannot reuse $Name runtime; using its pinned archive. $($_.Exception.Message)" }
+}
+
 $cache = Join-Path $InstallRoot 'cache\downloads'
 $stageRoot = Join-Path $InstallRoot 'cache\runtime-extract'
 New-Item -ItemType Directory -Path $cache,$stageRoot -Force | Out-Null
@@ -48,6 +67,11 @@ function Copy-DirectoryContents([string]$Source,[string]$Destination) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $Destination -Recurse -Force
 }
+
+Reuse-Runtime 'node' 'runtime\node' @('node.exe','npm.cmd','node_modules\npm\bin\npm-cli.js')
+Reuse-Runtime 'ffmpeg' 'runtime\ffmpeg' @('ffmpeg.exe','ffprobe.exe')
+Reuse-Runtime 'valkey' 'dependencies\valkey' @('ValkeyService.exe','valkey-server.exe','valkey-cli.exe')
+Reuse-Runtime 'winsw' 'runtime\winsw' @($versions.winsw.asset)
 
 $nodeRoot = Join-Path $ReleaseRoot 'runtime\node'
 $nodeExe = Join-Path $nodeRoot 'node.exe'
@@ -98,6 +122,32 @@ if (-not (Test-Path -LiteralPath $uvExe -PathType Leaf)) {
     Copy-Item -LiteralPath $uvFile.FullName -Destination $uvExe -Force
 }
 $pythonRoot = Join-Path $ReleaseRoot 'machine-learning\python-runtime'
+# This private interpreter is launched via python -m; never copy path-bound console launchers.
+if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
+    (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name 'python')) {
+    $sourcePythonRoot = Join-Path $reuseSource 'machine-learning\python-runtime'
+    # uv also creates a major.minor alias junction; copy only the actual pinned distribution.
+    $distributions = @(Get-ChildItem -LiteralPath $sourcePythonRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+            $_.Name -like "cpython-$($versions.python.version)-*" })
+    $sourcePython = if ($distributions.Count -eq 1) { $distributions[0].FullName } else { $null }
+    $sourceMarker = Join-Path $reuseSource 'machine-learning\.dependencies-installed.json'
+    if ($sourcePython -and (Test-Path -LiteralPath $sourceMarker -PathType Leaf)) {
+        $portable = -not [bool](Get-ChildItem -LiteralPath $sourcePython -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'pyvenv.cfg' -or $_.Extension -eq '.egg-link' })
+        foreach ($pth in (Get-ChildItem -LiteralPath $sourcePython -Recurse -Filter '*.pth' -File -ErrorAction SilentlyContinue)) {
+            foreach ($line in (Get-Content -LiteralPath $pth.FullName)) {
+                if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($reuseSource)) { $portable = $false }
+            }
+        }
+        if ($portable) {
+            try {
+                Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts')
+                Write-Host 'Reused installed Python runtime and packages (no download).'
+            } catch { Write-Warning "Cannot reuse Python runtime. $($_.Exception.Message)" }
+        }
+    }
+}
 $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 if (-not $pythonExe) {
     $env:UV_CACHE_DIR = Join-Path $InstallRoot 'cache\uv'
@@ -107,20 +157,62 @@ if (-not $pythonExe) {
     $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 }
 if (-not $pythonExe) { throw 'Pinned CPython installation did not produce python.exe.' }
+$pythonVersion = & $pythonExe.FullName -I -c 'import platform; print(platform.python_version())'
+if ($LASTEXITCODE -ne 0 -or ([string]$pythonVersion).Trim() -ne $versions.python.version) { throw 'Installed Python version does not match manifest.' }
 
 $nativeZipName = "immich-windows-$packageVersion-native-dependencies.zip"
-$nativeReady = (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'server\node_modules\@img\sharp-win32-x64\lib\libvips-core.dll') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\postgres-extensions\vector\vector.dll') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\postgres-extensions\vchord\vchord.dll') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'runtime\vc-runtime\vcruntime140.dll') -PathType Leaf)
-if (-not $nativeReady) {
+$inventoryProperty = $manifest.PSObject.Properties['nativeDependencyFiles']
+if (-not $inventoryProperty -or -not @($inventoryProperty.Value.PSObject.Properties).Count) { throw 'Native dependency file inventory is missing.' }
+$missing = [System.Collections.Generic.List[string]]::new()
+$reused = 0
+# Sharp injection replaces a complete DLL set, so staging must never contain only a changed subset.
+$sharpNeedsStage = Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\sharp\lib')
+foreach ($entry in ($inventoryProperty.Value.PSObject.Properties | Where-Object { $_.Name.StartsWith('dependencies/sharp/') })) {
+    $path = Join-Path $ReleaseRoot $entry.Name.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ine $entry.Value) { $sharpNeedsStage=$true }
+}
+foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
+    $relative = [string]$entry.Name
+    if ($relative -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or $relative.Contains('\')) { throw "Invalid native payload path: $relative" }
+    $installedRelative = $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
+    $target = Join-Path $ReleaseRoot $relative
+    $candidatePaths = @($target,(Join-Path $ReleaseRoot $installedRelative)) | Select-Object -Unique
+    $ready = $false
+    foreach ($path in $candidatePaths) {
+        if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ieq $entry.Value) { $ready=$true; break }
+    }
+    if ($ready) {
+        if ($sharpNeedsStage -and $relative.StartsWith('dependencies/sharp/') -and $path -ne $target) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath $path -Destination $target -Force
+        }
+        continue
+    }
+    $source = if ($reuseSource) { Join-Path $reuseSource $installedRelative } else { $null }
+    if ($source -and (Test-Path -LiteralPath $source -PathType Leaf) -and
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ieq $entry.Value) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+        $reused++
+    } else { $missing.Add($relative) }
+}
+if ($reused) { Write-Host "Reused $reused matching native payload files (SHA256 verified)." }
+if ($missing.Count) {
     $nativeUri = "https://github.com/AkaakuHub/immich-windows/releases/download/$packageVersion/$nativeZipName"
     $nativeZip = Get-CachedArchive $nativeZipName $nativeUri $manifest.nativeDependenciesSha256
     $nativeStage = Join-Path $stageRoot 'native-dependencies'
     if (Test-Path -LiteralPath $nativeStage) { Remove-Item -LiteralPath $nativeStage -Recurse -Force }
     New-Item -ItemType Directory -Path $nativeStage -Force | Out-Null
     Expand-Archive -LiteralPath $nativeZip -DestinationPath $nativeStage -Force
-    Copy-DirectoryContents $nativeStage $ReleaseRoot
+    foreach ($relative in $missing) {
+        $source = Join-Path $nativeStage $relative
+        $expected = $inventoryProperty.Value.PSObject.Properties[$relative].Value
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ine $expected) { throw "Native payload content mismatch: $relative" }
+        $target = Join-Path $ReleaseRoot $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
 }
 
 Get-ChildItem -LiteralPath $stageRoot -Directory | Remove-Item -Recurse -Force

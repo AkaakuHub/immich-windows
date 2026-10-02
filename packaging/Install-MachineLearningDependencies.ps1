@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $mlRoot = Join-Path $ReleaseRoot 'machine-learning'
 $python = Get-ChildItem (Join-Path $mlRoot 'python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 $requirements = Join-Path $mlRoot 'requirements.txt'
@@ -20,17 +21,22 @@ $expectedState = [ordered]@{
     python = $manifest.dependencies.python.version
     requirementsSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirements).Hash.ToLowerInvariant()
 }
-if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-    $installedState = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    if (
-        $python -and
-        [string]$installedState.immichVersion -eq [string]$expectedState.immichVersion -and
-        [string]$installedState.python -eq [string]$expectedState.python -and
-        [string]$installedState.requirementsSha256 -eq [string]$expectedState.requirementsSha256
-    ) {
-        Write-Host 'Pinned Machine Learning dependencies are already installed for this release.'
-        return
-    }
+# The runtime installer may have seeded local packages from the active release.
+$source = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot
+$markers = @($statePath)
+if ($source) { $markers += (Join-Path $source 'machine-learning\.dependencies-installed.json') }
+foreach ($marker in $markers) {
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
+    try { $installedState = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json } catch { continue }
+    if ([string]$installedState.python -ne [string]$expectedState.python -or
+        [string]$installedState.requirementsSha256 -cne [string]$expectedState.requirementsSha256) { continue }
+    # Isolated mode ignores PYTHONHOME/PYTHONPATH. Check actual relocated imports, not only marker existence.
+    $probe = 'import sys,pathlib,numpy,onnxruntime,uvicorn; root=pathlib.Path(sys.argv[1]).resolve(); assert pathlib.Path(sys.prefix).resolve().is_relative_to(root); assert pathlib.Path(sys.executable).resolve().is_relative_to(root); assert pathlib.Path(numpy.__file__).resolve().is_relative_to(root); assert pathlib.Path(onnxruntime.__file__).resolve().is_relative_to(root)'
+    & $python.FullName -I -c $probe (Join-Path $mlRoot 'python-runtime')
+    if ($LASTEXITCODE -ne 0) { continue }
+    $expectedState | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $statePath
+    Write-Host 'Reused installed Machine Learning packages (requirements unchanged; relocated imports verified).'
+    return
 }
 $cache = Join-Path $InstallRoot 'cache\uv'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null

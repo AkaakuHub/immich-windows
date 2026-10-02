@@ -36,6 +36,7 @@ jobs:
         run: |
           ./tests/Static-RepositoryAudit.ps1
           ./tests/Update-Workflow.ps1
+          ./tests/Dependency-Reuse.ps1
           Import-Module ./build/Common.psm1 -Force
           Import-Module ./runtime/Common.psm1 -Force
           $version = Get-WindowsReleaseVersion (Read-JsonFile ./upstream.json)
