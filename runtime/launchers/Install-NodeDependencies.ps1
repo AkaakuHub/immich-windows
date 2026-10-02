@@ -16,12 +16,28 @@ $expectedState = [ordered]@{
     server = Get-ImmichDependencyInputHash -ReleaseRoot $ReleaseRoot -Project server
     cli = Get-ImmichDependencyInputHash -ReleaseRoot $ReleaseRoot -Project cli
 }
+$customSharp = Join-Path $ReleaseRoot 'dependencies\sharp\lib'
+$stagedSharpDlls=@()
+$sharpReplacementFiles=@()
+if (Test-Path -LiteralPath $customSharp -PathType Container) {
+    $customVersions = Join-Path (Split-Path -Parent $customSharp) 'versions.json'
+    if (-not (Test-Path -LiteralPath $customVersions -PathType Leaf)) { throw "Custom Sharp version metadata is missing: $customVersions" }
+    $stagedSharpDlls=@(Get-ChildItem -LiteralPath $customSharp -Filter '*.dll' -File -Recurse)
+    $expectedDlls=@($manifest.nativeDependencyFiles.PSObject.Properties | Where-Object { $_.Name -like 'dependencies/sharp/lib/*.dll' })
+    $stagedNames=@($stagedSharpDlls | ForEach-Object { 'dependencies/sharp/lib/'+[IO.Path]::GetRelativePath($customSharp,$_.FullName).Replace('\','/') } | Sort-Object)
+    if (-not $expectedDlls.Count -or ($stagedNames -join "`n") -cne (($expectedDlls.Name | Sort-Object) -join "`n")) { throw 'Custom Sharp staging must contain the complete native DLL inventory.' }
+    $sharpReplacementFiles=@($stagedNames | ForEach-Object { $_.Replace('dependencies/sharp/','@img/sharp-win32-x64/') })
+}
 $source = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot
 $sourceManifest = if ($source) { Get-Content -Raw (Join-Path $source 'manifest.json') | ConvertFrom-Json } else { $null }
 function Read-DependencyState([string]$Path) {
     try { if (Test-Path -LiteralPath $Path) { return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json } }
     catch { Write-Warning "Ignoring invalid dependency completion marker: $Path" }
     return $null
+}
+function Test-SourceProjectInputs([string]$Project) {
+    try { return (Get-ImmichDependencyInputHash -ReleaseRoot $source -Project $Project) -ceq [string]$expectedState[$Project] }
+    catch { return $false }
 }
 function Test-NodeProjectComplete([string]$Root,[string]$Project) {
     try {
@@ -57,10 +73,13 @@ foreach ($project in @('server','cli')) {
     if (-not $skip[$project] -and -not (Test-Path -LiteralPath $modules) -and $sourceComplete -and
         (Test-ImmichDependencyPinEqual $sourceManifest $manifest 'node') -and
         (Test-ImmichDependencyPinEqual $sourceManifest $manifest 'pnpm') -and
-        (Test-ImmichDependencyInputsEqual $source $ReleaseRoot $project) -and (Test-NodeProjectComplete $source $project) -and
+        (Test-SourceProjectInputs $project) -and (Test-NodeProjectComplete $source $project) -and
         (-not $sourceState.PSObject.Properties[$project] -or [string]$sourceState.$project -ceq [string]$expectedState[$project])) {
         try {
-            Copy-ImmichDependencyTree -Source (Join-Path $source "$project\node_modules") -Destination $modules -Label "$project Node packages"
+            # Staging already contains these complete replacements. Do not copy
+            # the old DLLs into the candidate merely to discard them below.
+            $exclude=if ($project -eq 'server') { $sharpReplacementFiles } else { @() }
+            Copy-ImmichDependencyTree -Source (Join-Path $source "$project\node_modules") -Destination $modules -Label "$project Node packages" -ExcludeRelativeFiles $exclude
             $skip[$project] = $true
             Write-Host "Reused installed $project Node packages (dependency inputs unchanged)."
         } catch { Write-Warning "Cannot reuse $project Node packages. $($_.Exception.Message)" }
@@ -124,16 +143,18 @@ try {
         if (-not $skip[$projectName]) { Install-ProjectDependencies $project }
     }
 
-    $customSharp = Join-Path $ReleaseRoot 'dependencies\sharp\lib'
     if (Test-Path -LiteralPath $customSharp -PathType Container) {
-        $customVersions = Join-Path (Split-Path -Parent $customSharp) 'versions.json'
-        if (-not (Test-Path -LiteralPath $customVersions -PathType Leaf)) { throw "Custom Sharp version metadata is missing: $customVersions" }
         $sharpLib = Join-Path $ReleaseRoot 'server\node_modules\@img\sharp-win32-x64\lib'
         if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Installed Sharp runtime is missing: $sharpLib" }
-        Get-ChildItem -LiteralPath $sharpLib -Filter '*.dll' -File -Recurse | Remove-Item -Force
-        foreach ($dll in (Get-ChildItem -LiteralPath $customSharp -Filter '*.dll' -File -Recurse)) {
-            $relative = $dll.FullName.Substring($customSharp.Length).TrimStart('\')
+        foreach ($dll in (Get-ChildItem -LiteralPath $sharpLib -Filter '*.dll' -File -Recurse)) {
+            $relative='dependencies/sharp/lib/'+[IO.Path]::GetRelativePath($sharpLib,$dll.FullName).Replace('\','/')
+            if ($relative -notin $stagedNames) { Remove-Item -LiteralPath $dll.FullName -Force }
+        }
+        foreach ($dll in $stagedSharpDlls) {
+            $relative = [IO.Path]::GetRelativePath($customSharp,$dll.FullName)
             $target = Join-Path $sharpLib $relative
+            $expected=$manifest.nativeDependencyFiles.PSObject.Properties['dependencies/sharp/lib/'+$relative.Replace('\','/')].Value
+            if ((Test-Path -LiteralPath $target -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash -ieq $expected) { continue }
             New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
             Copy-Item -LiteralPath $dll.FullName -Destination $target -Force
         }

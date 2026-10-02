@@ -118,7 +118,9 @@ try {
     $guard = $common.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ImmichUserProcess' }, $true)
     Check ($null -ne $guard) 'Production ownership guard was not found.'
     $guardText = $guard.Extent.Text.Replace('function Get-ImmichUserProcess', 'function Get-TestOwnedProcess')
-    Set-Content -LiteralPath (Join-Path $launchers 'Load-ImmichEnv.ps1') -Value ($loaderStub + "`n" + $guardText)
+    $resolver = $common.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ImmichPythonExecutable' }, $true)
+    Check ($null -ne $resolver) 'Production Python resolver was not found.'
+    Set-Content -LiteralPath (Join-Path $launchers 'Load-ImmichEnv.ps1') -Value ($loaderStub + "`n" + $guardText + "`n" + $resolver.Extent.Text)
 
     $cases = @(
         @{ Name = 'live-path-unavailable-delayed-health'; Mode = 'delayed'; Redis = 'External'; Target = '' },
@@ -141,6 +143,7 @@ try {
         foreach ($directory in @('current/server/node_modules/@img/sharp-win32-x64/lib','current/machine-learning/python-runtime')) { New-Item -ItemType Directory -Path (Join-Path $root $directory) -Force | Out-Null }
         New-Item -ItemType Directory -Path (Join-Path $data 'services') -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $root 'current/machine-learning/python-runtime/python.exe') -Value 'fixture'
+        Set-Content -LiteralPath (Join-Path $root 'current/manifest.json') -Value '{"dependencies":{"python":{"version":"3.11.14"}}}'
         $state = @{
             Mode = $case.Mode; Target = $case.Target; NextId = 4000; Processes = @{}; Probes = 0; Sleeps = 0
             Started = [Collections.Generic.List[object]]::new(); OwnershipQueries = [Collections.Generic.List[string]]::new()

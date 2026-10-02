@@ -665,8 +665,37 @@ function Test-ImmichDependencyInputsEqual {
     try { return (Get-ImmichDependencyInputHash $PreviousRelease $Project) -ceq (Get-ImmichDependencyInputHash $CandidateRelease $Project) }
     catch { return $false }
 }
+function Get-ImmichPythonExecutable {
+    param([Parameter(Mandatory)][string]$ReleaseRoot,[switch]$AllowMissing)
+    $manifest=Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
+    $version=[string]$manifest.dependencies.python.version
+    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid pinned Python version.' }
+    $root=Join-Path $ReleaseRoot 'machine-learning/python-runtime'
+    $candidates=[Collections.Generic.List[IO.FileInfo]]::new()
+    # Support the legacy flat layout and uv's actual distribution, never its alias
+    # junctions or arbitrary executables buried in site-packages/Scripts.
+    if (Test-Path -LiteralPath $root -PathType Container) {
+        $directories=@((Get-Item -LiteralPath $root -Force))
+        $directories+=@(Get-ChildItem -LiteralPath $root -Directory -Force |
+            Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $_.Name -like 'cpython-*' })
+        foreach ($directory in $directories) {
+            if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked Python runtime root.' }
+            $executable=Get-Item -LiteralPath (Join-Path $directory.FullName 'python.exe') -Force -ErrorAction SilentlyContinue
+            if (-not $executable) { continue }
+            if ($executable -isnot [IO.FileInfo] -or ($executable.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid Python executable.' }
+            if ($directory.FullName -ne $directories[0].FullName -and $directory.Name -notlike "cpython-$version-windows-x86_64-*") {
+                throw 'Python distribution does not match the pinned Windows x64 runtime.'
+            }
+            $candidates.Add($executable)
+        }
+    }
+    if ($candidates.Count -eq 0 -and $AllowMissing) { return $null }
+    if ($candidates.Count -ne 1) { throw 'Expected exactly one packaged ML Python runtime.' }
+    return $candidates[0]
+}
+
 function Copy-ImmichDependencyTree {
-    param([string]$Source,[string]$Destination,[string[]]$ExcludeDirectoryNames=@(),[string]$Label='dependencies')
+    param([string]$Source,[string]$Destination,[string[]]$ExcludeDirectoryNames=@(),[string]$Label='dependencies',[string]$PythonSourceRelease,[string[]]$ExcludeRelativeFiles=@())
     $sourcePath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Source))
     $destinationPath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Destination))
     $separator = [IO.Path]::DirectorySeparatorChar
@@ -687,12 +716,23 @@ function Copy-ImmichDependencyTree {
     $scan=Start-ImmichProgress -Key scan -Detail $Label
     $entries=[Collections.Generic.List[IO.FileSystemInfo]]::new()
     $pending=[Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $excluded=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($relative in $ExcludeRelativeFiles) { [void]$excluded.Add($relative.Replace('\','/')) }
     $pending.Push($root)
     while ($pending.Count) {
         $directory=$pending.Pop()
         foreach ($entry in (Get-ChildItem -LiteralPath $directory.FullName -Force)) {
             if ($entry -is [IO.DirectoryInfo] -and $entry.Name -in $ExcludeDirectoryNames) { continue }
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked dependency entry: $($entry.FullName)" }
+            if ($entry -is [IO.FileInfo] -and $excluded.Contains([IO.Path]::GetRelativePath($sourcePath,$entry.FullName).Replace('\','/'))) { continue }
+            if ($PythonSourceRelease -and $entry -is [IO.FileInfo]) {
+                if ($entry.Name -eq 'pyvenv.cfg' -or $entry.Extension -eq '.egg-link') { throw 'Path-bound Python environment cannot be reused.' }
+                if ($entry.Extension -eq '.pth') {
+                    foreach ($line in (Get-Content -LiteralPath $entry.FullName)) {
+                        if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($PythonSourceRelease)) { throw 'Path-bound Python .pth cannot be reused.' }
+                    }
+                }
+            }
             $entries.Add($entry)
             Update-ImmichProgress -State $scan -Completed $entries.Count
             if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry) }
@@ -722,6 +762,37 @@ function Copy-ImmichDependencyTree {
         Update-ImmichProgress -State $copy -Failed
         throw
     } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }
+}
+
+function Expand-ImmichNativePayload {
+    param([Parameter(Mandatory)][string]$Archive,[Parameter(Mandatory)][string]$Destination,[Parameter(Mandatory)][string[]]$RelativePath)
+    # The caller verifies the complete archive and each extracted file's SHA256.
+    # Read only selected entries; never expand unrelated payloads or ZIP paths.
+    $selected=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($relative in $RelativePath) {
+        if (-not $relative -or $relative -match '(^/|:|(^|/)\.\.(/|$))' -or $relative.Contains('\') -or
+            -not $selected.Add($relative)) { throw "Invalid or duplicate native payload path: $relative" }
+    }
+    $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
+    try {
+        $entries=[Collections.Generic.Dictionary[string,IO.Compression.ZipArchiveEntry]]::new([StringComparer]::Ordinal)
+        foreach ($entry in $zip.Entries) {
+            if ($selected.Contains($entry.FullName)) {
+                if ($entries.ContainsKey($entry.FullName)) { throw "Duplicate native ZIP entry: $($entry.FullName)" }
+                $entries.Add($entry.FullName,$entry)
+            }
+        }
+        foreach ($relative in $RelativePath) {
+            if (-not $entries.ContainsKey($relative) -or -not $entries[$relative].Name) { throw "Native ZIP entry is missing: $relative" }
+            $target=Join-Path $Destination $relative
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
+            $input=$entries[$relative].Open()
+            try {
+                $output=[IO.File]::Create($target)
+                try { $input.CopyTo($output) } finally { $output.Dispose() }
+            } finally { $input.Dispose() }
+        }
+    } finally { $zip.Dispose() }
 }
 
 
