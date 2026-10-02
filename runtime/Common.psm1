@@ -525,7 +525,7 @@ function Get-ImmichProgressText {
         downloadNeeded=@('Missing or changed native files to acquire','取得が必要な未配置・変更済みネイティブファイル')
         extract=@('Extracting cached archive','保存済みアーカイブを展開中');cleanup=@('Removing temporary extraction files','展開用一時ファイルを整理中')
         ml=@('Checking and synchronizing Python dependencies','Pythonの依存ライブラリを確認・同期中')
-        prepare=@('Preparing the new release; current release stays running','新版を準備中（現在の版はまだ稼働中）')
+        prepare=@('Preparing the new release before stopping the current release','既存版を停止する前に新版を準備中')
         stop=@('Stopping Immich','Immichを停止中');backup=@('Backing up the database','データベースをバックアップ中')
         switch=@('Activating the prepared release','準備した新版へ切り替え中');start=@('Starting Immich','Immichを起動中')
         verify=@('Checking the updated installation','更新後の動作を確認中')

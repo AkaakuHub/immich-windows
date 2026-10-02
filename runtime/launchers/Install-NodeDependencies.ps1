@@ -79,8 +79,10 @@ $pnpmCli = Join-Path $pnpmRoot 'node_modules\pnpm\bin\pnpm.cjs'
 if (($skip.Values -contains $false) -and -not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
     New-Item -ItemType Directory -Path $pnpmRoot -Force | Out-Null
     $env:npm_config_cache = Join-Path $InstallRoot 'cache\npm'
+    $pnpmProgress=Start-ImmichProgress -Key node -Detail "pnpm $pnpmVersion"
     & $npm install --prefix $pnpmRoot --no-save --no-audit --no-fund "pnpm@$pnpmVersion"
-    if ($LASTEXITCODE -ne 0) { throw "Could not install pinned pnpm $pnpmVersion." }
+    if ($LASTEXITCODE -ne 0) { Update-ImmichProgress -State $pnpmProgress -Failed; throw "Could not install pinned pnpm $pnpmVersion." }
+    Update-ImmichProgress -State $pnpmProgress -Finished
 }
 if (($skip.Values -contains $false) -and -not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) { throw "Pinned pnpm package was not installed: $pnpmCli" }
 

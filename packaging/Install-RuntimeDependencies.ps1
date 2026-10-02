@@ -124,6 +124,7 @@ if (-not (Test-Path -LiteralPath $uvExe -PathType Leaf)) {
     Copy-Item -LiteralPath $uvFile.FullName -Destination $uvExe -Force
 }
 $pythonRoot = Join-Path $ReleaseRoot 'machine-learning\python-runtime'
+$pythonProgress=$null
 # This private interpreter is launched via python -m; never copy path-bound console launchers.
 if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
     (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name 'python')) {
@@ -136,34 +137,39 @@ if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
     $sourcePython = if ($distributions.Count -eq 1) { $distributions[0].FullName } else { $null }
     $sourceMarker = Join-Path $reuseSource 'machine-learning\.dependencies-installed.json'
     if ($sourcePython -and (Test-Path -LiteralPath $sourceMarker -PathType Leaf)) {
-        $portable=$true
-        $pythonChecked=0
-        Get-ChildItem -LiteralPath $sourcePython -Recurse -File -ErrorAction Stop | ForEach-Object {
-            $pythonChecked++
-            if ($_.Name -eq 'pyvenv.cfg' -or $_.Extension -eq '.egg-link') { $portable=$false }
-            if ($_.Extension -eq '.pth') {
-                foreach ($line in (Get-Content -LiteralPath $_.FullName)) {
-                    if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($reuseSource)) { $portable=$false }
+        try {
+            $portable=$true
+            $pythonChecked=0
+            Get-ChildItem -LiteralPath $sourcePython -Recurse -File -ErrorAction Stop | ForEach-Object {
+                $pythonChecked++
+                if ($_.Name -eq 'pyvenv.cfg' -or $_.Extension -eq '.egg-link') { $portable=$false }
+                if ($_.Extension -eq '.pth') {
+                    foreach ($line in (Get-Content -LiteralPath $_.FullName)) {
+                        if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($reuseSource)) { $portable=$false }
+                    }
                 }
+                Update-ImmichProgress -State $pythonProgress -Completed $pythonChecked
             }
-            Update-ImmichProgress -State $pythonProgress -Completed $pythonChecked
-        }
-        Update-ImmichProgress -State $pythonProgress -Completed $pythonChecked -Total $pythonChecked -Finished
-        if ($portable) {
-            try {
-                Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts') -Label Python
-                Write-Host 'Reused installed Python runtime and packages (no download).'
-            } catch { Write-Warning "Cannot reuse Python runtime. $($_.Exception.Message)" }
+            Update-ImmichProgress -State $pythonProgress -Completed $pythonChecked -Total $pythonChecked -Finished
+            if ($portable) {
+                    Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts') -Label Python
+                    Write-Host 'Reused installed Python runtime and packages (no download).'
+            }
+        } catch {
+            Update-ImmichProgress -State $pythonProgress -Failed
+            Write-Warning "Cannot reuse Python runtime; using pinned installation. $($_.Exception.Message)"
         }
     }
 }
-if (Get-Variable pythonProgress -ErrorAction SilentlyContinue) { Update-ImmichProgress -State $pythonProgress -Finished }
+if ($pythonProgress) { Update-ImmichProgress -State $pythonProgress -Finished }
 $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 if (-not $pythonExe) {
     $env:UV_CACHE_DIR = Join-Path $InstallRoot 'cache\uv'
     $env:UV_PYTHON_INSTALL_DIR = $pythonRoot
+    $pythonInstallProgress=Start-ImmichProgress -Key ml -Detail 'Python runtime'
     & $uvExe python install $versions.python.version --no-bin
-    if ($LASTEXITCODE -ne 0) { throw 'Could not install pinned CPython runtime with uv.' }
+    if ($LASTEXITCODE -ne 0) { Update-ImmichProgress -State $pythonInstallProgress -Failed; throw 'Could not install pinned CPython runtime with uv.' }
+    Update-ImmichProgress -State $pythonInstallProgress -Finished
     $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 }
 if (-not $pythonExe) { throw 'Pinned CPython installation did not produce python.exe.' }
@@ -231,7 +237,9 @@ if ($missing.Count) {
     $nativeStage = Join-Path $stageRoot 'native-dependencies'
     if (Test-Path -LiteralPath $nativeStage) { Remove-Item -LiteralPath $nativeStage -Recurse -Force }
     New-Item -ItemType Directory -Path $nativeStage -Force | Out-Null
+    $nativeExtractProgress=Start-ImmichProgress -Key extract -Detail $nativeZipName
     Expand-Archive -LiteralPath $nativeZip -DestinationPath $nativeStage -Force
+    Update-ImmichProgress -State $nativeExtractProgress -Finished
     foreach ($relative in $missing) {
         $source = Join-Path $nativeStage $relative
         $expected = $inventoryProperty.Value.PSObject.Properties[$relative].Value
