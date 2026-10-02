@@ -149,6 +149,9 @@ version = "7.0.0"
     Check ((Get-Content -Raw (Join-Path $source 'notes.txt')) -ceq 'keep this directory') 'A non-Git destination was changed.'
     Write-Host 'PASS source preparation: content identity, commit/tag pins, safe resets, local edits, patch failure recovery.'
 } finally {
-    foreach ($name in $environment.Keys) { [Environment]::SetEnvironmentVariable($name, $environment[$name], 'Process') }
+    foreach ($name in $environment.Keys) {
+        if ($null -eq $environment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $environment[$name], 'Process') }
+    }
     if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
 }

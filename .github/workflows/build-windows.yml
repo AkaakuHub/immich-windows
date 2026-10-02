@@ -293,7 +293,7 @@ jobs:
           ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $installRoot -DataRoot $dataRoot -LeaveStopped
           Write-Host ('AllUsers qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
 
-          # Keep the real user profile while diagnosing CurrentUser startup.
+          # Verify the real profile before using the disposable CI profile.
           # Verify both default paths and the product's existing containment guard.
           Import-Module "$packageRoot/runtime/Common.psm1" -Force
           $originalLocalAppData = $env:LOCALAPPDATA
@@ -315,25 +315,36 @@ jobs:
           }
           Write-Host 'CurrentUser real-profile defaults and both path containment guards passed.'
 
+          # Keep disposable payloads on the runner's work volume with their cache.
+          # The real HKCU and Startup shortcut tests still run with explicit roots.
           $scopeTimer.Restart()
-          $userRoot = $defaultUserPaths.InstallRoot
-          $userData = $defaultUserPaths.DataRoot
-          Write-Host 'Qualifying CurrentUser: fresh install, smoke, legacy upgrade and ML lifecycle'
-          New-Item -ItemType Directory -Path $userRoot -Force | Out-Null
-          New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
-          & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope CurrentUser `
-            -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env"
-          & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
-          ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -UseLegacyMachineLearning
-          ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $userRoot -DataRoot $userData -LeaveStopped
-          Write-Host ('CurrentUser qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'immich-user-profile'
+            $userPaths = Resolve-ImmichInstallPaths -Scope CurrentUser
+            $userRoot = $userPaths.InstallRoot
+            $userData = $userPaths.DataRoot
+            if ([IO.Path]::GetPathRoot($userRoot) -ine [IO.Path]::GetPathRoot($installRoot)) {
+              throw 'Disposable CurrentUser installation and dependency cache must share a volume.'
+            }
+            Write-Host 'Qualifying CurrentUser: fresh install, smoke, legacy upgrade and ML lifecycle'
+            New-Item -ItemType Directory -Path $userRoot -Force | Out-Null
+            New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
+            & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope CurrentUser `
+              -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env"
+            & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
+            ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -UseLegacyMachineLearning
+            ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $userRoot -DataRoot $userData -LeaveStopped
+            Write-Host ('CurrentUser qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
+          } finally {
+            $env:LOCALAPPDATA = $originalLocalAppData
+          }
       - name: Collect sanitized ML failure diagnostics
         if: failure()
         shell: pwsh
         run: |
           $scopes = @(
             @{ Name = 'AllUsers'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-install'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-data') },
-            @{ Name = 'CurrentUser'; InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\Immich'); DataRoot = (Join-Path $env:LOCALAPPDATA 'Immich') }
+            @{ Name = 'CurrentUser'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-user-profile\Programs\Immich'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-user-profile\Immich') }
           )
           foreach ($scope in $scopes) {
             Write-Host "::group::Sanitized $($scope.Name) ML failure diagnostics"

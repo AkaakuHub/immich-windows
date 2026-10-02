@@ -39,16 +39,15 @@ class LauncherTests(unittest.TestCase):
 
         socket = BoundSocket()
         config.bind_socket.return_value = socket
-        uvicorn = SimpleNamespace(Config=Mock(return_value=config))
         server_class = Mock()
+        uvicorn = SimpleNamespace(Config=Mock(return_value=config), Server=server_class)
         supervisor = Mock()
         supervisor.return_value.run.side_effect = failure
         namespace = dict(non_prefixed_settings=SimpleNamespace(immich_host="[::1]", immich_port=3210),
                          settings=SimpleNamespace(workers=workers, http_keepalive_timeout_s=7),
                          module_dir=SOURCE, __package__="immich_ml")
         with patch.dict(sys.modules, {"uvicorn": uvicorn,
-                                     "uvicorn.supervisors": SimpleNamespace(Multiprocess=supervisor),
-                                     "immich_ml.config": SimpleNamespace(CustomUvicornServer=server_class)}):
+                                     "uvicorn.supervisors": SimpleNamespace(Multiprocess=supervisor)}):
             with self.assertRaises(type(failure) if failure else SystemExit) as caught:
                 exec(compile_nodes(branch.body, "__main__.py"), namespace)
         if not failure:

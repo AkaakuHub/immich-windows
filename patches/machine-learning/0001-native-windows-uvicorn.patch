@@ -55,7 +55,7 @@ diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml
  from ipaddress import ip_address
  from pathlib import Path
  
-@@ -25,6 +26,32 @@
+@@ -25,6 +26,31 @@
  if is_ipv6(bind_host):
      bind_host = f"[{bind_host}]"
  bind_address = f"{bind_host}:{non_prefixed_settings.immich_port}"
@@ -63,8 +63,6 @@ diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml
 +if sys.platform == "win32":
 +    import uvicorn
 +    from uvicorn.supervisors import Multiprocess
-+
-+    from .config import CustomUvicornServer
 +
 +    windows_host = non_prefixed_settings.immich_host.strip("[]")
 +    config = uvicorn.Config(
@@ -81,7 +79,8 @@ diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml
 +    # Immich exits idle workers to release model/native memory. Uvicorn.run
 +    # skips supervision for one worker, leaving a normal Windows install down.
 +    # Keep app imports in the child so the supervisor stays lightweight.
-+    server = CustomUvicornServer(config=config)
++    # Let Uvicorn unregister the Windows listener before closing its socket.
++    server = uvicorn.Server(config=config)
 +    with config.bind_socket() as sock:
 +        Multiprocess(config, target=server.run, sockets=[sock]).run()
 +    raise SystemExit(0)

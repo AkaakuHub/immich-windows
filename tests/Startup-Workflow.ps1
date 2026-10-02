@@ -229,7 +229,10 @@ try {
         Write-Host "PASS startup workflow: $($case.Name)"
     }
 } finally {
-    foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+    foreach ($name in $environmentNames) {
+        if ($null -eq $previousEnvironment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+    }
     if ($previousState) { Set-Variable -Name ImmichStartupTest -Scope Global -Value $previousState.Value }
     else { Remove-Variable -Name ImmichStartupTest -Scope Global -ErrorAction SilentlyContinue }
     if ($driveName) { Remove-PSDrive -Name $driveName -ErrorAction SilentlyContinue }

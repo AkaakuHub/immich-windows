@@ -130,6 +130,14 @@ try {
     if (@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue).Count) {
         throw "ML port $port is still held after the installed stop path."
     }
+    # Process exit alone can hide a broken shutdown (notably a closed socket
+    # still registered with Windows SelectSelector). Inspect only the ML log.
+    $stderr = Get-ChildItem -LiteralPath (Join-Path $DataRoot 'logs') -File |
+        Where-Object { $_.Name -like 'ImmichMachineLearning-*.stderr.log' -or $_.Name -eq 'ImmichMachineLearning.err.log' } |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($stderr -and ((Get-Content -LiteralPath $stderr.FullName -Tail 160) -join "`n") -match 'Traceback \(most recent call last\):|WinError 10038|Invalid file descriptor') {
+        throw 'ML lifecycle stderr contains a traceback or socket cleanup failure; collect sanitized diagnostics.'
+    }
     Write-Host "${scope}: ML supervisor and replacement worker both stopped successfully."
 } finally {
     try {
@@ -137,7 +145,11 @@ try {
     } finally {
         [IO.File]::WriteAllBytes($envFile, $originalEnv)
         foreach ($key in $previousProcessEnv.Keys) {
-            [Environment]::SetEnvironmentVariable($key, $previousProcessEnv[$key], 'Process')
+            if ($null -eq $previousProcessEnv[$key]) {
+                Remove-Item "Env:$key" -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $previousProcessEnv[$key], 'Process')
+            }
         }
         if (-not $LeaveStopped) { & $start @launchArgs }
     }

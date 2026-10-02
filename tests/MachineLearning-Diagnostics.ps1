@@ -44,6 +44,18 @@ try {
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'actions/Test-MachineLearningLifecycle.ps1'), [ref]$tokens, [ref]$errors)
     Check ($errors.Count -eq 0) 'Lifecycle fixture does not parse.'
     $outerTry = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] })[-1]
+    $statements = $outerTry.Body.Statements
+    $logCheckIndex = 0
+    while ($statements[$logCheckIndex].Extent.Text -notlike '$stderr =*') { $logCheckIndex++ }
+    $checkLogs = [scriptblock]::Create($statements[$logCheckIndex].Extent.Text + "`n" + $statements[$logCheckIndex + 1].Extent.Text)
+    & {
+        $DataRoot = $root
+        $rejected = $false
+        try { & $checkLogs } catch { $rejected = $true }
+        Check $rejected 'Lifecycle accepted a worker traceback just because the process stopped.'
+        Set-Content (Join-Path $logs 'ImmichMachineLearning-new.stderr.log') 'Normal worker termination'
+        & $checkLogs
+    }
     $restore = $outerTry.Finally.Statements[0].Finally.Extent.Text
     $restore = [scriptblock]::Create($restore.Substring(1, $restore.Length - 2))
     foreach ($leaveStopped in @($false,$true)) {
@@ -62,8 +74,40 @@ try {
             Check ((Test-Path $marker) -eq (-not $LeaveStopped)) 'Lifecycle fixture ignored LeaveStopped or changed its default restart behavior.'
         } $leaveStopped
     }
+    $keys = @('MACHINE_LEARNING_MODEL_TTL','MACHINE_LEARNING_MODEL_TTL_POLL_S','MACHINE_LEARNING_WORKERS')
+    $saved = @{}
+    foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+    try {
+        foreach ($previous in @($null,'','731')) {
+            & {
+                param($Previous)
+                $LeaveStopped = $true
+                $envFile = Join-Path $root 'lifecycle.env'
+                $originalEnv = [byte[]]@()
+                $previousProcessEnv = @{}
+                foreach ($key in $keys) {
+                    $previousProcessEnv[$key] = $Previous
+                    [Environment]::SetEnvironmentVariable($key, '1', 'Process')
+                }
+                & $restore
+                # A new interpreter sees the exact environment that the next ML launch inherits.
+                $probe = & python -c 'import json, os, sys; print(json.dumps([[key in os.environ, os.environ.get(key)] for key in sys.argv[1:]]))' @keys
+                Check ($LASTEXITCODE -eq 0) 'Child environment probe failed.'
+                foreach ($pair in ($probe | ConvertFrom-Json)) {
+                    Check ($pair[0] -eq ($null -ne $Previous)) 'Restoration confused a missing variable with a present empty value.'
+                    if ($null -ne $Previous) { Check ($pair[1] -ceq $Previous) 'Restoration changed an existing environment value.' }
+                }
+            } $previous
+        }
+    } finally {
+        foreach ($key in $keys) {
+            if ($null -eq $saved[$key]) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process') }
+        }
+    }
     Write-Host 'ML diagnostics passed: bounded latest-log selection, redaction, command neutralization and missing logs.'
     Write-Host 'ML lifecycle fixture passed: exact env restoration, default restart and LeaveStopped cleanup.'
+    Write-Host 'ML child environment passed: absent, empty and configured values remain distinct.'
 } finally {
     $env:GITHUB_ACTIONS = $oldActions
     $env:IMMICH_DIAGNOSTIC_TEST_TOKEN = $oldToken

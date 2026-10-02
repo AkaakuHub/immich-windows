@@ -50,7 +50,8 @@ if ($Mode -eq 'critical-zero') {
     try {
         [Console]::SetError($capturedStderr)
         foreach ($debug in @($null, 'gc-friendly,fatal-warnings')) {
-            [Environment]::SetEnvironmentVariable('G_DEBUG', $debug, 'Process')
+            if ($null -eq $debug) { Remove-Item Env:G_DEBUG -ErrorAction SilentlyContinue }
+            else { [Environment]::SetEnvironmentVariable('G_DEBUG', $debug, 'Process') }
             $expectedParent = [Environment]::GetEnvironmentVariable('G_DEBUG', 'Process')
             $raw = @(Invoke-ImmichNativeProbe -FilePath $pwsh -ArgumentList @('-NoProfile','-NonInteractive','-File',$child,'ok',"space ' and ü") -ProbeName fixture)
             Check ($raw.Count -eq 1) 'Diagnostics polluted the stdout success stream.'
@@ -197,6 +198,9 @@ finally {
     }
     Write-Host 'Native probe regression tests passed: critical exit-zero rejection, fatal exit, JSON/stderr, environment isolation, pipe draining, Sharp qualification, and schema import.'
 } finally {
-    foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
+    foreach ($name in $previous.Keys) {
+        if ($null -eq $previous[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
+    }
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 }
