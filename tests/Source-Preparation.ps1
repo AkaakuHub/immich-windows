@@ -19,7 +19,7 @@ foreach ($name in @('GIT_CONFIG_NOSYSTEM','GIT_CONFIG_GLOBAL','GIT_ATTR_NOSYSTEM
 function Check([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Write-File([string]$Path, [string]$Text) {
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path))
-    [IO.File]::WriteAllText($Path, $Text.Replace("`r`n", "`n"))
+    [IO.File]::WriteAllText($Path, $Text)
 }
 function Invoke-Git([string[]]$Arguments) {
     $output = & git @Arguments 2>&1
@@ -30,6 +30,7 @@ function Prepare([string]$Expected, [switch]$Reject) {
     $output = & $pwsh -NoLogo -NoProfile -File (Join-Path $base 'run.ps1') (Join-Path $root 'build/Prepare-Source.ps1') $source 2>&1
     $code = $LASTEXITCODE
     $text = $output -join "`n"
+    $script:preparationOutput = $text
     Check (($code -ne 0) -eq [bool]$Reject) "Unexpected preparation exit ${code}:`n$text"
     Check ($text.Contains($Expected)) "Missing result '$Expected':`n$text"
 }
@@ -104,7 +105,11 @@ version = "7.0.0"
     Prepare 'Prepared Immich'
     Check ((Invoke-Git @('-C', $source, 'describe', '--tags', '--exact-match', 'HEAD')) -eq 'v1.0.0') 'Missing pinned tag was silently reused.'
 
-    $validState = Get-Content -Raw $statePath
+    # Preserve Windows state-file bytes even when this fixture runs on Unix.
+    $validState = (Get-Content -Raw $statePath).Replace("`r`n", "`n").Replace("`n", "`r`n")
+    Write-File $statePath $validState
+    Check ((Get-Content -Raw $statePath) -ceq $validState) 'Fixture changed CRLF source-state bytes.'
+    Prepare 'Reusing prepared Immich'
     $legacyState = $validState | ConvertFrom-Json
     $legacyState.PSObject.Properties.Remove('appliedDiff')
     Write-File $statePath ($legacyState | ConvertTo-Json -Depth 5)
@@ -130,8 +135,9 @@ version = "7.0.0"
     Write-File $badPatch ($patch.Replace('-original', '-does-not-exist'))
     Write-File (Join-Path $root 'patches/series') "change.patch`nbad.patch`n"
     Prepare 'Command failed with exit code' -Reject
-    Check (@(Invoke-Git @('-C', $source, 'status', '--porcelain')).Count -eq 0) 'Failed patch left source dirty.'
-    Check ((Get-Content -Raw $statePath) -ceq $validState) 'Failed patch recorded successful preparation.'
+    Check (@(Invoke-Git @('-C', $source, 'status', '--porcelain')).Count -eq 0) "Failed patch left source dirty.`n$preparationOutput"
+    $stateAfterFailure = Get-Content -Raw $statePath
+    Check ($stateAfterFailure -ceq $validState) "Failed patch changed saved state.`nBefore: $validState`nAfter: $stateAfterFailure`n$preparationOutput"
     Remove-Item -LiteralPath $badPatch
     Write-File (Join-Path $root 'patches/series') "change.patch`n"
     Prepare 'Prepared Immich'

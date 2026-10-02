@@ -60,18 +60,21 @@ jobs:
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'immich-upstream'
           ./build/Prepare-Source.ps1 -Destination $source
-          ./tests/Static-RepositoryAudit.ps1 -SourceRoot $source
-          ./tests/Update-Workflow.ps1
-          ./tests/Update-FromRelease.ps1
-          ./tests/Dependency-Reuse.ps1
-          ./tests/Startup-Workflow.ps1
-          ./tests/NativeMedia-Build.ps1
-          ./tests/Native-Probe.ps1
-          ./tests/Source-Preparation.ps1
+          # Independent checks get separate processes and all report once. A failure
+          # must fail this gate, but should not hide failures in later checks.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $failed = [Collections.Generic.List[string]]::new()
+          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Update-FromRelease','Dependency-Reuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation')) {
+            $arguments = @('-NoLogo','-NoProfile','-File',"./tests/$name.ps1")
+            if ($name -eq 'Static-RepositoryAudit') { $arguments += @('-SourceRoot',$source) }
+            & "$PSHOME/pwsh.exe" @arguments
+            if ($LASTEXITCODE -ne 0) { $failed.Add($name) }
+          }
           node ./tests/Server-Portability.cjs $source
-          if ($LASTEXITCODE -ne 0) { throw "Server path portability checks failed." }
+          if ($LASTEXITCODE -ne 0) { $failed.Add('Server-Portability') }
           python ./tests/MachineLearning-Lifecycle.py $source
-          if ($LASTEXITCODE -ne 0) { throw "Machine Learning lifecycle policy checks failed." }
+          if ($LASTEXITCODE -ne 0) { $failed.Add('MachineLearning-Lifecycle') }
+          if ($failed.Count) { throw "Validation failed: $($failed -join ', ')" }
   codec:
     needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
