@@ -33,7 +33,14 @@ def zip_bytes(entries):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in entries:
-            archive.writestr(name, content)
+            if isinstance(name, str):
+                # ZipInfo normalizes separators on Windows; fixtures must preserve raw attack bytes.
+                entry = zipfile.ZipInfo('fixture')
+                entry.filename = entry.orig_filename = name
+                entry.compress_type = zipfile.ZIP_DEFLATED
+            else:
+                entry = name
+            archive.writestr(entry, content)
     return stream.getvalue()
 
 
@@ -803,6 +810,7 @@ class NativeReuseTests(OfflineTestCase):
         for job in jobs:
             job.update(started_at='2026-10-02T08:00:00Z', completed_at='2026-10-02T08:40:00Z')
         content = zip_bytes(self.native_entries() if entries is None else entries)
+        self.raw_content = content
         raw = dict(id=301, name='libvips', expired=False, workflow_run={
             'id': run['id'], 'head_sha': run['head_sha'], 'repository_id': 44, 'head_repository_id': 44},
             created_at='2026-10-02T08:39:00Z', size_in_bytes=len(content),
@@ -985,10 +993,13 @@ class NativeReuseTests(OfflineTestCase):
         link.create_system = 3
         link.external_attr = 0o120777 << 16
         for name in ('../outside.dll', '/lib/absolute.dll', 'lib/../outside.dll',
-                     'lib\\outside.dll', 'lib/x:stream.dll', 'lib/run.ps1', 'qualification.json',
+                     'lib\\outside.dll', 'lib/outside.dll\0ignored', 'lib/x:stream.dll', 'lib/run.ps1', 'qualification.json',
                      'lib/LIBVIPS-42.dll', link):
             entries = self.native_entries() + [(name, b'not allowed')]
             self.install_native(entries)
+            with zipfile.ZipFile(io.BytesIO(self.raw_content)) as archive:
+                self.assertEqual(archive.infolist()[-1].orig_filename,
+                                 name if isinstance(name, str) else name.filename)
             with self.subTest(name=str(name)), self.assertRaises(ValueError):
                 release.prepare_native()
         self.identity_command.assert_not_called()

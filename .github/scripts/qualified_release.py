@@ -361,7 +361,8 @@ def validate_native_bundle(archive, destination):
         for entry in entries:
             name = entry.filename
             parts = name.rstrip('/').split('/')
-            require(not any(p in ('', '.', '..') for p in parts) and ':' not in name and '\\' not in name
+            require(entry.orig_filename == name and not any(p in ('', '.', '..') for p in parts)
+                    and ':' not in name and '\\' not in name
                     and not (entry.external_attr >> 16 & 0o170000 == 0o120000)
                     and (name in root_files or (parts[0] == 'lib' and
                          (entry.is_dir() or (len(parts) > 1 and name.endswith('.dll'))))),
