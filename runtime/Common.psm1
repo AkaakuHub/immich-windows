@@ -80,6 +80,92 @@ try {
     }
 }
 
+function Initialize-ImmichShellLink {
+    if ('Immich.Windows.ShortcutStore' -as [type]) { return }
+    # Use IShellLinkW/IPersistFile directly: WScript shortcut persistence can lose non-ANSI file names.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+namespace Immich.Windows {
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+        void GetIDList(out IntPtr pidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int count);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+        void GetHotkey(out short key);
+        void SetHotkey(short key);
+        void GetShowCmd(out int command);
+        void SetShowCmd(int command);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+    public sealed class ShortcutInfo {
+        public string TargetPath;
+        public string Arguments;
+        public string IconLocation;
+    }
+    public static class ShortcutStore {
+        static object Create() {
+            return Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"), true));
+        }
+        public static void Write(string path, string target, string args, string icon, string directory, string description, int show) {
+            object value=Create();
+            try {
+                var link=(IShellLinkW)value;
+                link.SetPath(target);
+                link.SetArguments(args);
+                link.SetIconLocation(icon,0);
+                link.SetWorkingDirectory(directory);
+                link.SetDescription(description);
+                link.SetShowCmd(show);
+                ((IPersistFile)value).Save(path,true);
+            } finally { Marshal.FinalReleaseComObject(value); }
+        }
+        public static ShortcutInfo Read(string path) {
+            object value=Create();
+            try {
+                ((IPersistFile)value).Load(path,0);
+                var link=(IShellLinkW)value;
+                var target=new StringBuilder(32768);
+                var args=new StringBuilder(32768);
+                var icon=new StringBuilder(32768);
+                int index;
+                link.GetPath(target,target.Capacity,IntPtr.Zero,4);
+                link.GetArguments(args,args.Capacity);
+                link.GetIconLocation(icon,icon.Capacity,out index);
+                return new ShortcutInfo {TargetPath=target.ToString(),Arguments=args.ToString(),IconLocation=icon.ToString()+","+index};
+            } finally { Marshal.FinalReleaseComObject(value); }
+        }
+    }
+}
+'@
+}
+
+function Write-ImmichShortcut {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)]$Entry)
+    Initialize-ImmichShellLink
+    if (-not $Entry.IconLocation.EndsWith(',0')) { throw 'Immich shortcut must use icon index zero.' }
+    $icon=$Entry.IconLocation.Substring(0,$Entry.IconLocation.Length-2)
+    [Immich.Windows.ShortcutStore]::Write($Path,$Entry.TargetPath,$Entry.Arguments,$icon,$Entry.WorkingDirectory,$Entry.Description,$Entry.WindowStyle)
+}
+
+function Read-ImmichShortcut {
+    param([Parameter(Mandatory)][string]$Path)
+    Initialize-ImmichShellLink
+    return [Immich.Windows.ShortcutStore]::Read($Path)
+}
+
 function Set-ImmichStartMenu {
     param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
           [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true)
@@ -93,11 +179,8 @@ function Set-ImmichStartMenu {
     $icon=Join-Path $InstallRoot 'current\build\www\favicon.ico'
     if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw "The packaged upstream Immich icon is missing: $icon" }
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $shell=New-Object -ComObject WScript.Shell
     foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope)) {
-        $shortcut=$shell.CreateShortcut((Join-Path $directory "$($entry.Name).lnk"))
-        foreach ($property in @('TargetPath','Arguments','IconLocation','WorkingDirectory','Description','WindowStyle')) { $shortcut.$property=$entry.$property }
-        $shortcut.Save()
+        Write-ImmichShortcut -Path (Join-Path $directory "$($entry.Name).lnk") -Entry $entry
     }
     # Replace the single English update entry from Windows revision 1 without leaving a duplicate.
     Remove-Item -LiteralPath (Join-Path $directory 'Update Immich.lnk') -Force -ErrorAction SilentlyContinue

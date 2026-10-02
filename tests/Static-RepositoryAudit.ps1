@@ -281,3 +281,24 @@ print('DirectML policy: 11 cases passed (mocked ORT; no hardware inference claim
     & python -c $policyTest $SourceRoot
     if ($LASTEXITCODE -ne 0) { throw 'DirectML policy tests failed.' }
 }
+
+# A small Windows-only round trip catches locale/Unicode shortcut failures before the full install job.
+Initialize-ImmichShellLink
+if ($IsWindows -and $SourceRoot) {
+    $shortcutRoot=Join-Path ([IO.Path]::GetTempPath()) ("Immich 日本語 user's "+[guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory $shortcutRoot -Force|Out-Null
+        $icon=Join-Path $shortcutRoot '本家.ico'
+        Copy-Item (Join-Path $SourceRoot 'web/static/favicon.ico') $icon
+        foreach ($scope in @('AllUsers','CurrentUser')) {
+            foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $shortcutRoot -DataRoot $shortcutRoot -Scope $scope)) {
+                $entry.IconLocation="$icon,0"
+                $path=Join-Path $shortcutRoot "$scope-$($entry.Name).lnk"
+                Write-ImmichShortcut -Path $path -Entry $entry
+                $actual=Read-ImmichShortcut $path
+                Assert-True ($actual.TargetPath -ieq $entry.TargetPath -and $actual.Arguments -ceq $entry.Arguments -and $actual.IconLocation -ieq $entry.IconLocation) 'Unicode Start menu shortcut round trip failed.'
+            }
+        }
+        Write-Host 'Unicode Windows shortcuts: eight native save/load cases passed.'
+    } finally { Remove-Item -LiteralPath $shortcutRoot -Recurse -Force -ErrorAction SilentlyContinue }
+}

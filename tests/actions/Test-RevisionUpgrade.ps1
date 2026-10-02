@@ -13,11 +13,10 @@ Import-Module (Join-Path $PSScriptRoot '..\..\runtime\Common.psm1') -Force
 function Assert-StartMenu {
     $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
     $directory=Join-Path $programs 'Immich'
-    $shell=New-Object -ComObject WScript.Shell
     foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope)) {
         $path=Join-Path $directory "$($entry.Name).lnk"
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing Start menu shortcut: $path" }
-        $shortcut=$shell.CreateShortcut($path)
+        $shortcut=Read-ImmichShortcut $path
         if ($shortcut.IconLocation -ine $entry.IconLocation -or -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'current\build\www\favicon.ico'))) { throw "Invalid Immich icon: $path" }
         if ($shortcut.TargetPath -ine $entry.TargetPath -or $shortcut.Arguments -cne $entry.Arguments) { throw "Incorrect shortcut launch command: $path" }
     }
