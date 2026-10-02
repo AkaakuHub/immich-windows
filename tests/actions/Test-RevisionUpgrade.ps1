@@ -41,7 +41,7 @@ $legacyRelease=Join-Path $InstallRoot "releases\$($manifest.immichVersion)"
 [IO.Directory]::Delete((Join-Path $InstallRoot 'current'))
 Move-Item -LiteralPath $current -Destination $legacyRelease
 $manifest.schemaVersion=1
-foreach ($key in @('packageVersion','windowsRevision','sourceCommit','nativeDependenciesSha256')) { $manifest.PSObject.Properties.Remove($key) }
+foreach ($key in @('packageVersion','windowsRevision','sourceCommit','nativeDependenciesSha256','nativeDependencyFiles')) { $manifest.PSObject.Properties.Remove($key) }
 $manifest | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $legacyRelease 'manifest.json') -Encoding utf8
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $legacyRelease
 $envs=Read-EnvFile $envFile
@@ -65,7 +65,44 @@ try {
     Wait-HttpOk -Uri "http://127.0.0.1:$($envs['IMMICH_PORT'])/api/server/ping" -TimeoutSeconds 10
 } finally { Remove-Item -LiteralPath $invalid -Recurse -Force }
 
-& (Join-Path $PackageRoot 'installer\Update.ps1') -PackageRoot $PackageRoot -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
+# A legacy installation need not retain archive/package caches. It must still reuse installed payloads.
+$cacheBackups = @{}
+$oldUvOffline = $env:UV_OFFLINE
+$oldNpmOffline = $env:npm_config_offline
+$env:UV_OFFLINE = '1'
+$env:npm_config_offline = 'true'
+function global:Invoke-WebRequest { throw 'Unexpected dependency download during identical-payload update.' }
+try {
+    foreach ($name in @('downloads','uv','pnpm-store','npm')) {
+        $path=Join-Path $InstallRoot "cache\$name"
+        if (Test-Path -LiteralPath $path) {
+            $saved="$path.reuse-test"
+            Move-Item -LiteralPath $path -Destination $saved
+            $cacheBackups[$path]=$saved
+        }
+    }
+    # Simulate the old coarse completion marker; reuse must compare actual dependency inputs.
+    @{immichVersion=$manifest.immichVersion;node=$manifest.dependencies.node.version;pnpm=$manifest.dependencies.pnpm.version} |
+        ConvertTo-Json | Set-Content (Join-Path $legacyRelease '.node-dependencies-installed.json')
+    $transcript=Join-Path $env:RUNNER_TEMP ("reuse-"+[guid]::NewGuid().ToString('N')+'.log')
+    Start-Transcript -Path $transcript | Out-Null
+    try { & (Join-Path $PackageRoot 'installer\Update.ps1') -PackageRoot $PackageRoot -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot }
+    finally { Stop-Transcript | Out-Null }
+    $text=Get-Content -Raw -LiteralPath $transcript
+    foreach ($message in @('Reused installed node runtime','Reused installed ffmpeg runtime','Reused installed Python runtime',
+        'Reused installed server Node packages','Reused installed cli Node packages','Reused installed Machine Learning packages')) {
+        if (-not $text.Contains($message)) { throw "Missing dependency reuse evidence: $message" }
+    }
+    Write-Host 'Empty-cache legacy update reused installed dependencies without network acquisition.'
+} finally {
+    Remove-Item Function:\Invoke-WebRequest -ErrorAction SilentlyContinue
+    $env:UV_OFFLINE=$oldUvOffline
+    $env:npm_config_offline=$oldNpmOffline
+    foreach ($path in $cacheBackups.Keys) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        Move-Item -LiteralPath $cacheBackups[$path] -Destination $path
+    }
+}
 $updated=Get-CurrentReleaseTarget $InstallRoot
 $updatedManifest=Get-Content -Raw (Join-Path $updated 'manifest.json')|ConvertFrom-Json
 if ($updatedManifest.packageVersion -ne $expected) { throw 'Update did not activate the requested Windows revision.' }
