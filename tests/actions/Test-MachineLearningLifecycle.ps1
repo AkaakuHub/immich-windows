@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$DataRoot,
-    [ValidateRange(10,180)][int]$TimeoutSeconds = 60
+    [ValidateRange(10,180)][int]$TimeoutSeconds = 60,
+    [switch]$LeaveStopped
 )
 
 # Exercise the real installed launch/stop paths, with no model downloads or 300s wait.
@@ -126,6 +127,9 @@ try {
     if ($scope -eq 'CurrentUser') {
         if (Test-Path (Join-Path $DataRoot 'services\ImmichMachineLearning.pid')) { throw 'Stop left a stale ML PID file.' }
     } elseif ((Get-Service ImmichMachineLearning).Status -ne 'Stopped') { throw 'Stop left the ML service running.' }
+    if (@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue).Count) {
+        throw "ML port $port is still held after the installed stop path."
+    }
     Write-Host "${scope}: ML supervisor and replacement worker both stopped successfully."
 } finally {
     try {
@@ -135,6 +139,6 @@ try {
         foreach ($key in $previousProcessEnv.Keys) {
             [Environment]::SetEnvironmentVariable($key, $previousProcessEnv[$key], 'Process')
         }
-        & $start @launchArgs
+        if (-not $LeaveStopped) { & $start @launchArgs }
     }
 }
