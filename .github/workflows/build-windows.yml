@@ -145,12 +145,14 @@ jobs:
         id: application-key
         shell: pwsh
         run: ./build/Write-AppBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
+        id: application-cache
         with:
           path: artifacts/application
           key: application-${{ runner.os }}-${{ steps.application-key.outputs.application }}-${{ hashFiles('upstream.json', 'patches/server/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: application-${{ runner.os }}-
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
+        id: ml-cache
         with:
           path: artifacts/machine-learning
           key: machine-learning-${{ runner.os }}-${{ steps.application-key.outputs.machineLearning }}-${{ hashFiles('upstream.json', 'patches/machine-learning/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
@@ -169,6 +171,16 @@ jobs:
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-MigrationToolsArchive.ps1
+      - uses: actions/cache/save@v6
+        if: steps.application-cache.outputs.cache-hit != 'true'
+        with:
+          path: artifacts/application
+          key: ${{ steps.application-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/save@v6
+        if: steps.ml-cache.outputs.cache-hit != 'true'
+        with:
+          path: artifacts/machine-learning
+          key: ${{ steps.ml-cache.outputs.cache-primary-key }}
       - name: Select PostgreSQL runtime cache key
         id: pg-runtime
         shell: pwsh

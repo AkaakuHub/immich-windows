@@ -65,6 +65,15 @@ try {
     Remove-Item -LiteralPath $loaderEnv -Force -ErrorAction SilentlyContinue
 }
 
+$smokeSource=Get-Content -Raw (Join-Path $root 'tests/Smoke-Windows.ps1')
+Assert-True ($smokeSource -notmatch '\$envs\.REDIS_(PASSWORD|USERNAME)') 'Optional Redis credentials must use dictionary indexing under StrictMode.'
+& {
+    Set-StrictMode -Version Latest
+    $optionalEnv=[ordered]@{REDIS_HOSTNAME='127.0.0.1'}
+    Assert-True ([string]$optionalEnv['REDIS_PASSWORD'] -eq '') 'Password-less Redis must be supported under StrictMode.'
+    Assert-True ([string]$optionalEnv['REDIS_USERNAME'] -eq '') 'Default Redis username must be supported under StrictMode.'
+}
+
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
 Assert-True ($upstream.version -match '^v[0-9]+\.[0-9]+\.[0-9]+$') "Invalid upstream version: $($upstream.version)"
 Assert-True ($upstream.commit -match '^[0-9a-f]{40}$') 'upstream.json must pin a full 40-character commit SHA.'

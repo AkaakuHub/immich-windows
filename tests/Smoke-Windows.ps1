@@ -7,6 +7,7 @@ param(
     [string[]]$SharpFixture,
     [switch]$AllowUnqualifiedSharp
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $current=(Resolve-Path -LiteralPath (Join-Path $InstallRoot 'current')).Path
@@ -14,11 +15,11 @@ $manifest=Get-Content -Raw -LiteralPath (Join-Path $current 'manifest.json')|Con
 if(-not $manifest.mediaStack.productionQualified -and -not $AllowUnqualifiedSharp){throw 'Installed package is marked productionQualified=false because it uses stock Sharp/libvips.'}
 
 $envs=Read-EnvFile (Join-Path $DataRoot 'immich.env')
-$serverPort=if($envs.IMMICH_PORT){[int]$envs.IMMICH_PORT}else{2283}
-$mlPort=if($envs.IMMICH_PORT_ML){[int]$envs.IMMICH_PORT_ML}else{3003}
-$redisMode=if($envs.IMMICH_WINDOWS_REDIS_MODE){$envs.IMMICH_WINDOWS_REDIS_MODE}else{'BundledValkey'}
+$serverPort=if($envs['IMMICH_PORT']){[int]$envs['IMMICH_PORT']}else{2283}
+$mlPort=if($envs['IMMICH_PORT_ML']){[int]$envs['IMMICH_PORT_ML']}else{3003}
+$redisMode=if($envs['IMMICH_WINDOWS_REDIS_MODE']){$envs['IMMICH_WINDOWS_REDIS_MODE']}else{'BundledValkey'}
 if($redisMode -notin @('BundledValkey','External')){throw "Unknown IMMICH_WINDOWS_REDIS_MODE: $redisMode"}
-if ($envs.IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
+if ($envs['IMMICH_WINDOWS_INSTALL_SCOPE'] -eq 'CurrentUser') {
     $expectedProcesses=@('ImmichMachineLearning','ImmichServer')
     if($redisMode -eq 'BundledValkey'){$expectedProcesses += 'ImmichValkey'}
     foreach($name in $expectedProcesses){
@@ -40,9 +41,9 @@ Wait-HttpOk "http://127.0.0.1:$serverPort/api/server/ping" 30
 
 $psql=Join-Path $PostgresRoot 'bin\psql.exe'
 if(-not(Test-Path $psql)){throw "psql.exe missing: $psql"}
-$env:PGPASSWORD=[string]$envs.DB_PASSWORD
+$env:PGPASSWORD=[string]$envs['DB_PASSWORD']
 try{
-    $rows=@(& $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -At -F '|' -c "SELECT extname, extversion FROM pg_extension WHERE extname IN ('vector','vchord') ORDER BY extname")
+    $rows=@(& $psql -h $envs['DB_HOSTNAME'] -p $envs['DB_PORT'] -U $envs['DB_USERNAME'] -d $envs['DB_DATABASE_NAME'] -At -F '|' -c "SELECT extname, extversion FROM pg_extension WHERE extname IN ('vector','vchord') ORDER BY extname")
     if($LASTEXITCODE -ne 0){throw 'PostgreSQL extension probe failed.'}
 }finally{Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue}
 if(-not($rows -match '^vchord\|')){throw 'VectorChord extension is not installed in the Immich database.'}
@@ -50,8 +51,8 @@ if(-not($rows -match '^vector\|')){throw 'pgvector extension is not installed in
 $rows|ForEach-Object{Write-Host "PostgreSQL extension: $_"}
 
 $valkeyCli=Join-Path $current 'dependencies\valkey\valkey-cli.exe'
-$pong=Invoke-ImmichValkey -Executable $valkeyCli -Hostname $envs.REDIS_HOSTNAME -Port $envs.REDIS_PORT -Password $envs.REDIS_PASSWORD -Username $envs.REDIS_USERNAME -Command @('ping')
-if($pong -ne 'PONG'){throw "Redis-compatible service ping failed at $($envs.REDIS_HOSTNAME):$($envs.REDIS_PORT): $pong"}
+$pong=Invoke-ImmichValkey -Executable $valkeyCli -Hostname $envs['REDIS_HOSTNAME'] -Port $envs['REDIS_PORT'] -Password $envs['REDIS_PASSWORD'] -Username $envs['REDIS_USERNAME'] -Command @('ping')
+if($pong -ne 'PONG'){throw "Redis-compatible service ping failed at $($envs['REDIS_HOSTNAME']):$($envs['REDIS_PORT']): $pong"}
 
 $vcRuntime=Join-Path $current 'runtime\vc-runtime'
 foreach($name in @('vcruntime140.dll','msvcp140.dll')){if(-not(Test-Path -LiteralPath (Join-Path $vcRuntime $name) -PathType Leaf)){throw "Packaged MSVC runtime is missing $name"}}
@@ -90,10 +91,10 @@ const path = require('node:path');
 $previousProbeUsername=$env:IMMICH_PROBE_REDIS_USERNAME
 $previousProbePassword=$env:IMMICH_PROBE_REDIS_PASSWORD
 try {
-    $env:IMMICH_PROBE_REDIS_USERNAME=[string]$envs.REDIS_USERNAME
-    $env:IMMICH_PROBE_REDIS_PASSWORD=[string]$envs.REDIS_PASSWORD
-    & $node -e $bullProbe (Join-Path $current 'server') $envs.REDIS_HOSTNAME $envs.REDIS_PORT
-    if($LASTEXITCODE -ne 0){throw "BullMQ compatibility probe failed against Redis-compatible endpoint $($envs.REDIS_HOSTNAME):$($envs.REDIS_PORT)."}
+    $env:IMMICH_PROBE_REDIS_USERNAME=[string]$envs['REDIS_USERNAME']
+    $env:IMMICH_PROBE_REDIS_PASSWORD=[string]$envs['REDIS_PASSWORD']
+    & $node -e $bullProbe (Join-Path $current 'server') $envs['REDIS_HOSTNAME'] $envs['REDIS_PORT']
+    if($LASTEXITCODE -ne 0){throw "BullMQ compatibility probe failed against Redis-compatible endpoint $($envs['REDIS_HOSTNAME']):$($envs['REDIS_PORT'])."}
 } finally {
     $env:IMMICH_PROBE_REDIS_USERNAME=$previousProbeUsername
     $env:IMMICH_PROBE_REDIS_PASSWORD=$previousProbePassword
@@ -154,8 +155,8 @@ const fs = require('node:fs/promises');
   console.log(`statfs OK: ${root} blockSize=${stats.bsize} blocks=${stats.blocks}`);
 })().catch((error) => { console.error(error); process.exit(1); });
 '@
-& $node -e $statfsProbe $envs.IMMICH_MEDIA_LOCATION
-if($LASTEXITCODE -ne 0){throw "Node fs.statfs failed for native media root $($envs.IMMICH_MEDIA_LOCATION)."}
+& $node -e $statfsProbe $envs['IMMICH_MEDIA_LOCATION']
+if($LASTEXITCODE -ne 0){throw "Node fs.statfs failed for native media root $($envs['IMMICH_MEDIA_LOCATION'])."}
 
 $probe=@'
 const { createRequire } = require('node:module');
@@ -179,9 +180,9 @@ if($LASTEXITCODE -ne 0){throw 'Sharp/libvips runtime capability test failed.'}
 $geodataDate = (Get-Content -Raw -LiteralPath (Join-Path $current 'build\geodata\geodata-date.txt')).Trim()
 $importDate = ''
 for ($attempt = 0; $attempt -lt 120; $attempt++) {
-    $env:PGPASSWORD = [string]$envs.DB_PASSWORD
+    $env:PGPASSWORD = [string]$envs['DB_PASSWORD']
     try {
-        $importDate = (& $psql -h $envs.DB_HOSTNAME -p $envs.DB_PORT -U $envs.DB_USERNAME -d $envs.DB_DATABASE_NAME -Atqc "SELECT value->>'lastUpdate' FROM system_metadata WHERE key='reverse-geocoding-state'") -join ''
+        $importDate = (& $psql -h $envs['DB_HOSTNAME'] -p $envs['DB_PORT'] -U $envs['DB_USERNAME'] -d $envs['DB_DATABASE_NAME'] -Atqc "SELECT value->>'lastUpdate' FROM system_metadata WHERE key='reverse-geocoding-state'") -join ''
         if ($LASTEXITCODE -ne 0) { throw 'Could not read geodata import state.' }
     } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
     if ($importDate -eq $geodataDate) { break }
