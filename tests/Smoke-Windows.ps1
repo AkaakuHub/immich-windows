@@ -107,18 +107,43 @@ $pythonVersion=& $python.FullName --version; if($LASTEXITCODE -ne 0){throw 'Pyth
 $ortProbe=@'
 import json
 import sys
+import numpy as np
+import onnx
 import onnxruntime as ort
+from onnx import TensorProto, helper
 
-expected = sys.argv[1]
+expected, accelerator, device = sys.argv[1:]
 providers = ort.get_available_providers()
-print(json.dumps({"onnxruntime": ort.__version__, "providers": providers}))
-if ort.__version__ != expected:
-    raise SystemExit(f"Unexpected ONNX Runtime version: {ort.__version__}; expected {expected}")
-if "DmlExecutionProvider" not in providers:
-    raise SystemExit(f"DirectML execution provider is unavailable: {providers}")
+if ort.__version__ != expected or "DmlExecutionProvider" not in providers:
+    raise RuntimeError(f"Unexpected ORT build: {ort.__version__} {providers}")
+if accelerator not in {"cpu", "directml"}:
+    raise ValueError(f"Unknown accelerator: {accelerator}")
+selected = "DmlExecutionProvider" if accelerator == "directml" else "CPUExecutionProvider"
+options = ort.SessionOptions()
+if accelerator == "directml":
+    options.enable_mem_pattern = False
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+graph = helper.make_graph(
+    [helper.make_node("Add", ["x", "x"], ["y"])], "provider-probe",
+    [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 2])],
+    [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 2])],
+)
+model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
+session = ort.InferenceSession(
+    model.SerializeToString(), sess_options=options, providers=[selected],
+    provider_options=[{"device_id": device}] if accelerator == "directml" else [{}], enable_fallback=False,
+)
+if session.get_providers() != [selected]:
+    raise RuntimeError(f"Unexpected active providers: {session.get_providers()}")
+actual = session.run(None, {"x": np.array([[1., 2.]], dtype=np.float32)})[0]
+np.testing.assert_array_equal(actual, np.array([[2., 4.]], dtype=np.float32))
+print(json.dumps({"onnxruntime": ort.__version__, "inferenceProvider": selected, "tinyGraph": "passed"}))
 '@
-& $python.FullName -c $ortProbe ([string]$manifest.dependencies.onnxruntimeDirectml.version)
-if($LASTEXITCODE -ne 0){throw 'ONNX Runtime DirectML capability probe failed.'}
+$accelerator = if ($envs['MACHINE_LEARNING_ACCELERATOR']) { [string]$envs['MACHINE_LEARNING_ACCELERATOR'] } else { 'cpu' }
+$device = if ($envs['MACHINE_LEARNING_DEVICE_ID']) { [string]$envs['MACHINE_LEARNING_DEVICE_ID'] } else { '0' }
+& $python.FullName -c $ortProbe ([string]$manifest.dependencies.onnxruntimeDirectml.version) $accelerator $device
+if($LASTEXITCODE -ne 0){throw 'ONNX Runtime selected-provider inference probe failed.'}
 
 $statfsProbe=@'
 const fs = require('node:fs/promises');

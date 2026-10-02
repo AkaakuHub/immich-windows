@@ -29,7 +29,8 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
         $pidFile = Join-Path $DataRoot "services\$name.pid"
         if (-not (Test-Path -LiteralPath $pidFile)) { continue }
         if ($process -and -not $process.HasExited) {
-            Stop-Process -InputObject $process -Force
+            & taskkill.exe /PID $process.Id /T /F | Out-Host
+            if ($LASTEXITCODE -ne 0 -and -not $process.HasExited) { throw "Could not stop process tree $name." }
             if (-not $process.WaitForExit(30000)) { throw "Process $name did not stop." }
         }
         Remove-Item -LiteralPath $pidFile -Force

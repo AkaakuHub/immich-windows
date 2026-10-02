@@ -40,7 +40,7 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $serverHost = $env:IMMICH_HOST
     $pythonPath = $env:PYTHONPATH
     try {
-        $env:IMMICH_HOST = '127.0.0.1'
+        $env:IMMICH_HOST = if ($env:IMMICH_HOST_ML) { $env:IMMICH_HOST_ML } else { '127.0.0.1' }
         $env:IMMICH_PORT = if ($env:IMMICH_PORT_ML) { $env:IMMICH_PORT_ML } else { '3003' }
         $env:PYTHONPATH = Join-Path $current 'machine-learning\app'
         Start-UserProcess 'ImmichMachineLearning' $python.FullName '-m immich_ml' (Join-Path $current 'machine-learning')

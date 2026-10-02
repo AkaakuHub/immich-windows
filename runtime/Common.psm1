@@ -3,6 +3,132 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 
+function ConvertTo-WindowsArgument {
+    param([Parameter(Mandatory)][string]$Value)
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]'\') { $backslashes++; continue }
+        if ($character -eq [char]'"') {
+            [void]$builder.Append(('\' * (2 * $backslashes + 1)))
+            [void]$builder.Append('"')
+        } else {
+            [void]$builder.Append(('\' * $backslashes))
+            [void]$builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    [void]$builder.Append(('\' * (2 * $backslashes)))
+    [void]$builder.Append('"')
+    $builder.ToString()
+}
+
+function Set-ImmichUpdateShortcut {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true)
+    $programs = [Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
+    $directory = Join-Path $programs 'Immich'
+    $path = Join-Path $directory 'Update Immich.lnk'
+    if (-not $Enabled) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        return
+    }
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $hostPath = Join-Path $PSHOME 'pwsh.exe'
+    $script = Join-Path $InstallRoot 'current\installer\Update-FromRelease.ps1'
+    $arguments = (@('-NoProfile','-NoExit','-File',$script,'-Scope',$Scope,'-InstallRoot',$InstallRoot,'-DataRoot',$DataRoot) |
+        ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($path)
+    $shortcut.WorkingDirectory = $InstallRoot
+    $shortcut.IconLocation = "$hostPath,0"
+    $shortcut.Description = 'Update Immich while preserving existing settings and media.'
+    if ($Scope -eq 'AllUsers') {
+        # A hidden non-elevated launcher opens one visible elevated update window with the usual UAC prompt.
+        $command = "Start-Process -FilePath '" + $hostPath.Replace("'","''") + "' -ArgumentList '" + $arguments.Replace("'","''") + "' -Verb RunAs"
+        $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $shortcut.WindowStyle = 7
+    } else {
+        $shortcut.TargetPath = $hostPath
+        $shortcut.Arguments = $arguments
+    }
+    $shortcut.Save()
+}
+
+function Get-WindowsReleaseVersion {
+    param([Parameter(Mandatory)]$Upstream)
+    if ([string]$Upstream.version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or
+        [string]$Upstream.windowsRevision -notmatch '^[1-9][0-9]*$') {
+        throw 'upstream.json must contain a stable upstream version and a positive windowsRevision.'
+    }
+    return 'v' + ([version]("$($Upstream.version.TrimStart('v')).$($Upstream.windowsRevision)")).ToString(4)
+}
+
+
+function Get-WindowsPackageVersion {
+    param([Parameter(Mandatory)]$Manifest)
+    $upstream = [string]$Manifest.immichVersion
+    if ($upstream -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw "Invalid upstream version: $upstream"
+    }
+    # Legacy packages had no Windows revision. Treat only that documented schema as revision zero.
+    if (-not $Manifest.PSObject.Properties['windowsRevision']) {
+        if ($Manifest.schemaVersion -ne 1 -or $Manifest.PSObject.Properties['packageVersion']) {
+            throw 'Missing Windows package revision.'
+        }
+        return [version]($upstream.TrimStart('v') + '.0')
+    }
+    $revision = [string]$Manifest.windowsRevision
+    if ($revision -notmatch '^[1-9][0-9]*$') { throw "Invalid Windows revision: $revision" }
+    $version = [version]($upstream.TrimStart('v') + '.' + $revision)
+    if ([string]$Manifest.packageVersion -cne "v$version") { throw 'Package version does not match upstream and Windows revision.' }
+    return $version
+}
+
+function Test-ImmichDatabasePayloadEqual {
+    param([Parameter(Mandatory)][string]$PreviousRelease,[Parameter(Mandatory)][string]$CandidateRelease)
+    $previous = Get-Content -Raw (Join-Path $PreviousRelease 'manifest.json') | ConvertFrom-Json
+    $candidate = Get-Content -Raw (Join-Path $CandidateRelease 'manifest.json') | ConvertFrom-Json
+    foreach ($field in @('immichVersion','upstreamCommit')) {
+        if (-not $previous.PSObject.Properties[$field] -or -not $candidate.PSObject.Properties[$field] -or
+            [string]$previous.$field -cne [string]$candidate.$field) { return $false }
+    }
+    if (-not $previous.PSObject.Properties['dependencies'] -or -not $candidate.PSObject.Properties['dependencies']) { return $false }
+    # A matching release number alone never proves that the database-facing code is unchanged.
+    foreach ($name in @('node','postgresql','pgvector','vectorchord')) {
+        if (-not $previous.dependencies.PSObject.Properties[$name] -or -not $candidate.dependencies.PSObject.Properties[$name]) { return $false }
+        if (($previous.dependencies.$name | ConvertTo-Json -Depth 10 -Compress) -cne
+            ($candidate.dependencies.$name | ConvertTo-Json -Depth 10 -Compress)) { return $false }
+    }
+    $requiredFiles = @('server\package.json','server\pnpm-lock.yaml','server\pnpm-workspace.yaml','runtime\node\node.exe')
+    $requiredDirectories = @('server\dist','server\.immich','dependencies\postgres-extensions','runtime\vc-runtime')
+    $fingerprints = @()
+    foreach ($root in @($PreviousRelease,$CandidateRelease)) {
+        $files = @()
+        foreach ($relative in $requiredFiles) {
+            $path = Join-Path $root $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+            $files += Get-Item -LiteralPath $path
+        }
+        foreach ($relative in $requiredDirectories) {
+            $path = Join-Path $root $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) { return $false }
+            $entries = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force | Where-Object { $_.Name -ne 'build-inputs.json' })
+            if (-not $entries.Count) { return $false }
+            $files += $entries
+        }
+        $lines = @($files | ForEach-Object {
+            $relative = [IO.Path]::GetRelativePath($root,$_.FullName).Replace('\','/')
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            "$relative=$hash"
+        } | Sort-Object)
+        $fingerprints += ($lines -join "`n")
+    }
+    return $fingerprints[0] -ceq $fingerprints[1]
+}
+
 function Test-WindowsAbsolutePath {
     param([Parameter(Mandatory)][string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -120,33 +246,29 @@ function Wait-HttpOk {
 
 function Set-CurrentReleaseJunction {
     param([Parameter(Mandatory)][string]$InstallRoot, [Parameter(Mandatory)][string]$ReleasePath)
+    if (-not (Test-Path -LiteralPath (Join-Path $ReleasePath 'manifest.json') -PathType Leaf)) { throw 'Release manifest is missing.' }
     $current = Join-Path $InstallRoot 'current'
     $existing = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
-    if ($existing) {
-        if (-not ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Refusing to replace non-junction current path: $current"
-        }
-        [IO.Directory]::Delete($current)
+    if ($existing -and -not ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Refusing to replace non-junction current path: $current"
     }
-    New-Item -ItemType Junction -Path $current -Target $ReleasePath | Out-Null
+    $next = Join-Path $InstallRoot ('current-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Junction -Path $next -Target $ReleasePath | Out-Null
+        if ($existing) { [IO.Directory]::Delete($current) }
+        Move-Item -LiteralPath $next -Destination $current
+    } finally {
+        if (Test-Path -LiteralPath $next) { [IO.Directory]::Delete($next) }
+    }
 }
 
 function Install-ReleaseDirectory {
     param([Parameter(Mandatory)][string]$PackageRoot, [Parameter(Mandatory)][string]$InstallRoot)
     $manifest = Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'manifest.json') | ConvertFrom-Json
-    $version = $manifest.immichVersion
+    $version = 'v' + (Get-WindowsPackageVersion $manifest).ToString(4)
     $release = Join-Path $InstallRoot "releases\$version"
-    $installedManifestPath = Join-Path $release 'manifest.json'
-    if ((Test-Path -LiteralPath $installedManifestPath -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $release '.node-dependencies-installed.json') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $release 'machine-learning\.dependencies-installed.json') -PathType Leaf)) {
-        $installed = Get-Content -Raw -LiteralPath $installedManifestPath | ConvertFrom-Json
-        $samePackage = @('immichVersion','upstreamCommit','builtAtUtc') | Where-Object { [string]$installed.$_ -ne [string]$manifest.$_ }
-        $currentTarget = Get-CurrentReleaseTarget -InstallRoot $InstallRoot
-        if (-not $samePackage -and $currentTarget -eq [IO.Path]::GetFullPath($release)) {
-            Write-Host "Reusing installed release $release"
-            return $release
-        }
+    if (Test-Path -LiteralPath $release) {
+        throw "Release directory already exists: $release. Use -ResumeExistingRelease only for the identical inactive package."
     }
     New-Item -ItemType Directory -Path $release -Force | Out-Null
     & robocopy $PackageRoot $release /MIR /SL /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Host

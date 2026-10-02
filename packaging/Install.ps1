@@ -16,7 +16,7 @@ param(
     [ValidateRange(1,65535)][int]$DatabasePort = 5432,
     [ValidateRange(1,65535)][int]$ServerPort = 2283,
     [ValidateRange(1,65535)][int]$MachineLearningPort = 3003,
-    [ValidateSet('cpu','directml','directml-strict')][string]$MachineLearningAccelerator = 'cpu',
+    [ValidateSet('cpu','directml')][string]$MachineLearningAccelerator = 'cpu',
     [int]$MachineLearningDeviceId = 0,
     [ValidateSet('BundledValkey','External')][string]$RedisMode = 'BundledValkey',
     [string]$RedisHost = '127.0.0.1',
@@ -25,32 +25,13 @@ param(
     [switch]$AllowUnqualifiedMediaStack,
     [switch]$ResumeExistingRelease,
     [switch]$ReuseServices,
+    [switch]$PrepareOnly,
+    [switch]$ApplicationOnly,
     [switch]$DoNotStart,
     [string]$ElevationFailureReport
 )
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $ErrorActionPreference = 'Stop'
-
-function ConvertTo-WindowsArgument {
-    param([Parameter(Mandatory)][string]$Value)
-    $builder = [System.Text.StringBuilder]::new()
-    [void]$builder.Append('"')
-    $backslashes = 0
-    foreach ($character in $Value.ToCharArray()) {
-        if ($character -eq [char]'\') { $backslashes++; continue }
-        if ($character -eq [char]'"') {
-            [void]$builder.Append(('\' * (2 * $backslashes + 1)))
-            [void]$builder.Append('"')
-        } else {
-            [void]$builder.Append(('\' * $backslashes))
-            [void]$builder.Append($character)
-        }
-        $backslashes = 0
-    }
-    [void]$builder.Append(('\' * (2 * $backslashes)))
-    [void]$builder.Append('"')
-    $builder.ToString()
-}
 
 function Start-ElevatedInstaller {
     param([System.Collections.IDictionary]$InstallerParameters)
@@ -103,6 +84,17 @@ function Start-ElevatedInstaller {
 
 try {
 if (-not $PackageRoot) { $PackageRoot = Split-Path -Parent $PSScriptRoot }
+if (-not $Scope) {
+    $detected = @()
+    foreach ($candidateScope in @('AllUsers','CurrentUser')) {
+        try { $candidatePaths = Resolve-ImmichInstallPaths -Scope $candidateScope -InstallRoot $InstallRoot -DataRoot $DataRoot } catch { continue }
+        $candidateEnv = Join-Path $candidatePaths.DataRoot 'immich.env'
+        if ((Test-Path -LiteralPath (Join-Path $candidatePaths.InstallRoot 'current\manifest.json')) -and (Test-Path -LiteralPath $candidateEnv)) {
+            if ((Read-EnvFile $candidateEnv)['IMMICH_WINDOWS_INSTALL_SCOPE'] -eq $candidateScope) { $detected += $candidateScope }
+        }
+    }
+    if ($detected.Count -eq 1) { $Scope = $detected[0] }
+}
 if (-not $Scope) {
     Write-Host 'Install scope:'
     Write-Host '  1. AllUsers (Windows services; starts at boot; requires administrator)'
@@ -161,7 +153,7 @@ $ServerPort = if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort } 
 $MachineLearningPort = if ($PSBoundParameters.ContainsKey('MachineLearningPort')) { $MachineLearningPort } elseif ($sourceEnv['IMMICH_PORT_ML']) { [int]$sourceEnv['IMMICH_PORT_ML'] } else { $MachineLearningPort }
 $MachineLearningAccelerator = if ($PSBoundParameters.ContainsKey('MachineLearningAccelerator')) { $MachineLearningAccelerator } elseif ($sourceEnv['MACHINE_LEARNING_ACCELERATOR']) { [string]$sourceEnv['MACHINE_LEARNING_ACCELERATOR'] } else { $MachineLearningAccelerator }
 $MachineLearningDeviceId = if ($PSBoundParameters.ContainsKey('MachineLearningDeviceId')) { $MachineLearningDeviceId } elseif ($sourceEnv['MACHINE_LEARNING_DEVICE_ID']) { [int]$sourceEnv['MACHINE_LEARNING_DEVICE_ID'] } else { $MachineLearningDeviceId }
-if ($MachineLearningAccelerator -notin @('cpu','directml','directml-strict')) { throw "Unknown MachineLearningAccelerator: $MachineLearningAccelerator" }
+if ($MachineLearningAccelerator -notin @('cpu','directml')) { throw "Unknown MachineLearningAccelerator: $MachineLearningAccelerator" }
 if ($MachineLearningDeviceId -lt 0) { throw 'MachineLearningDeviceId must be zero or greater.' }
 $RedisPort = if ($PSBoundParameters.ContainsKey('RedisPort')) { $RedisPort } elseif ($sourceEnv['REDIS_PORT']) { [int]$sourceEnv['REDIS_PORT'] } else { $RedisPort }
 $RedisMode = if ($PSBoundParameters.ContainsKey('RedisMode')) { $RedisMode } elseif ($sourceEnv['IMMICH_WINDOWS_REDIS_MODE']) { [string]$sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] } else { $RedisMode }
@@ -176,6 +168,21 @@ $packageManifest=Get-Content -Raw -LiteralPath $packageManifestPath|ConvertFrom-
 if([string]$packageManifest.target -ne 'windows-x64-native'){throw "Unsupported package target: $($packageManifest.target)"}
 if(-not $AllowUnqualifiedMediaStack -and -not [bool]$packageManifest.mediaStack.productionQualified){
     throw 'Package media stack is not production-qualified. Use -AllowUnqualifiedMediaStack only for isolated bring-up testing.'
+}
+if (-not $AllowUnqualifiedMediaStack) { & (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackageRoot $PackageRoot }
+$packageVersion = 'v' + (Get-WindowsPackageVersion $packageManifest).ToString(4)
+$existingRelease = Get-CurrentReleaseTarget -InstallRoot $InstallRoot
+if ($existingRelease) {
+    $existingManifest = Get-Content -Raw -LiteralPath (Join-Path $existingRelease 'manifest.json') | ConvertFrom-Json
+    if ((Get-WindowsPackageVersion $packageManifest) -le (Get-WindowsPackageVersion $existingManifest)) {
+        throw 'The candidate must have a newer Windows package version. Active releases cannot be overwritten or downgraded.'
+    }
+    if (-not $ReuseServices) {
+        $configurationOverrides = @('MediaRoot','DatabasePassword','DatabaseHost','DatabasePort','DatabaseName','DatabaseUser','ServerPort','MachineLearningPort','MachineLearningAccelerator','MachineLearningDeviceId','RedisMode','RedisHost','RedisPort')
+        if (@($configurationOverrides | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count) { throw 'An existing installation is updated using its saved immich.env. Edit that file before updating instead of passing configuration overrides.' }
+        & (Join-Path $PSScriptRoot 'Update.ps1') -PackageRoot $PackageRoot -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService
+        return
+    }
 }
 $postgresExe=Join-Path $PostgresRoot 'bin\postgres.exe'
 $psqlExe=Join-Path $PostgresRoot 'bin\psql.exe'
@@ -193,7 +200,7 @@ if(-not $postgresServiceObject){throw "PostgreSQL Windows service was not found:
 if($postgresServiceObject.Status -ne 'Running'){throw "PostgreSQL Windows service must be Running before installation: $PostgresService (current: $($postgresServiceObject.Status))"}
 if (-not (Test-WindowsAbsolutePath $MediaRoot)) { throw 'MediaRoot must be an absolute Windows drive or UNC path.' }
 if (-not (Test-Path -LiteralPath $MediaRoot)) { throw "MediaRoot does not exist: $MediaRoot" }
-if (Test-Path -LiteralPath (Join-Path $InstallRoot 'current')) {
+if (-not $PrepareOnly -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'current'))) {
     $stopScript = Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1'
     if (-not (Test-Path -LiteralPath $stopScript -PathType Leaf)) {
         throw "Cannot safely replace the existing Immich installation because its stop script is missing: $stopScript"
@@ -205,11 +212,11 @@ if (Test-Path -LiteralPath (Join-Path $InstallRoot 'current')) {
 New-Item -ItemType Directory -Path $InstallRoot,$DataRoot -Force | Out-Null
 $release = $null
 if ($ResumeExistingRelease) {
-    $release = Join-Path $InstallRoot "releases\$($packageManifest.immichVersion)"
+    $release = Join-Path $InstallRoot "releases\$packageVersion"
     $installedManifestPath = Join-Path $release 'manifest.json'
     if (-not (Test-Path -LiteralPath $installedManifestPath -PathType Leaf)) { throw "Cannot resume; installed release manifest is missing: $installedManifestPath" }
     $installedManifest = Get-Content -Raw -LiteralPath $installedManifestPath | ConvertFrom-Json
-    foreach ($field in @('immichVersion','upstreamCommit','builtAtUtc')) {
+    foreach ($field in @('packageVersion','sourceCommit','upstreamCommit','builtAtUtc')) {
         if ([string]$installedManifest.$field -ne [string]$packageManifest.$field) { throw "Cannot resume; installed package does not match the selected package ($field differs)." }
     }
     Write-Host "Resuming installation from $release"
@@ -219,7 +226,12 @@ if ($ResumeExistingRelease) {
 & (Join-Path $release 'installer\Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $PackageRoot 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
 & (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
+if ($PrepareOnly) { Write-Host "Candidate dependencies prepared: $release"; return }
 $current = Join-Path $InstallRoot 'current'
+if ($ApplicationOnly -and (-not $existingRelease -or -not (Test-ImmichDatabasePayloadEqual -PreviousRelease $existingRelease -CandidateRelease $release))) {
+    throw 'Application-only update requires identical database-facing payloads.'
+}
+if (-not $ApplicationOnly) {
 if (-not $SkipPostgresExtensionInstall -and $Scope -eq 'AllUsers') {
     & (Join-Path $PSScriptRoot 'Install-PostgresExtensions.ps1') -PackageRoot $release -PostgresRoot $PostgresRoot -PostgresService $PostgresService -AdminUser $DatabaseUser -DatabaseName $DatabaseName -AdminPassword $DatabasePassword -DatabaseHost $DatabaseHost -DatabasePort $DatabasePort
 }
@@ -266,13 +278,14 @@ if ($Scope -eq 'CurrentUser' -or $SkipPostgresExtensionInstall) {
         }
     } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
 }
+} # Database initialization/extensions are unnecessary for an identical server payload.
 $cache = Join-Path $DataRoot 'cache'
 $logs = Join-Path $DataRoot 'logs'
 $valkeyData = Join-Path $DataRoot 'valkey'
 $services = Join-Path $DataRoot 'services'
 New-Item -ItemType Directory -Path $cache,$logs,$valkeyData,$services -Force | Out-Null
 $managedEnvValues = [ordered]@{
-    IMMICH_HOST = '0.0.0.0'
+    IMMICH_HOST = $(if ($sourceEnv['IMMICH_HOST']) { $sourceEnv['IMMICH_HOST'] } else { '0.0.0.0' })
     IMMICH_PORT = [string]$ServerPort
     IMMICH_MEDIA_LOCATION = $MediaRoot
     IMMICH_BUILD_DATA = (Join-Path $current 'build')
@@ -285,16 +298,18 @@ $managedEnvValues = [ordered]@{
     DB_USERNAME = $DatabaseUser
     DB_PASSWORD = $DatabasePassword
     DB_VECTOR_EXTENSION = 'vectorchord'
+    POSTGRES_ROOT = $PostgresRoot
+    POSTGRES_SERVICE = $PostgresService
     IMMICH_POSTGRES_BIN_DIR = (Join-Path $PostgresRoot 'bin')
     REDIS_HOSTNAME = $RedisHost
     REDIS_PORT = [string]$RedisPort
     IMMICH_WINDOWS_REDIS_MODE = $RedisMode
     IMMICH_WINDOWS_INSTALL_SCOPE = $Scope
-    MACHINE_LEARNING_CACHE_FOLDER = $cache
-    MACHINE_LEARNING_WORKERS = '1'
+    MACHINE_LEARNING_CACHE_FOLDER = $(if ($sourceEnv['MACHINE_LEARNING_CACHE_FOLDER']) { $sourceEnv['MACHINE_LEARNING_CACHE_FOLDER'] } else { $cache })
+    MACHINE_LEARNING_WORKERS = $(if ($sourceEnv['MACHINE_LEARNING_WORKERS']) { $sourceEnv['MACHINE_LEARNING_WORKERS'] } else { '1' })
     MACHINE_LEARNING_ACCELERATOR = $MachineLearningAccelerator
     MACHINE_LEARNING_DEVICE_ID = [string]$MachineLearningDeviceId
-    IMMICH_HOST_ML = '127.0.0.1'
+    IMMICH_HOST_ML = $(if ($sourceEnv['IMMICH_HOST_ML']) { $sourceEnv['IMMICH_HOST_ML'] } else { '127.0.0.1' })
     IMMICH_PORT_ML = [string]$MachineLearningPort
     NO_COLOR = 'true'
 }
@@ -350,7 +365,7 @@ function New-WinSWServiceXml {
         [string[]]$Depends = @()
     )
     $merged = [ordered]@{}
-    foreach ($pair in $envValues.GetEnumerator()) { $merged[$pair.Key] = [string]$pair.Value }
+
     foreach ($pair in $ExtraEnv.GetEnumerator()) { $merged[$pair.Key] = [string]$pair.Value }
     $xml = @(
         '<service>',
@@ -381,15 +396,12 @@ $serverExe = Join-Path $services 'ImmichServer.exe'; Copy-Item $winswSource $ser
 $serverXml = Join-Path $services 'ImmichServer.xml'
 $serverDepends=@($PostgresService)
 if($RedisMode -eq 'BundledValkey'){$serverDepends += 'ImmichValkey'}
-New-WinSWServiceXml -Id 'ImmichServer' -Name 'Immich Server' -Executable (Join-Path $current 'runtime\node\node.exe') -Arguments ("`"{0}`"" -f (Join-Path $current 'server\dist\main.js')) -ExtraEnv @{
-    FFMPEG_PATH = Join-Path $current 'runtime\ffmpeg\ffmpeg.exe'
-    FFPROBE_PATH = Join-Path $current 'runtime\ffmpeg\ffprobe.exe'
-} -Depends $serverDepends | Set-Content -Encoding utf8 -LiteralPath $serverXml
-$python = Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
-if (-not $python) { throw 'Packaged machine-learning Python runtime not found.' }
+$serviceHost = Join-Path $PSHOME 'pwsh.exe'
+$loader = Join-Path $current 'runtime\launchers\Load-ImmichEnv.ps1'
+New-WinSWServiceXml -Id 'ImmichServer' -Name 'Immich Server' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -Service Server" -f $loader,$envFile) -ExtraEnv @{} -Depends $serverDepends | Set-Content -Encoding utf8 -LiteralPath $serverXml
 $mlExe = Join-Path $services 'ImmichMachineLearning.exe'; Copy-Item $winswSource $mlExe -Force
 $mlXml = Join-Path $services 'ImmichMachineLearning.xml'
-New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $python.FullName -Arguments '-m immich_ml' -ExtraEnv @{ IMMICH_HOST='127.0.0.1'; IMMICH_PORT=[string]$MachineLearningPort; PYTHONPATH=(Join-Path $current 'machine-learning\app') } | Set-Content -Encoding utf8 -LiteralPath $mlXml
+New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -Service MachineLearning" -f $loader,$envFile) -ExtraEnv @{} | Set-Content -Encoding utf8 -LiteralPath $mlXml
 foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
     $name = [IO.Path]::GetFileNameWithoutExtension($svc[0])
     $existingService=Get-Service -Name $name -ErrorAction SilentlyContinue
@@ -404,6 +416,8 @@ if (-not $DoNotStart) {
     & (Join-Path $current 'runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
 }
 if ($Scope -eq 'CurrentUser') { Set-ImmichUserStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Enabled $true }
+Set-ImmichUpdateShortcut -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+Write-Host 'For future updates, open Start > Immich > Update Immich.'
 Write-Host "Installed native Immich for $Scope from $release"
 Write-Host "Persistent config: $envFile"
 } catch {

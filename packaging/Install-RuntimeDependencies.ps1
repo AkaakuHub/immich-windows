@@ -8,12 +8,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
+$packageVersion = 'v' + (Get-WindowsPackageVersion $manifest).ToString(4)
 $versions = $manifest.dependencies
 $cache = Join-Path $InstallRoot 'cache\downloads'
 $stageRoot = Join-Path $InstallRoot 'cache\runtime-extract'
 New-Item -ItemType Directory -Path $cache,$stageRoot -Force | Out-Null
 
-function Get-CachedArchive([string]$Name,[string]$Uri) {
+function Get-CachedArchive([string]$Name,[string]$Uri,[string]$Sha256) {
     $path = Join-Path $cache $Name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         $partial = "$path.download"
@@ -26,6 +28,9 @@ function Get-CachedArchive([string]$Name,[string]$Uri) {
             Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
             throw
         }
+    }
+    if ($Sha256 -and (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ine $Sha256) {
+        throw "Cached/downloaded archive checksum mismatch: $path. Remove this archive and retry."
     }
     return $path
 }
@@ -103,14 +108,14 @@ if (-not $pythonExe) {
 }
 if (-not $pythonExe) { throw 'Pinned CPython installation did not produce python.exe.' }
 
-$nativeZipName = "immich-windows-$($manifest.immichVersion)-native-dependencies.zip"
+$nativeZipName = "immich-windows-$packageVersion-native-dependencies.zip"
 $nativeReady = (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'server\node_modules\@img\sharp-win32-x64\lib\libvips-core.dll') -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\postgres-extensions\vector\vector.dll') -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\postgres-extensions\vchord\vchord.dll') -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'runtime\vc-runtime\vcruntime140.dll') -PathType Leaf)
 if (-not $nativeReady) {
-    $nativeUri = "https://github.com/AkaakuHub/immich-windows/releases/download/$($manifest.immichVersion)/$nativeZipName"
-    $nativeZip = Get-CachedArchive $nativeZipName $nativeUri
+    $nativeUri = "https://github.com/AkaakuHub/immich-windows/releases/download/$packageVersion/$nativeZipName"
+    $nativeZip = Get-CachedArchive $nativeZipName $nativeUri $manifest.nativeDependenciesSha256
     $nativeStage = Join-Path $stageRoot 'native-dependencies'
     if (Test-Path -LiteralPath $nativeStage) { Remove-Item -LiteralPath $nativeStage -Recurse -Force }
     New-Item -ItemType Directory -Path $nativeStage -Force | Out-Null
@@ -118,4 +123,5 @@ if (-not $nativeReady) {
     Copy-DirectoryContents $nativeStage $ReleaseRoot
 }
 
+Get-ChildItem -LiteralPath $stageRoot -Directory | Remove-Item -Recurse -Force
 Write-Host 'Runtime tools and native payloads are installed outside the application ZIP.'

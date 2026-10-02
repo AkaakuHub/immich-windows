@@ -76,14 +76,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not read shared_preload_libraries.' }
     $current = ConvertTo-TrimmedOutput -Output $currentOutput
     $libs = @($current -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-    $installedFilesPresent = @('vector','vchord') | ForEach-Object {
-        Test-Path -LiteralPath (Join-Path $PostgresRoot "lib\$_.dll") -PathType Leaf
-        Test-Path -LiteralPath (Join-Path $PostgresRoot "share\extension\$_.control") -PathType Leaf
+    $installedFilesMatch = @('vector','vchord') | ForEach-Object {
+        $extension = $_
+        foreach ($pair in @(@("$extension.dll", "lib\$extension.dll"), @("$extension.control", "share\extension\$extension.control"))) {
+            $source = Join-Path $ext "$extension\$($pair[0])"
+            $target = Join-Path $PostgresRoot $pair[1]
+            (Test-Path -LiteralPath $target -PathType Leaf) -and ((Get-FileHash $source -Algorithm SHA256).Hash -eq (Get-FileHash $target -Algorithm SHA256).Hash)
+        }
     }
     if (-not $RecoveryRestore -and $databaseExists -eq '1' -and
         $installedVersions.vector -eq $packagedVersions.vector -and
         $installedVersions.vchord -eq $packagedVersions.vchord -and
-        $libs -contains 'vchord' -and $installedFilesPresent -notcontains $false) {
+        $libs -contains 'vchord' -and $installedFilesMatch -notcontains $false) {
         Write-Host 'PostgreSQL extensions already match the package; retaining the running service.'
         return
     }

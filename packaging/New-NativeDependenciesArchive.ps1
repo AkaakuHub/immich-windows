@@ -3,8 +3,10 @@
 param([string]$Destination)
 
 Import-Module (Join-Path $PSScriptRoot '..\build\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $root = Get-RepositoryRoot
 $upstream = Read-JsonFile (Join-Path $root 'upstream.json')
+$packageVersion = Get-WindowsReleaseVersion $upstream
 $native = Join-Path $root 'artifacts\native'
 foreach ($required in @('vc-runtime','postgres-extensions\vector','postgres-extensions\vchord')) {
     if (-not (Test-Path -LiteralPath (Join-Path $native $required) -PathType Container)) { throw "Native dependency build output is missing: $required" }
@@ -35,7 +37,7 @@ foreach ($required in @('sharp-libvips-injection.json','sharp-libvips-qualificat
 if (-not (Test-Path -LiteralPath $sharpSourceLib -PathType Container)) { throw "Tested Sharp runtime output is missing: $sharpSourceLib" }
 if (-not (Test-Path -LiteralPath $sharpSourceVersions -PathType Leaf)) { throw "Tested Sharp version metadata is missing: $sharpSourceVersions" }
 if ([string](Read-JsonFile $sharpSourceVersions).vips -ne [string]$versions.sharpLibvips.version) { throw 'Tested Sharp libvips version does not match the pinned version.' }
-if (-not $Destination) { $Destination = Join-Path $root "dist\immich-windows-$($upstream.version)-native-dependencies.zip" }
+if (-not $Destination) { $Destination = Join-Path $root "dist\immich-windows-$packageVersion-native-dependencies.zip" }
 $stage = New-CleanDirectory (Join-Path $root 'dist\native-dependencies')
 $sharpOutput = Join-Path $stage 'dependencies\sharp\lib'
 Get-ChildItem -LiteralPath $sharpSourceLib -Filter '*.dll' -File -Recurse | ForEach-Object {
