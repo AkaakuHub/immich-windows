@@ -46,6 +46,25 @@ try {
     Assert-True ([string]$parsedEnv.DB_HOSTNAME -ceq 'database') 'Env parsing must read unquoted source values.'
 } finally { Remove-Item -LiteralPath $envRoundTrip -Force -ErrorAction SilentlyContinue }
 
+# Dot-sourcing the env loader must not attach Service-role validation to Stop-Immich's $service variable.
+$loaderEnv=Join-Path ([IO.Path]::GetTempPath()) ('immich-loader-'+[guid]::NewGuid().ToString('N')+'.env')
+$oldPath=$env:PATH
+$oldFfmpeg=$env:FFMPEG_PATH
+$oldFfprobe=$env:FFPROBE_PATH
+try {
+    Set-Content -LiteralPath $loaderEnv '# empty test environment'
+    & {
+        . (Join-Path $root 'runtime/launchers/Load-ImmichEnv.ps1') -EnvFile $loaderEnv
+        $service=[pscustomobject]@{Status='Stopped'}
+        Assert-True ($service.Status -eq 'Stopped') 'Env loader leaked service validation into the caller.'
+    }
+} finally {
+    $env:PATH=$oldPath
+    $env:FFMPEG_PATH=$oldFfmpeg
+    $env:FFPROBE_PATH=$oldFfprobe
+    Remove-Item -LiteralPath $loaderEnv -Force -ErrorAction SilentlyContinue
+}
+
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
 Assert-True ($upstream.version -match '^v[0-9]+\.[0-9]+\.[0-9]+$') "Invalid upstream version: $($upstream.version)"
 Assert-True ($upstream.commit -match '^[0-9a-f]{40}$') 'upstream.json must pin a full 40-character commit SHA.'

@@ -398,10 +398,10 @@ $serverDepends=@($PostgresService)
 if($RedisMode -eq 'BundledValkey'){$serverDepends += 'ImmichValkey'}
 $serviceHost = Join-Path $PSHOME 'pwsh.exe'
 $loader = Join-Path $current 'runtime\launchers\Load-ImmichEnv.ps1'
-New-WinSWServiceXml -Id 'ImmichServer' -Name 'Immich Server' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -Service Server" -f $loader,$envFile) -ExtraEnv @{} -Depends $serverDepends | Set-Content -Encoding utf8 -LiteralPath $serverXml
+New-WinSWServiceXml -Id 'ImmichServer' -Name 'Immich Server' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -ServiceRole Server" -f $loader,$envFile) -ExtraEnv @{} -Depends $serverDepends | Set-Content -Encoding utf8 -LiteralPath $serverXml
 $mlExe = Join-Path $services 'ImmichMachineLearning.exe'; Copy-Item $winswSource $mlExe -Force
 $mlXml = Join-Path $services 'ImmichMachineLearning.xml'
-New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -Service MachineLearning" -f $loader,$envFile) -ExtraEnv @{} | Set-Content -Encoding utf8 -LiteralPath $mlXml
+New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -ServiceRole MachineLearning" -f $loader,$envFile) -ExtraEnv @{} | Set-Content -Encoding utf8 -LiteralPath $mlXml
 foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
     $name = [IO.Path]::GetFileNameWithoutExtension($svc[0])
     $existingService=Get-Service -Name $name -ErrorAction SilentlyContinue

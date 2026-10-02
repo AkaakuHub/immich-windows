@@ -1,7 +1,7 @@
 #requires -Version 7.0
 param(
     [string]$EnvFile = 'C:\ProgramData\Immich\immich.env',
-    [ValidateSet('Server','MachineLearning')][string]$Service
+    [ValidateSet('Server','MachineLearning')][string]$ServiceRole
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\Common.psm1') -Force
@@ -9,7 +9,7 @@ foreach ($entry in (Read-EnvFile $EnvFile).GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
 }
 
-if ($Service) {
+if ($ServiceRole) {
     $statePath = Join-Path (Split-Path -Parent $EnvFile) 'state\upgrade-recovery.json'
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
         $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
@@ -36,11 +36,11 @@ $env:FFMPEG_PATH=Join-Path $release 'runtime\ffmpeg\ffmpeg.exe'
 $env:FFPROBE_PATH=Join-Path $release 'runtime\ffmpeg\ffprobe.exe'
 
 # WinSW runs this existing launcher in the foreground so env edits also apply at boot.
-if ($Service -eq 'Server') {
+if ($ServiceRole -eq 'Server') {
     Set-Location -LiteralPath $release
     & (Join-Path $release 'runtime\node\node.exe') (Join-Path $release 'server\dist\main.js')
     exit $LASTEXITCODE
-} elseif ($Service -eq 'MachineLearning') {
+} elseif ($ServiceRole -eq 'MachineLearning') {
     $python = @(Get-ChildItem (Join-Path $release 'machine-learning\python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' })
     if ($python.Count -ne 1) { throw 'Expected exactly one packaged ML Python runtime.' }
     $env:IMMICH_HOST = if ($env:IMMICH_HOST_ML) { $env:IMMICH_HOST_ML } else { '127.0.0.1' }
