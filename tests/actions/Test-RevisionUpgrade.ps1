@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$DataRoot,
-    [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope
+    [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,
+    [switch]$UseLegacyMachineLearning
 )
 # Only for the disposable GitHub Actions install. Never simulate legacy metadata on a user's installation.
 $ErrorActionPreference='Stop'
@@ -40,8 +41,21 @@ $legacyRelease=Join-Path $InstallRoot "releases\$($manifest.immichVersion)"
 & (Join-Path $current 'runtime\launchers\Stop-Immich.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -EnvFile $envFile
 [IO.Directory]::Delete((Join-Path $InstallRoot 'current'))
 Move-Item -LiteralPath $current -Destination $legacyRelease
+if ($UseLegacyMachineLearning) {
+    # Exact requirements from the SHA256-verified official v3.2.2 application release.
+    $legacyRequirements=Join-Path $PSScriptRoot '..\fixtures\ml-requirements-v3.2.2.txt'
+    if ((Get-FileHash -Algorithm SHA256 $legacyRequirements).Hash -ine '7f38dea075b3b6fd61e318be07c6a2425363a33192bc38c9c22b81078f1b2a03') { throw 'Legacy ML fixture changed.' }
+    $legacyPython=Get-ChildItem (Join-Path $legacyRelease 'machine-learning\python-runtime') -Filter python.exe -File -Recurse |
+        Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
+    $uv=Join-Path $InstallRoot "tools\uv\$($manifest.dependencies.uv.version)\uv.exe"
+    & $uv pip sync $legacyRequirements --python $legacyPython.FullName --system --break-system-packages --cache-dir (Join-Path $InstallRoot 'cache\uv')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the actual legacy CPU ML dependencies.' }
+    Copy-Item -LiteralPath $legacyRequirements -Destination (Join-Path $legacyRelease 'machine-learning\requirements.txt') -Force
+    & $legacyPython.FullName -I -c 'import onnxruntime; assert onnxruntime.__version__ == "1.26.0"'
+    if ($LASTEXITCODE -ne 0) { throw 'Legacy CPU ONNX Runtime fixture is invalid.' }
+}
 $manifest.schemaVersion=1
-foreach ($key in @('packageVersion','windowsRevision','sourceCommit','nativeDependenciesSha256','nativeDependencyFiles')) { $manifest.PSObject.Properties.Remove($key) }
+foreach ($key in @('packageVersion','windowsRevision','sourceCommit','nativeDependenciesSha256','nativeDependencyFiles','nativeDependencyMetadata')) { $manifest.PSObject.Properties.Remove($key) }
 $manifest | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $legacyRelease 'manifest.json') -Encoding utf8
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $legacyRelease
 $envs=Read-EnvFile $envFile
@@ -66,13 +80,15 @@ try {
 } finally { Remove-Item -LiteralPath $invalid -Recurse -Force }
 
 # Build provenance differs across real releases even when all runtime DLLs are identical.
+# Legacy installers did not update Sharp versions.json after DLL injection.
+Set-Content (Join-Path $legacyRelease 'server\node_modules\@img\sharp-win32-x64\versions.json') '{"vips":"legacy-stock-metadata"}'
 $oldVcMetadata=Join-Path $legacyRelease 'runtime\vc-runtime\vc-runtime.json'
 @{source='old-build-machine';builtAtUtc='2026-01-01T00:00:00Z'} | ConvertTo-Json | Set-Content $oldVcMetadata
 # A legacy installation need not retain archive/package caches. It must still reuse installed payloads.
 $cacheBackups = @{}
 $oldUvOffline = $env:UV_OFFLINE
 $oldNpmOffline = $env:npm_config_offline
-$env:UV_OFFLINE = '1'
+if (-not $UseLegacyMachineLearning) { $env:UV_OFFLINE = '1' }
 $env:npm_config_offline = 'true'
 function global:Invoke-WebRequest {
     param([uri]$Uri,[switch]$UseBasicParsing,[int]$TimeoutSec,[string]$OutFile)
@@ -80,7 +96,8 @@ function global:Invoke-WebRequest {
     Microsoft.PowerShell.Utility\Invoke-WebRequest @PSBoundParameters
 }
 try {
-    foreach ($name in @('downloads','uv','pnpm-store','npm')) {
+    $cacheNames=if ($UseLegacyMachineLearning) { @() } else { @('downloads','uv','pnpm-store','npm') }
+    foreach ($name in $cacheNames) {
         $path=Join-Path $InstallRoot "cache\$name"
         if (Test-Path -LiteralPath $path) {
             $saved="$path.reuse-test"
@@ -91,6 +108,9 @@ try {
     # Simulate the old coarse completion marker; reuse must compare actual dependency inputs.
     @{immichVersion=$manifest.immichVersion;node=$manifest.dependencies.node.version;pnpm=$manifest.dependencies.pnpm.version} |
         ConvertTo-Json | Set-Content (Join-Path $legacyRelease '.node-dependencies-installed.json')
+    # Actual v3.2.2 shipped this two-field ML completion marker (no requirementsSha256).
+    @{immichVersion=$manifest.immichVersion;python=$manifest.dependencies.python.version} |
+        ConvertTo-Json | Set-Content (Join-Path $legacyRelease 'machine-learning\.dependencies-installed.json')
     $transcript=Join-Path $env:RUNNER_TEMP ("reuse-"+[guid]::NewGuid().ToString('N')+'.log')
     Start-Transcript -Path $transcript | Out-Null
     try { & (Join-Path $PackageRoot 'installer\Update.ps1') -PackageRoot $PackageRoot -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot }
@@ -100,7 +120,8 @@ try {
         'Reused installed server Node packages','Reused installed cli Node packages','Reused installed Machine Learning packages')) {
         if (-not $text.Contains($message)) { throw "Missing dependency reuse evidence: $message" }
     }
-    Write-Host 'Empty-cache legacy update reused installed dependencies without network acquisition.'
+    if ($UseLegacyMachineLearning) { Write-Host 'Actual legacy CPU ML requirements upgraded to DirectML dependencies successfully.' }
+    else { Write-Host 'Empty-cache legacy update reused installed dependencies without network acquisition.' }
 } finally {
     Remove-Item Function:\Invoke-WebRequest -ErrorAction SilentlyContinue
     $env:UV_OFFLINE=$oldUvOffline

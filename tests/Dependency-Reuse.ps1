@@ -49,6 +49,18 @@ try {
     Reject { Copy-ImmichDependencyTree $linked $rejected }
     Check (-not (Test-Path $rejected)) 'Rejected link copy created candidate.'
     Reject { Copy-ImmichDependencyTree (Join-Path $link Lib) $rejected }
+    Check ((Get-ImmichProgressText copy ja-JP) -eq (Get-ImmichProgressText copy ja_JP)) 'Japanese regional tags differ.'
+    Check ((Get-ImmichProgressText copy fr-FR) -eq (Get-ImmichProgressText copy en-US)) 'Unsupported locale must use English.'
+    $state=Start-ImmichProgress -Key copy -Detail 'progress fixture' 6>$null
+    Check ($state -is [System.Collections.IDictionary]) 'Progress polluted success output.'
+    $quiet=@(Update-ImmichProgress -State $state -Completed 1 -Total 4 6>&1)
+    Check ($quiet.Count -eq 0) 'Progress output was not throttled.'
+    $tick=@(Update-ImmichProgress -State $state -Completed 2 -Total 4 -Force 6>&1)
+    Check ($tick.Count -eq 1 -and ([string]$tick[0]).Contains('2/4')) 'Actual progress count missing.'
+    $finish=@(Update-ImmichProgress -State $state -Completed 4 -Total 4 -Finished 6>&1)
+    Check ($finish.Count -eq 1 -and $state.Finished) 'Final progress missing.'
+    $again=@(Update-ImmichProgress -State $state -Finished 6>&1)
+    Check ($again.Count -eq 0) 'Completed progress emitted twice.'
     Write-Host 'PASS dependency reuse: pin identity, changed inputs, independent copies, Scripts exclusions, unsafe links.'
 } finally {
     foreach($link in $links){[IO.Directory]::Delete($link)}

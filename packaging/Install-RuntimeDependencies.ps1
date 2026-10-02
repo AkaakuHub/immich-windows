@@ -25,7 +25,7 @@ function Reuse-Runtime([string]$Name,[string]$RelativePath,[string[]]$Required) 
         if ($LASTEXITCODE -ne 0 -or ([string]$actual).Trim().TrimStart('v') -ne $versions.node.version) { return }
     }
     try {
-        Copy-ImmichDependencyTree -Source $source -Destination $destination
+        Copy-ImmichDependencyTree -Source $source -Destination $destination -Label $Name
         Write-Host "Reused installed $Name runtime (no download)."
     } catch { Write-Warning "Cannot reuse $Name runtime; using its pinned archive. $($_.Exception.Message)" }
 }
@@ -59,7 +59,9 @@ function Expand-CachedZip([string]$Name,[string]$Uri) {
     $destination = Join-Path $stageRoot ([IO.Path]::GetFileNameWithoutExtension($Name))
     if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    $extractProgress=Start-ImmichProgress -Key extract -Detail $Name
     Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+    Update-ImmichProgress -State $extractProgress -Finished
     return $destination
 }
 
@@ -122,9 +124,11 @@ if (-not (Test-Path -LiteralPath $uvExe -PathType Leaf)) {
     Copy-Item -LiteralPath $uvFile.FullName -Destination $uvExe -Force
 }
 $pythonRoot = Join-Path $ReleaseRoot 'machine-learning\python-runtime'
+$pythonProgress=$null
 # This private interpreter is launched via python -m; never copy path-bound console launchers.
 if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
     (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name 'python')) {
+    $pythonProgress=Start-ImmichProgress -Key python
     $sourcePythonRoot = Join-Path $reuseSource 'machine-learning\python-runtime'
     # uv also creates a major.minor alias junction; copy only the actual pinned distribution.
     $distributions = @(Get-ChildItem -LiteralPath $sourcePythonRoot -Directory -ErrorAction SilentlyContinue |
@@ -133,27 +137,39 @@ if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
     $sourcePython = if ($distributions.Count -eq 1) { $distributions[0].FullName } else { $null }
     $sourceMarker = Join-Path $reuseSource 'machine-learning\.dependencies-installed.json'
     if ($sourcePython -and (Test-Path -LiteralPath $sourceMarker -PathType Leaf)) {
-        $portable = -not [bool](Get-ChildItem -LiteralPath $sourcePython -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq 'pyvenv.cfg' -or $_.Extension -eq '.egg-link' })
-        foreach ($pth in (Get-ChildItem -LiteralPath $sourcePython -Recurse -Filter '*.pth' -File -ErrorAction SilentlyContinue)) {
-            foreach ($line in (Get-Content -LiteralPath $pth.FullName)) {
-                if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($reuseSource)) { $portable = $false }
+        try {
+            $portable=$true
+            $pythonChecked=0
+            Get-ChildItem -LiteralPath $sourcePython -Recurse -File -ErrorAction Stop | ForEach-Object {
+                $pythonChecked++
+                if ($_.Name -eq 'pyvenv.cfg' -or $_.Extension -eq '.egg-link') { $portable=$false }
+                if ($_.Extension -eq '.pth') {
+                    foreach ($line in (Get-Content -LiteralPath $_.FullName)) {
+                        if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($reuseSource)) { $portable=$false }
+                    }
+                }
+                Update-ImmichProgress -State $pythonProgress -Completed $pythonChecked
             }
-        }
-        if ($portable) {
-            try {
-                Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts')
-                Write-Host 'Reused installed Python runtime and packages (no download).'
-            } catch { Write-Warning "Cannot reuse Python runtime. $($_.Exception.Message)" }
+            Update-ImmichProgress -State $pythonProgress -Completed $pythonChecked -Total $pythonChecked -Finished
+            if ($portable) {
+                    Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts') -Label Python
+                    Write-Host 'Reused installed Python runtime and packages (no download).'
+            }
+        } catch {
+            Update-ImmichProgress -State $pythonProgress -Failed
+            Write-Warning "Cannot reuse Python runtime; using pinned installation. $($_.Exception.Message)"
         }
     }
 }
+if ($pythonProgress) { Update-ImmichProgress -State $pythonProgress -Finished }
 $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 if (-not $pythonExe) {
     $env:UV_CACHE_DIR = Join-Path $InstallRoot 'cache\uv'
     $env:UV_PYTHON_INSTALL_DIR = $pythonRoot
+    $pythonInstallProgress=Start-ImmichProgress -Key ml -Detail 'Python runtime'
     & $uvExe python install $versions.python.version --no-bin
-    if ($LASTEXITCODE -ne 0) { throw 'Could not install pinned CPython runtime with uv.' }
+    if ($LASTEXITCODE -ne 0) { Update-ImmichProgress -State $pythonInstallProgress -Failed; throw 'Could not install pinned CPython runtime with uv.' }
+    Update-ImmichProgress -State $pythonInstallProgress -Finished
     $pythonExe = Get-ChildItem -LiteralPath $pythonRoot -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
 }
 if (-not $pythonExe) { throw 'Pinned CPython installation did not produce python.exe.' }
@@ -163,6 +179,9 @@ if ($LASTEXITCODE -ne 0 -or ([string]$pythonVersion).Trim() -ne $versions.python
 $nativeZipName = "immich-windows-$packageVersion-native-dependencies.zip"
 $inventoryProperty = $manifest.PSObject.Properties['nativeDependencyFiles']
 if (-not $inventoryProperty -or -not @($inventoryProperty.Value.PSObject.Properties).Count) { throw 'Native dependency file inventory is missing.' }
+$nativeProgress=Start-ImmichProgress -Key native
+$nativeChecked=0
+$nativeTotal=@($inventoryProperty.Value.PSObject.Properties).Count
 $missing = [System.Collections.Generic.List[string]]::new()
 $reused = 0
 # Sharp injection replaces a complete DLL set, so staging must never contain only a changed subset.
@@ -173,6 +192,8 @@ foreach ($entry in ($inventoryProperty.Value.PSObject.Properties | Where-Object 
         (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ine $entry.Value) { $sharpNeedsStage=$true }
 }
 foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
+    Update-ImmichProgress -State $nativeProgress -Completed $nativeChecked -Total $nativeTotal
+    $nativeChecked++
     $relative = [string]$entry.Name
     if ($relative -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or $relative.Contains('\')) { throw "Invalid native payload path: $relative" }
     $installedRelative = $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
@@ -189,6 +210,14 @@ foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
         }
         continue
     }
+    $metadataProperty=$manifest.PSObject.Properties['nativeDependencyMetadata']
+    if ($metadataProperty -and $metadataProperty.Value.PSObject.Properties[$relative]) {
+        $bytes=[Convert]::FromBase64String([string]$metadataProperty.Value.PSObject.Properties[$relative].Value)
+        if ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)) -ine $entry.Value) { throw "Invalid embedded native metadata: $relative" }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        [IO.File]::WriteAllBytes($target,$bytes)
+        continue
+    }
     $source = if ($reuseSource) { Join-Path $reuseSource $installedRelative } else { $null }
     if ($source -and (Test-Path -LiteralPath $source -PathType Leaf) -and
         (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ieq $entry.Value) {
@@ -197,14 +226,20 @@ foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
         $reused++
     } else { $missing.Add($relative) }
 }
+Update-ImmichProgress -State $nativeProgress -Completed $nativeChecked -Total $nativeTotal -Finished
 if ($reused) { Write-Host "Reused $reused matching native payload files (SHA256 verified)." }
 if ($missing.Count) {
+    Write-Host ("{0}: {1}" -f (Get-ImmichProgressText downloadNeeded),$missing.Count)
+    $missing | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+    if ($missing.Count -gt 10) { Write-Host ("  ... +{0}" -f ($missing.Count-10)) }
     $nativeUri = "https://github.com/AkaakuHub/immich-windows/releases/download/$packageVersion/$nativeZipName"
     $nativeZip = Get-CachedArchive $nativeZipName $nativeUri $manifest.nativeDependenciesSha256
     $nativeStage = Join-Path $stageRoot 'native-dependencies'
     if (Test-Path -LiteralPath $nativeStage) { Remove-Item -LiteralPath $nativeStage -Recurse -Force }
     New-Item -ItemType Directory -Path $nativeStage -Force | Out-Null
+    $nativeExtractProgress=Start-ImmichProgress -Key extract -Detail $nativeZipName
     Expand-Archive -LiteralPath $nativeZip -DestinationPath $nativeStage -Force
+    Update-ImmichProgress -State $nativeExtractProgress -Finished
     foreach ($relative in $missing) {
         $source = Join-Path $nativeStage $relative
         $expected = $inventoryProperty.Value.PSObject.Properties[$relative].Value
@@ -215,5 +250,7 @@ if ($missing.Count) {
     }
 }
 
+$cleanupProgress=Start-ImmichProgress -Key cleanup
 Get-ChildItem -LiteralPath $stageRoot -Directory | Remove-Item -Recurse -Force
+Update-ImmichProgress -State $cleanupProgress -Finished
 Write-Host 'Runtime tools and native payloads are installed outside the application ZIP.'
