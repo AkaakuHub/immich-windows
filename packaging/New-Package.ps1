@@ -92,18 +92,12 @@ foreach ($name in @('install.md','operations.md','migration.md')) {
 $nativeFiles = [ordered]@{}
 if ($mediaStackQualified) {
     $nativeStage = Join-Path $root 'dist\native-dependencies'
-    foreach ($file in (Get-ChildItem -LiteralPath $nativeStage -File -Recurse | Sort-Object FullName)) {
+    foreach ($file in (Get-ChildItem -LiteralPath $nativeStage -File -Recurse | Where-Object { $_.Name -ne 'vc-runtime.json' } | Sort-Object FullName)) {
         $relative = [IO.Path]::GetRelativePath($nativeStage,$file.FullName).Replace('\','/')
         $nativeFiles[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
     }
     if ($nativeFiles.Count -eq 0) { throw 'Native dependency content inventory is empty.' }
-    # Small build provenance is not a runtime dependency and changes on every build.
-    $vcMetadata = Join-Path $nativeStage 'runtime\vc-runtime\vc-runtime.json'
-    if (Test-Path -LiteralPath $vcMetadata) {
-        $vcDestination = Join-Path $Destination 'runtime\vc-runtime'
-        New-Item -ItemType Directory -Path $vcDestination -Force | Out-Null
-        Copy-Item -LiteralPath $vcMetadata -Destination $vcDestination -Force
-    }
+
 }
 $manifest = [ordered]@{
     schemaVersion = 2
