@@ -23,6 +23,7 @@ function New-TestProcess([string]$Name, [int]$ProcessId, [string]$PathValue = ''
 
 $loaderStub = @'
 param($EnvFile)
+function Assert-ImmichStartupAllowed { param($EnvFile,$InstallRoot,[switch]$UpgradeInProgress) }
 function Get-Process {
     [CmdletBinding()]
     param([int]$Id)
@@ -234,3 +235,4 @@ try {
     if ($driveName) { Remove-PSDrive -Name $driveName -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
 }
+& (Join-Path $PSScriptRoot 'Startup-Recovery.ps1')

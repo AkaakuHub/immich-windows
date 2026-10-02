@@ -12,6 +12,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
+function Get-RecoveryServerConfiguration([string]$Configuration,$Values,[string]$DefaultPostgresService) {
+    $xml=[xml]$Configuration
+    $postgres=if ($Values['POSTGRES_SERVICE']) { [string]$Values['POSTGRES_SERVICE'] } else { $DefaultPostgresService }
+    $redisMode=if ($Values['IMMICH_WINDOWS_REDIS_MODE']) { [string]$Values['IMMICH_WINDOWS_REDIS_MODE'] } else { 'BundledValkey' }
+    if ($redisMode -notin @('BundledValkey','External')) { throw "Unsupported restored Redis mode: $redisMode" }
+    foreach ($node in @($xml.SelectNodes('/service/depend'))) { [void]$node.ParentNode.RemoveChild($node) }
+    $dependencies=@($postgres)
+    if ($redisMode -eq 'BundledValkey') { $dependencies+='ImmichValkey' }
+    foreach ($name in $dependencies) {
+        $node=$xml.CreateElement('depend');$node.InnerText=$name;[void]$xml.service.AppendChild($node)
+    }
+    return $xml.OuterXml
+}
 if ($Scope -eq 'AllUsers') { Assert-Administrator }
 $paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
 $InstallRoot=$paths.InstallRoot
@@ -44,10 +57,17 @@ if(-not $PSCmdlet.ShouldProcess('Immich native Windows installation',$descriptio
 $lockKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($InstallRoot)).ToUpperInvariant())))
 $mutex = [Threading.Mutex]::new($false, "Global\ImmichWindowsUpdate-$lockKey")
 $locked = $false
+$startupMutex=$null
+$startupLocked=$false
 try {
     try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'An update or recovery is already running.' }
     $state.status='recovering'
+    $state.controllerProcessId=$PID
+    $state.controllerMutexName="Global\ImmichWindowsStartup-$lockKey-$([guid]::NewGuid().ToString('N'))"
+    $startupMutex=[Threading.Mutex]::new($false,$state.controllerMutexName)
+    $startupLocked=$startupMutex.WaitOne(0)
+    if (-not $startupLocked) { throw 'Could not acquire this recovery startup gate.' }
     $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stateFile -Encoding utf8
 
 & (Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
@@ -77,8 +97,21 @@ Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $previousRelea
 # junction. Only the informational source ref must be reset after rollback.
 if ($state.ContainsKey('previousEnv')) {
     [IO.File]::WriteAllText($envFile, [string]$state.previousEnv, [Text.UTF8Encoding]::new($false))
+    $restoredEnv=Read-EnvFile $envFile
     foreach ($name in $state.previousServices.Keys) {
-        [IO.File]::WriteAllText((Join-Path $DataRoot "services\$name.xml"), [string]$state.previousServices[$name], [Text.UTF8Encoding]::new($false))
+        $configurationPath=Join-Path $DataRoot "services\$name.xml"
+        $configuration=[string]$state.previousServices[$name]
+        if ($Scope -eq 'AllUsers' -and $name -eq 'ImmichServer') {
+            $currentConfiguration=if (Test-Path -LiteralPath $configurationPath -PathType Leaf) { Get-Content -Raw -LiteralPath $configurationPath } else { $null }
+            # The user may have edited env before the update; old XML can still name the old mode.
+            $configuration=Get-RecoveryServerConfiguration $configuration $restoredEnv $PostgresService
+            if (([xml]$configuration).SelectSingleNode('/service/depend[text()="ImmichValkey"]') -and
+                -not (Get-Service -Name ImmichValkey -ErrorAction SilentlyContinue)) {
+                throw 'The restored configuration requires the missing ImmichValkey service. Restore that bundled service before retrying recovery.'
+            }
+            Set-ImmichServerDependencies -Configuration $configuration -PreviousConfiguration $currentConfiguration
+        }
+        [IO.File]::WriteAllText($configurationPath, $configuration, [Text.UTF8Encoding]::new($false))
         Copy-Item (Join-Path $previousRelease 'runtime\winsw\WinSW-x64.exe') (Join-Path $DataRoot "services\$name.exe") -Force
     }
     if ($state.previousValkeyConfig) { [IO.File]::WriteAllText((Join-Path $DataRoot 'valkey.conf'), [string]$state.previousValkeyConfig, [Text.UTF8Encoding]::new($false)) }
@@ -91,7 +124,11 @@ if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
 
 $state.status='recovery-starting'
 $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stateFile -Encoding utf8
-& (Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
+$startScript=Join-Path $InstallRoot 'current\runtime\launchers\Start-Immich.ps1'
+$startArguments=@{EnvFile=$envFile;InstallRoot=$InstallRoot;DataRoot=$DataRoot}
+# A paired legacy release predates the guard parameter; keep its rollback usable.
+if ((Get-Command $startScript).Parameters.ContainsKey('UpgradeInProgress')) { $startArguments.UpgradeInProgress=$true }
+& $startScript @startArguments
 & (Join-Path $InstallRoot 'current\tests\Smoke-Windows.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot
 
 $state.status='recovered'
@@ -101,6 +138,8 @@ $state|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $stateFile -Encoding utf
 Write-Host "Recovered Immich $($previousManifest.immichVersion). Database restored: $(-not $databaseUnchanged)."
 
 } finally {
+    if ($startupLocked) { $startupMutex.ReleaseMutex() }
+    if ($startupMutex) { $startupMutex.Dispose() }
     if ($locked) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
 }

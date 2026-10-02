@@ -2,13 +2,13 @@ From: immich-windows <local@immich-windows.invalid>
 Subject: [PATCH] machine-learning: require fail-closed Windows DirectML execution
 
 diff --git a/machine-learning/immich_ml/config.py b/machine-learning/immich_ml/config.py
-index d1e44fd..96d3255 100644
 --- a/machine-learning/immich_ml/config.py
 +++ b/machine-learning/immich_ml/config.py
-@@ -77,6 +77,14 @@ class Settings(BaseSettings):
+@@ -74,6 +74,14 @@
+     max_batch_size: MaxBatchSize | None = None
      openvino_precision: ModelPrecision = ModelPrecision.FP32
      rocm_precision: ModelPrecision = ModelPrecision.FP32
- 
++
 +    @property
 +    def accelerator(self) -> str:
 +        accelerator = os.environ.get("MACHINE_LEARNING_ACCELERATOR", "cpu").lower()
@@ -16,20 +16,23 @@ index d1e44fd..96d3255 100644
 +        if accelerator not in allowed:
 +            raise ValueError(f"Unknown machine learning accelerator '{accelerator}'. Expected one of {sorted(allowed)}")
 +        return accelerator
-+
+
      @property
      def device_id(self) -> str:
-         return os.environ.get("MACHINE_LEARNING_DEVICE_ID", "0")
 diff --git a/machine-learning/immich_ml/models/facial_recognition/recognition.py b/machine-learning/immich_ml/models/facial_recognition/recognition.py
-index 2b0575e..d32975b 100644
 --- a/machine-learning/immich_ml/models/facial_recognition/recognition.py
 +++ b/machine-learning/immich_ml/models/facial_recognition/recognition.py
-@@ -83,8 +83,12 @@ class FaceRecognizer(InferenceModel):
+@@ -1,3 +1,4 @@
++import sys
+ from pathlib import Path
+ from typing import Any
+
+@@ -83,8 +84,12 @@
      @property
      def _batch_size_default(self) -> int | None:
          providers = ort.get_available_providers()
 +        directml_active = (
-+            settings.accelerator == "directml" and "DmlExecutionProvider" in providers
++            sys.platform == "win32" and settings.accelerator == "directml" and "DmlExecutionProvider" in providers
 +        )
          if (
              self.model_format == ModelFormat.ONNX
@@ -38,22 +41,20 @@ index 2b0575e..d32975b 100644
              and "OpenVINOExecutionProvider" not in providers
          ):
 diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immich_ml/sessions/ort.py
-index 95a4078..7e94a5e 100644
 --- a/machine-learning/immich_ml/sessions/ort.py
 +++ b/machine-learning/immich_ml/sessions/ort.py
-@@ -9,7 +9,6 @@ import numpy as np
- import onnxruntime as ort
- from numpy.typing import NDArray
- 
--from immich_ml.models.constants import SUPPORTED_PROVIDERS
- from immich_ml.schemas import ModelPrecision, SessionNode
- 
- from ..config import log, settings
-@@ -56,14 +55,31 @@ class OrtSession:
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+
++import sys
+ from collections.abc import Sequence
+ from pathlib import Path
+ from threading import Lock
+@@ -56,14 +57,31 @@
      ):
          self.model_path = Path(model_path)
          self.providers = providers if providers is not None else self._providers_default
-+        if settings.accelerator == "directml" and self.providers != ["DmlExecutionProvider"]:
++        if sys.platform == "win32" and settings.accelerator == "directml" and self.providers != ["DmlExecutionProvider"]:
 +            raise ValueError("DirectML requires DmlExecutionProvider only; CPU fallback is disabled")
 +        directml = "DmlExecutionProvider" in self.providers
 +        if directml and self.providers != ["DmlExecutionProvider"]:
@@ -71,17 +72,17 @@ index 95a4078..7e94a5e 100644
              providers=self.providers,
              provider_options=self.provider_options,
              sess_options=self.sess_options,
-+            enable_fallback=False,
++            **({"enable_fallback": False} if sys.platform == "win32" else {}),
          )
 +        if "DmlExecutionProvider" in self.providers:
 +            active_providers = self.session.get_providers()
 +            if active_providers != ["DmlExecutionProvider"]:
 +                raise RuntimeError(f"DirectML session initialization failed; active providers: {active_providers}")
 +
- 
+
      def get_inputs(self) -> Sequence[SessionNode]:
          inputs: Sequence[SessionNode] = self.session.get_inputs()
-@@ -83,6 +99,10 @@ class OrtSession:
+@@ -83,6 +101,10 @@
          input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
          run_options: Any = None,
      ) -> list[NDArray[np.float32]]:
@@ -92,11 +93,13 @@ index 95a4078..7e94a5e 100644
          if "MIGraphXExecutionProvider" in self.providers:
              model_key = self.model_path.resolve().as_posix()
              input_key = (model_key, _migraphx_input_signature(input_feed))
-@@ -113,7 +133,13 @@ class OrtSession:
+@@ -113,7 +135,15 @@
      def _providers_default(self) -> list[str]:
          available_providers = set(ort.get_available_providers())
          log.debug(f"Available ORT providers: {available_providers}")
 -        return [provider for provider in SUPPORTED_PROVIDERS if provider in available_providers]
++        if sys.platform != "win32":
++            return [provider for provider in SUPPORTED_PROVIDERS if provider in available_providers]
 +        if settings.accelerator == "cpu":
 +            return ["CPUExecutionProvider"]
 +        if "DmlExecutionProvider" not in available_providers:
@@ -104,10 +107,10 @@ index 95a4078..7e94a5e 100644
 +                "DirectML was requested but DmlExecutionProvider is not available in this ONNX Runtime build."
 +            )
 +        return ["DmlExecutionProvider"]
- 
+
      @property
      def provider_options(self) -> list[dict[str, Any]]:
-@@ -131,6 +157,8 @@ class OrtSession:
+@@ -131,6 +161,8 @@
              match provider:
                  case "CPUExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested"}

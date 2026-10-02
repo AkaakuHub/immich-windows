@@ -109,7 +109,7 @@ try {
     $updatePath = Join-Path $currentRoot 'installer\Update-FromRelease.ps1'
     $envFile = Join-Path $dataRoot 'immich.env'
     $fixtureIcon = Join-Path $currentRoot 'build\www\favicon.ico'
-    $inertScript = "param(`$InstallRoot, `$DataRoot, `$EnvFile, `$Scope)`r`nthrow 'Fixture actions must not run during --check.'"
+    $inertScript = "param(`$InstallRoot, `$DataRoot, `$EnvFile, `$Scope, [switch]`$Interactive, `$Language)`r`nthrow 'Fixture actions must not run during --check.'"
     foreach ($path in @($commonPath, $startPath, $stopPath, $updatePath)) { Write-Fixture $path $inertScript }
     Write-Fixture $envFile "IMMICH_PORT=2283`r`nDB_PASSWORD=fixture-secret-must-not-leak"
     Write-Fixture $fakePowerShell 'This is deliberately not an executable.'
@@ -176,7 +176,7 @@ try {
     $expectedJapanese = @{ Open = 'Immichを開く'; Start = 'Immichを起動'; Stop = 'Immichを停止'; Update = 'Immichを更新'; Exit = 'トレイを終了（サーバーは停止しません）'; Continue = 'Enterキーを押して閉じます' }
     foreach ($field in $expectedEnglish.Keys) { Assert-Equal $english.$field $expectedEnglish[$field] ("English $field") }
     foreach ($field in $expectedJapanese.Keys) { Assert-Equal $japanese.$field $expectedJapanese[$field] ("Japanese $field") }
-    $textFields = @('Open', 'Start', 'Stop', 'Update', 'Exit', 'Busy', 'Failed', 'Cancelled', 'Continue', 'NotElevated', 'Started', 'Stopped', 'Updated')
+    $textFields = @('Open', 'Start', 'Stop', 'Update', 'Exit', 'Busy', 'Failed', 'Cancelled', 'Continue', 'NotElevated', 'Started', 'Stopped', 'Updated', 'Language')
     foreach ($culture in @('ja_JP', 'JA-jp', 'ja')) {
         $text = [Immich.Windows.TrayText]::ForCulture($culture)
         foreach ($field in $textFields) { Assert-Equal $text.$field $japanese.$field ("Japanese culture $culture / $field") }
@@ -234,7 +234,12 @@ try {
                     Assert-Equal $invocations[0].InvocationOperator ([Management.Automation.Language.TokenKind]::Ampersand) ($label + ': script invocation')
                     Assert-CommandParameter $invocations[0] 'InstallRoot' $installRoot $label
                     Assert-CommandParameter $invocations[0] 'DataRoot' $dataRoot $label
-                    if ($action -eq 'update') { Assert-CommandParameter $invocations[0] 'Scope' $scope $label }
+                    if ($action -eq 'update') {
+                        Assert-CommandParameter $invocations[0] 'Scope' $scope $label
+                        Assert-CommandParameter $invocations[0] 'Language' $text.Language $label
+                        Assert-True ($command.Contains(' -Interactive ')) ($label + ': updater retains shell result until Enter')
+                        Assert-True ($command.Contains('if ($LASTEXITCODE -in @(10,20)) { exit $LASTEXITCODE }')) ($label + ': latest and acknowledged-failure outcomes remain distinct')
+                    }
                     else { Assert-CommandParameter $invocations[0] 'EnvFile' $envFile $label }
                     $display = @(Find-Command $ast 'Write-Host')
                     $pause = @(Find-Command $ast 'Read-Host')
@@ -320,9 +325,11 @@ try {
     $tracePath = Join-Path $base 'failure-prompt.txt'
     foreach ($action in @('start', 'stop', 'update')) {
         $scriptPath = switch ($action) { 'start' { $startPath } 'stop' { $stopPath } 'update' { $updatePath } }
-        foreach ($mode in @('success', 'throw', 'native-nonzero')) {
-            $body = switch ($mode) { 'success' { "Write-Output 'fixture success'" } 'throw' { "throw 'fixture controlled failure'" } 'native-nonzero' { 'exit 7' } }
-            Write-Fixture $scriptPath ("param(`$InstallRoot, `$DataRoot, `$EnvFile, `$Scope)`r`n" + $body)
+        $modes = @('success', 'throw', 'native-nonzero')
+        if ($action -eq 'update') { $modes += @('latest', 'acknowledged-failure') }
+        foreach ($mode in $modes) {
+            $body = switch ($mode) { 'success' { "Write-Output 'fixture success'" } 'throw' { "throw 'fixture controlled failure'" } 'native-nonzero' { 'exit 7' } 'latest' { 'exit 10' } 'acknowledged-failure' { 'exit 20' } }
+            Write-Fixture $scriptPath ("param(`$InstallRoot, `$DataRoot, `$EnvFile, `$Scope, [switch]`$Interactive, `$Language)`r`n" + $body)
             if ([IO.File]::Exists($tracePath)) { [IO.File]::Delete($tracePath) }
             $text = if ($action -eq 'update') { $japanese } else { $english }
             $prelude = '$global:TrayTestTrace=' + (Quote-PowerShell $tracePath) + '; ' + @'
@@ -335,6 +342,10 @@ function Read-Host { param($Prompt) [IO.File]::AppendAllText($global:TrayTestTra
             if ($mode -eq 'success') {
                 Assert-Equal $result.ExitCode 0 ("$action success returns zero")
                 Assert-True (-not [IO.File]::Exists($tracePath)) ("$action success does not request Enter")
+            } elseif ($mode -in @('latest', 'acknowledged-failure')) {
+                $expectedExit = if ($mode -eq 'latest') { 10 } else { 20 }
+                Assert-Equal $result.ExitCode $expectedExit ("$action $mode preserves the updater result")
+                Assert-True (-not [IO.File]::Exists($tracePath)) ("$action $mode must not prompt or display a duplicate result")
             } else {
                 Assert-Equal $result.ExitCode 1 ("$action $mode returns nonzero after Enter")
                 Assert-True ([IO.File]::Exists($tracePath)) ("$action $mode displays and retains failure")

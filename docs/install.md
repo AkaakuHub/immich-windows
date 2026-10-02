@@ -61,6 +61,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 成功後は`http://127.0.0.1:2283/`へアクセスします。新規DBには最初の管理者を作成します。既存DBを移行する場合は、[移行手順](migration.md)に従って`-DoNotStart`付きで導入してください。これは直後の起動だけを抑止し、自動起動の登録は行います。
 
+### Machine Learningの待機時のメモリ
+
+Windowsでも既定は処理ワーカー1個です。モデルは必要なときに読み込み、使用後に本家の待機時間（既定300秒）を超えるとワーカーを終了してモデルとネイティブメモリを解放します。Uvicornの管理プロセスが新しいワーカーを起動するので、次の要求も受けられます。待機中もPythonなどの基本メモリは必要ですが、対策としてモデルを常時読み込んだりTTLを無効化したりはしません。
+
 ### Machine LearningのDirectML
 
 Windows版は`onnxruntime-directml`を使用し、CLIP、顔検出・顔認識、OCRのONNX推論をDirectML対応GPUへ送ることができます。`immich.env`で次を指定します。

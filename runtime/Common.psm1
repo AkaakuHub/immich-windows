@@ -469,6 +469,60 @@ function Get-CurrentReleaseTarget {
     return [IO.Path]::GetFullPath([string]$target)
 }
 
+function Assert-ImmichStartupAllowed {
+    param([Parameter(Mandatory)][string]$EnvFile,[Parameter(Mandatory)][string]$InstallRoot,
+          [switch]$ServiceProcess,[switch]$UpgradeInProgress)
+    $statePath=Join-Path (Split-Path -Parent $EnvFile) 'state\upgrade-recovery.json'
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return }
+    $state=Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    if ($state.status -in @('qualified','recovered','preparation-failed','backup-failed')) { return }
+    $blocked="Upgrade is incomplete ($($state.status)); explicit recovery is required before startup."
+    if ($state.status -notin @('candidate-installed','recovery-starting')) { throw $blocked }
+    # Services run in another process. CurrentUser launches run inside the updater,
+    # where WaitOne succeeds recursively, so require its recorded controller too.
+    $controlled=$UpgradeInProgress -and $state.PSObject.Properties['controllerProcessId'] -and
+        [int]$state.controllerProcessId -eq $PID
+    if (-not $ServiceProcess -and -not $controlled) { throw $blocked }
+    $key=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($InstallRoot)).ToUpperInvariant())))
+    if (-not $state.PSObject.Properties['controllerMutexName'] -or
+        [string]$state.controllerMutexName -notmatch "^Global\\ImmichWindowsStartup-$key-[0-9a-f]{32}$") { throw $blocked }
+    # A different updater may own the global serialization lock while inspecting
+    # stale state. Only this recorded attempt's live gate authorizes startup.
+    try { $gate=[Threading.Mutex]::OpenExisting([string]$state.controllerMutexName) }
+    catch [Threading.WaitHandleCannotBeOpenedException] { throw $blocked }
+    $available=$false
+    try {
+        try { $available=$gate.WaitOne(0) } catch [Threading.AbandonedMutexException] { $available=$true; throw $blocked }
+        if (($ServiceProcess -and $available) -or ($controlled -and -not $available)) { throw $blocked }
+    } finally {
+        if ($available) { $gate.ReleaseMutex() }
+        $gate.Dispose()
+    }
+}
+
+function Set-ImmichServerDependencies {
+    param([Parameter(Mandatory)][string]$Configuration,[AllowNull()][string]$PreviousConfiguration)
+    $desiredXml=[xml]$Configuration
+    if ([string]$desiredXml.service.id -ne 'ImmichServer') { throw 'Invalid Immich server service configuration.' }
+    $required=@($desiredXml.SelectNodes('/service/depend') | ForEach-Object { $_.InnerText })
+    $managed=@('ImmichValkey') # Also repair stale registrations left by an older updater.
+    if ($PreviousConfiguration) {
+        $previousXml=[xml]$PreviousConfiguration
+        if ([string]$previousXml.service.id -ne 'ImmichServer') { throw 'Invalid previous Immich server service configuration.' }
+        $managed+=@($previousXml.SelectNodes('/service/depend') | ForEach-Object { $_.InnerText })
+    }
+    $properties=Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\ImmichServer' -ErrorAction Stop
+    $property=$properties.PSObject.Properties['DependOnService']
+    $groups=$properties.PSObject.Properties['DependOnGroup']
+    $existing=@(if ($property) { $property.Value }; if ($groups) { $groups.Value | ForEach-Object { '+'+$_ } })
+    # Preserve dependencies added directly by the operator, outside our generated XML.
+    $desired=@(@($existing | Where-Object { $_ -notin $managed })+$required | Select-Object -Unique)
+    if ((@($existing | Sort-Object) -join '/') -ieq (@($desired | Sort-Object) -join '/')) { return }
+    $argument=if ($desired.Count) { $desired -join '/' } else { '/' }
+    & sc.exe config ImmichServer depend= $argument | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Could not reconcile ImmichServer service dependencies (exit $LASTEXITCODE)." }
+}
+
 function Get-ImmichUserProcess {
     param([string]$InstallRoot,[string]$DataRoot,[string]$Name)
     $pidFile=Join-Path $DataRoot "services\$Name.pid"

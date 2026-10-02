@@ -240,7 +240,9 @@ class Options:
 settings = SimpleNamespace(accelerator='directml', device_id='2', model_arena=True, model_inter_op_threads=4, model_intra_op_threads=3)
 factory = Mock()
 ort = SimpleNamespace(InferenceSession=factory, SessionOptions=Options, ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=seq, ORT_PARALLEL=parallel), get_available_providers=lambda: ['CPUExecutionProvider','DmlExecutionProvider'])
-globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings)
+platform = SimpleNamespace(platform='win32')
+supported = ['CUDAExecutionProvider', 'MIGraphXExecutionProvider', 'OpenVINOExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']
+globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported)
 exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), globals_)
 Session=globals_['OrtSession']
 def fresh(providers=None, options=None):
@@ -294,7 +296,17 @@ settings.accelerator='directml'
 factory.reset_mock(return_value=True,side_effect=True)
 factory.return_value.get_providers.return_value=['CPUExecutionProvider']
 raises(lambda:Session('model.onnx'),RuntimeError)
-print('DirectML policy: 11 cases passed (mocked ORT; no hardware inference claim).')
+# Applying Windows patches must preserve upstream auto-selection and ORT fallback elsewhere.
+settings.accelerator='unused-non-windows-value'
+ort.get_available_providers=lambda:list(reversed(supported))
+for platform_name in ('linux', 'darwin'):
+    platform.platform=platform_name
+    factory.reset_mock(return_value=True,side_effect=True)
+    s=Session('model.onnx',provider_options=[])
+    assert s.providers==supported and s._run_lock is None
+    assert 'enable_fallback' not in factory.call_args.kwargs
+    assert not s.sess_options.entries
+print('DirectML policy: 13 cases passed (mocked ORT; no hardware inference claim).')
 '@
     & python -c $policyTest $SourceRoot
     if ($LASTEXITCODE -ne 0) { throw 'DirectML policy tests failed.' }

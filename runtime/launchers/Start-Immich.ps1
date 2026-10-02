@@ -4,13 +4,15 @@ param(
     [int]$TimeoutSeconds = 120,
     [string]$EnvFile = (Join-Path $env:LOCALAPPDATA 'Immich\immich.env'),
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'Programs\Immich'),
-    [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'Immich')
+    [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'Immich'),
+    [switch]$UpgradeInProgress
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'Load-ImmichEnv.ps1') -EnvFile $EnvFile
+Assert-ImmichStartupAllowed -EnvFile $EnvFile -InstallRoot $InstallRoot -UpgradeInProgress:$UpgradeInProgress
 
 $redisMode = if ($env:IMMICH_WINDOWS_REDIS_MODE) { $env:IMMICH_WINDOWS_REDIS_MODE } else { 'BundledValkey' }
 $startupProcesses = [ordered]@{}

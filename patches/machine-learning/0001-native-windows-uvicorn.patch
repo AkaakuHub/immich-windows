@@ -1,5 +1,5 @@
 From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] machine-learning: use native Uvicorn launcher on Windows
+Subject: [PATCH] machine-learning: supervise native Windows Uvicorn workers
 
 diff --git a/machine-learning/immich_ml/config.py b/machine-learning/immich_ml/config.py
 --- a/machine-learning/immich_ml/config.py
@@ -55,23 +55,35 @@ diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml
  from ipaddress import ip_address
  from pathlib import Path
  
-@@ -25,6 +26,20 @@
+@@ -25,6 +26,32 @@
  if is_ipv6(bind_host):
      bind_host = f"[{bind_host}]"
  bind_address = f"{bind_host}:{non_prefixed_settings.immich_port}"
 +
 +if sys.platform == "win32":
 +    import uvicorn
++    from uvicorn.supervisors import Multiprocess
++
++    from .config import CustomUvicornServer
 +
 +    windows_host = non_prefixed_settings.immich_host.strip("[]")
-+    uvicorn.run(
++    config = uvicorn.Config(
 +        "immich_ml.main:app",
 +        host=windows_host,
 +        port=non_prefixed_settings.immich_port,
 +        workers=settings.workers,
++        # Supervised workers share a listener even when workers=1. Match
++        # Uvicorn's Windows multiprocess loop to avoid Proactor/IOCP reuse.
++        loop="asyncio:SelectorEventLoop",
 +        timeout_keep_alive=settings.http_keepalive_timeout_s,
 +        log_config=str(module_dir / "log_conf.json"),
 +    )
++    # Immich exits idle workers to release model/native memory. Uvicorn.run
++    # skips supervision for one worker, leaving a normal Windows install down.
++    # Keep app imports in the child so the supervisor stays lightweight.
++    server = CustomUvicornServer(config=config)
++    with config.bind_socket() as sock:
++        Multiprocess(config, target=server.run, sockets=[sock]).run()
 +    raise SystemExit(0)
  
  try:
