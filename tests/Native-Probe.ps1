@@ -21,6 +21,8 @@ try {
     $child = Join-Path $base 'child probe.ps1'
     @'
 param([string]$Mode, [string]$Value)
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$argumentCodeUnits = [int[]][char[]]$Value -join ','
 if ($Mode -eq 'critical-zero') {
     # Simulate a launcher overriding its inherited env and a native logger which
     # returns success despite the critical (the original release regression).
@@ -41,7 +43,7 @@ if ($Mode -eq 'critical-zero') {
 } else {
     [Console]::Error.WriteLine('ordinary diagnostic')
 }
-[Console]::Out.Write((@{ debug = $env:G_DEBUG; value = $Value } | ConvertTo-Json -Compress))
+[Console]::Out.Write((@{ debug = $env:G_DEBUG; value = $Value; argumentCodeUnits = $argumentCodeUnits } | ConvertTo-Json -Compress))
 '@ | Set-Content -LiteralPath $child
     $oldStderr = [Console]::Error
     $capturedStderr = [IO.StringWriter]::new()
@@ -53,7 +55,8 @@ if ($Mode -eq 'critical-zero') {
             $raw = @(Invoke-ImmichNativeProbe -FilePath $pwsh -ArgumentList @('-NoProfile','-NonInteractive','-File',$child,'ok',"space ' and ü") -ProbeName fixture)
             Check ($raw.Count -eq 1) 'Diagnostics polluted the stdout success stream.'
             $report = $raw[0] | ConvertFrom-Json
-            Check ($report.value -ceq "space ' and ü") 'Native argument quoting or UTF-8 output changed.'
+            Check ($report.argumentCodeUnits -ceq ([int[]][char[]]"space ' and ü" -join ',')) 'Native argument quoting changed.'
+            Check ($report.value -ceq "space ' and ü") "UTF-8 output changed (received code units: $([int[]][char[]]$report.value -join ','))."
             $expectedDebug = (@($debug,'fatal-criticals') | Where-Object { $_ }) -join ','
             Check ($report.debug -ceq $expectedDebug) 'Child G_DEBUG did not preserve flags and enable fatal-criticals.'
             Check ([Environment]::GetEnvironmentVariable('G_DEBUG', 'Process') -ceq $expectedParent) 'Successful probe changed parent G_DEBUG.'
@@ -141,18 +144,31 @@ module.exports = sharp;
 param($EnvFile, $Arguments)
 $env:G_DEBUG = 'overridden by admin env loader'
 if ($env:IMMICH_NATIVE_TEST_MODE -eq 'critical') {
-    [Console]::Error.WriteLine('(process:123): GLib-CRITICAL **: TLS callback not invoked during schema import')
+    [Console]::Error.WriteLine('(process:123): GLib-CRITICAL **: TLS callback not invoked during schema import: ü')
 } elseif ($env:IMMICH_NATIVE_TEST_MODE -eq 'drift') {
     Write-Output 'Detected schema drift'
-} else { Write-Output 'schema-check fixture OK' }
+} else { Write-Output 'schema-check fixture OK: ü' }
 exit 0
 '@ | Set-Content (Join-Path $launchers 'immich-admin.ps1')
-    $schemaArgs = @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $migration 'Schema-Check.ps1'),'-EnvFile',(Join-Path $base 'unused.env'),'-InstallRoot',$install)
+    # Reproduce the Windows OEM writer on every OS. The production schema script
+    # must select UTF-8 itself, and restore the caller's code page on success and
+    # on schema drift. Arguments remain separate -File tokens, never shell code.
+    $schemaHost = Join-Path $base 'schema OEM host.ps1'
+    @'
+param($Schema, $InstallRoot)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437)
+try { & $Schema -EnvFile 'unused.env' -InstallRoot $InstallRoot }
+finally {
+    if ([Console]::OutputEncoding.CodePage -ne 437) { throw 'Schema-check failed to restore the caller output encoding.' }
+}
+'@ | Set-Content -LiteralPath $schemaHost
+    $schemaArgs = @('-NoLogo','-NoProfile','-NonInteractive','-File',$schemaHost,'-Schema',(Join-Path $migration 'Schema-Check.ps1'),'-InstallRoot',$install)
     $env:IMMICH_NATIVE_TEST_MODE = 'ok'
     $schemaOutput = Invoke-ImmichNativeProbe -FilePath $pwsh -ArgumentList $schemaArgs -ProbeName 'Immich schema-check'
-    Check ($schemaOutput -match 'schema-check fixture OK') 'Clean schema-check failed.'
+    Check ($schemaOutput -match 'schema-check fixture OK: ü') 'Clean schema-check failed or its UTF-8 output was corrupted.'
     $env:IMMICH_NATIVE_TEST_MODE = 'critical'
-    Expect-Failure { Invoke-ImmichNativeProbe -FilePath $pwsh -ArgumentList $schemaArgs -ProbeName 'Immich schema-check' 6>$null } '*GLib critical/error diagnostic*exit code 0*TLS callback not invoked during schema import*'
+    Expect-Failure { Invoke-ImmichNativeProbe -FilePath $pwsh -ArgumentList $schemaArgs -ProbeName 'Immich schema-check' 6>$null } '*GLib critical/error diagnostic*exit code 0*TLS callback not invoked during schema import: ü*'
     $env:IMMICH_NATIVE_TEST_MODE = 'drift'
     Expect-Failure { Invoke-ImmichNativeProbe -FilePath $pwsh -ArgumentList $schemaArgs -ProbeName 'Immich schema-check' 6>$null } '*exit code 1*Immich schema-check failed*'
     Check ($env:G_DEBUG -ceq 'gc-friendly') 'Schema-check changed parent G_DEBUG.'

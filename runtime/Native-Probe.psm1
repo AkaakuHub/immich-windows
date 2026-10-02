@@ -19,6 +19,8 @@ function Invoke-ImmichNativeProbe {
     $start.WorkingDirectory = (Get-Location).ProviderPath
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    # These are decoders, not child-process settings. Node emits UTF-8 natively;
+    # PowerShell probe scripts must explicitly select UTF-8 for their writers.
     $start.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
     $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
     foreach ($argument in $ArgumentList) { $start.ArgumentList.Add($argument) }
