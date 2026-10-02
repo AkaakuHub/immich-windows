@@ -21,7 +21,7 @@ jobs:
         id: cache
         with:
           path: artifacts/native/sharp-libvips-custom
-          key: libvips-${{ runner.os }}-${{ steps.cache-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+          key: libvips-${{ runner.os }}-${{ steps.cache-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/NativeMediaValidation.psm1', 'build/Common.psm1', 'media-patches/**') }}
       - name: Report cache status
         shell: pwsh
         run: "\"libvips cache hit: ${{ steps.cache.outputs.cache-hit }}; restored: ${{ steps.cache.outputs.cache-matched-key }}\" >> $env:GITHUB_STEP_SUMMARY"

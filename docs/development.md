@@ -50,6 +50,12 @@ Windows runnerの使い捨てDBで起動・更新・設定保持・同一版拒�
 
 ドキュメントのみの変更では自動ビルドしません。native依存は内容ベースの既存キャッシュを再利用し、改訂番号だけでは再ビルドしません。アプリ側も復元したキャッシュの入力署名を確認して必要な段階だけ再ビルドします。
 
+### GLibのWindows初期化の検証
+
+GLib 2.89.3には、Windows用TLS（thread-local storage）コールバックの参照がリンカーから失われる問題があります。`media-patches/libvips`で[上流の修正29dce8a5](https://github.com/GNOME/glib/commit/29dce8a5a7878cd0863373255889d3dff79906c9)をバックポートします。通信のTLS証明書の問題ではありません。
+
+ネイティブビルドの入力ハッシュにパッチを含め、修正前のGLibをキャッシュから再利用しません。生成したDLLのPE TLSディレクトリを検査し、Sharpの実画像変換とインストール後の検証ではGLibのCRITICALを失敗として扱います。終了コードだけで合格にしません。
+
 ### PRからmainへの成果物の再利用
 
 - PRの実際のcheckout（GitHubが作るmerge commit）と、4つの配布ファイルのSHA-256を全テスト成功後に記録します。成果物は14日保持します

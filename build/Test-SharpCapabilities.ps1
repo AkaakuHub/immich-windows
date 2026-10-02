@@ -5,6 +5,7 @@ param(
     [string[]]$Fixture = @()
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\Native-Probe.psm1') -Force
 Assert-WindowsX64
 $ApplicationRoot=(Resolve-Path -LiteralPath $ApplicationRoot).Path
 $nodePath = Join-Path (Get-RepositoryRoot) '.tools\node\node.exe'
@@ -18,6 +19,7 @@ New-Item -ItemType Directory -Path (Split-Path $scriptPath -Parent) -Force | Out
 $serverRoot = Join-Path $ApplicationRoot 'server'
 $smokeMarker = Join-Path $ApplicationRoot 'sharp-libvips-smoke.json'
 $qualificationMarker = Join-Path $ApplicationRoot 'sharp-libvips-qualification.json'
+Remove-Item -LiteralPath $smokeMarker -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $qualificationMarker -Force -ErrorAction SilentlyContinue
 $js = @'
 const path = require('node:path');
@@ -50,13 +52,10 @@ if(-not(Test-Path -LiteralPath $sharpLib -PathType Container)){throw 'Deployed @
 $previousPath=$env:PATH
 $env:PATH="$sharpLib;$previousPath"
 try{
-    $rawReport=@(& $node.FullName $scriptPath $serverRoot @fixturePaths)
-    $nodeExit=$LASTEXITCODE
+    $reportText=Invoke-ImmichNativeProbe -FilePath $node.FullName -ArgumentList (@($scriptPath,$serverRoot)+$fixturePaths) -ProbeName 'Sharp capability test'
 }
 finally{$env:PATH=$previousPath}
-$reportText=$rawReport -join "`n"
 if($reportText){Write-Host $reportText}
-if ($nodeExit -ne 0) { throw "Sharp capability test failed with exit code $nodeExit" }
 try{$report=$reportText|ConvertFrom-Json}catch{throw "Sharp capability test did not emit valid JSON: $($_.Exception.Message)"}
 
 $bundleMetadataPath=Join-Path $ApplicationRoot 'media-stack\sharp-libvips\immich-windows-libvips.json'

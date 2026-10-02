@@ -3,11 +3,13 @@
 param([string]$Destination)
 
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1') -Force
 if(-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64'){
     throw 'The libvips cross-build requires an x64 host.'
 }
 $root=Get-RepositoryRoot
 $v=(Read-JsonFile (Join-Path $root 'dependencies/versions.json')).sharpLibvips
+$nativeIdentity=Get-NativeMediaBuildIdentity -RepositoryRoot $root
 if(-not $Destination){$Destination=Join-Path $root 'artifacts/native/sharp-libvips-custom'}
 
 $git=Assert-Command git
@@ -35,7 +37,8 @@ $dockerfileText=Get-Content -Raw -LiteralPath $dockerfile
 $downloadMount='RUN --mount=type=cache,id=mxe-download,target=/usr/local/mxe/pkg \'
 $downloadMountCount=[regex]::Matches($dockerfileText,[regex]::Escape($downloadMount)).Count
 if($downloadMountCount -ne 1){throw "Expected one MXE download cache mount in Dockerfile; found $downloadMountCount."}
-$targetCacheId="immich-mxe-$($v.version)-$($v.commit)-$($v.target)"
+# Package stamps in this mount can otherwise reuse GLib after its source patch changes.
+$targetCacheId="immich-mxe-$($v.target)-$($nativeIdentity.nativeBuildInputsSha256)"
 $targetMount="RUN --mount=type=cache,id=mxe-download,target=/usr/local/mxe/pkg \`n  --mount=type=cache,id=$targetCacheId,target=/usr/local/mxe/usr/$($v.target),sharing=locked \"
 $dockerfileText=$dockerfileText.Replace($downloadMount,$targetMount)
 $makeLine='    GIT_COMMIT=$GIT_COMMIT'
@@ -89,6 +92,14 @@ Copy-Item -LiteralPath $immichPatch -Destination $containerPatch -Force
 $popplerPatch=Join-Path $root 'media-patches/libvips/0004-poppler-fontinfo-vector.patch'
 Assert-FileExists $popplerPatch|Out-Null
 Copy-Item -LiteralPath $popplerPatch -Destination (Join-Path $source 'build/patches/poppler-0001-fontinfo-vector.patch') -Force
+$glibTlsPatch=Join-Path $root 'media-patches/libvips/0006-glib-win32-tls-directory.patch'
+Assert-FileExists $glibTlsPatch|Out-Null
+# overrides.mk selects glib-[0-9]*.patch, so this participates in the actual GLib build.
+$glibOverrides=Get-Content -Raw -LiteralPath (Join-Path $source 'build/overrides.mk')
+if($glibOverrides -notmatch 'glib_PATCHES\s*:=.*patches/glib-\[0-9\]\*\.patch'){
+    throw 'The upstream GLib patch discovery recipe changed.'
+}
+Copy-Item -LiteralPath $glibTlsPatch -Destination (Join-Path $source 'build/patches/glib-3-win32-tls-directory.patch') -Force
 $pluginDirectoryPatch=Join-Path $root 'media-patches/libvips/0005-win32-plugin-directory-separators.patch'
 Assert-FileExists $pluginDirectoryPatch|Out-Null
 Copy-Item -LiteralPath $pluginDirectoryPatch -Destination (Join-Path $source 'build/patches/win32-plugin-directory-separators.patch') -Force
@@ -141,6 +152,7 @@ foreach($dll in $dlls){
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force|Out-Null
     Copy-Item -LiteralPath $dll.FullName -Destination $target -Force
 }
+Assert-WindowsPeTlsDirectory -Path (Join-Path $lib 'libglib-2.0-0.dll')
 foreach($name in @('versions.json','LICENSE','README.md','ChangeLog')){
     $candidate=Join-Path $vipsRoot.FullName $name
     if(Test-Path -LiteralPath $candidate){Copy-Item -LiteralPath $candidate -Destination (Join-Path $Destination $name) -Force}
@@ -164,6 +176,8 @@ $metadata=[ordered]@{
     libvipsRevision=$v.libvipsRevision
     immichBaseImagesCommit=$v.immichBaseImagesCommit
     immichLoaderPatch=$v.immichLoaderPatch
+    mediaPatchesSha256=$nativeIdentity.mediaPatchesSha256
+    nativeBuildInputsSha256=$nativeIdentity.nativeBuildInputsSha256
     dllCount=$dlls.Count
     builtAtUtc=[DateTime]::UtcNow.ToString('o')
     warning='HEVC build includes patent-encumbered and GPL-licensed components. Preserve upstream license notices and review distribution obligations before sharing binaries.'

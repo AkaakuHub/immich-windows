@@ -57,12 +57,16 @@ Invoke-CachedBuildStage -Destination $app -StateName 'build-inputs.json' -Inputs
 Write-BuildLock -Path (Join-Path $app 'build\build-lock.json') -Versions $versions
 if ($CustomSharpLibvipsBundle) {
     $bundle=(Resolve-Path -LiteralPath $CustomSharpLibvipsBundle).Path
+    Import-Module (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1') -Force
+    Assert-NativeMediaBundleIdentity -BundleRoot $bundle -RepositoryRoot $root
     $mediaInputs=[ordered]@{
         application=(Get-Item -LiteralPath (Join-Path $app 'build-inputs.json')).LastWriteTimeUtc.Ticks
         bundle=$bundle
         bundleBuiltAt=(Read-JsonFile (Join-Path $bundle 'immich-windows-libvips.json')).builtAtUtc
-        stage=(Get-Item -LiteralPath (Join-Path $PSScriptRoot 'Stage-CustomSharpLibvips.ps1')).LastWriteTimeUtc.Ticks
-        test=(Get-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-SharpCapabilities.ps1')).LastWriteTimeUtc.Ticks
+        stage=(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot 'Stage-CustomSharpLibvips.ps1')).Hash
+        test=(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot 'Test-SharpCapabilities.ps1')).Hash
+        nativeValidation=(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1')).Hash
+        probe=(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root 'runtime/Native-Probe.psm1')).Hash
         fixtures=@($SharpFixture | ForEach-Object { $file=Get-Item -LiteralPath $_; "$($file.FullName):$($file.LastWriteTimeUtc.Ticks)" })
     }
     Invoke-CachedBuildStage -Destination $app -StateName 'media-build-inputs.json' -Inputs $mediaInputs -Required @('sharp-libvips-injection.json','sharp-libvips-qualification.json') -Build {

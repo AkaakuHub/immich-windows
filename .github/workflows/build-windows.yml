@@ -64,6 +64,8 @@ jobs:
           ./tests/Update-Workflow.ps1
           ./tests/Dependency-Reuse.ps1
           ./tests/Startup-Workflow.ps1
+          ./tests/NativeMedia-Build.ps1
+          ./tests/Native-Probe.ps1
   codec:
     needs: [plan, validate]
     if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
@@ -79,7 +81,7 @@ jobs:
         id: codec-cache
         with:
           path: artifacts/native/sharp-libvips-custom
-          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/Common.psm1', 'media-patches/**') }}
+          key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/NativeMediaValidation.psm1', 'build/Common.psm1', 'media-patches/**') }}
       - name: Cross-build Windows libvips
         if: steps.codec-cache.outputs.cache-hit != 'true'
         shell: pwsh

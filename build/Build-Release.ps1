@@ -10,6 +10,7 @@ param(
     [string]$PackageDestination
 )
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1') -Force
 Assert-WindowsX64
 $root=Get-RepositoryRoot
 if(-not $AllowStockSharp -and @($SharpFixture).Count -eq 0){
@@ -27,7 +28,9 @@ if(-not $CustomSharpLibvipsBundle){
     $useCached=$false
     if((Test-Path -LiteralPath $metadataPath -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $cached 'lib\libvips-42.dll') -PathType Leaf)){
         $metadata=Read-JsonFile $metadataPath
-        $patches=Get-ChildItem -LiteralPath (Join-Path $root 'media-patches\libvips') -Filter '*.patch' -File
+        $nativeIdentityMatches=$false
+        try{Assert-NativeMediaBundleIdentity -BundleRoot $cached -RepositoryRoot $root;$nativeIdentityMatches=$true}
+        catch{Write-Host "Cached native bundle must be rebuilt: $($_.Exception.Message)"}
         $useCached=$metadata.libvips -eq $v.version -and $metadata.sharp -eq $sharp -and
             $metadata.sourceCommit -eq $v.commit -and $metadata.target -eq $v.target -and
             $metadata.variant -eq $v.variant -and $metadata.jpeg -eq $v.jpeg -and
@@ -35,7 +38,7 @@ if(-not $CustomSharpLibvipsBundle){
             $metadata.immichBaseImagesCommit -eq $v.immichBaseImagesCommit -and
             $metadata.immichLoaderPatch -eq $v.immichLoaderPatch -and
             [bool]$metadata.hevc -eq [bool]$v.hevc -and
-            @($patches | Where-Object { $_.LastWriteTimeUtc -gt [datetime]$metadata.builtAtUtc }).Count -eq 0
+            $nativeIdentityMatches
     }
     if($useCached){
         $CustomSharpLibvipsBundle=$cached
@@ -48,6 +51,7 @@ if(-not $CustomSharpLibvipsBundle){
 if(-not $CustomSharpLibvipsBundle -and -not $AllowStockSharp){
     throw 'No qualified custom Sharp/libvips bundle is available. Build it or pass -CustomSharpLibvipsBundle before building the application.'
 }
+if($CustomSharpLibvipsBundle){Assert-NativeMediaBundleIdentity -BundleRoot $CustomSharpLibvipsBundle -RepositoryRoot $root}
 & (Join-Path $PSScriptRoot 'Build-All.ps1') -PostgresRoot $PostgresRoot -InstallCargoPgrx:$InstallCargoPgrx -CustomSharpLibvipsBundle $CustomSharpLibvipsBundle -SharpFixture $SharpFixture
 $packageArgs=@{}
 if($PackageDestination){$packageArgs.Destination=$PackageDestination}
