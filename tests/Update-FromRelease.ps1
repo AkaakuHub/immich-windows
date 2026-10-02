@@ -7,10 +7,15 @@ $base=Join-Path ([IO.Path]::GetTempPath()) ('immich-release-ui-tests-'+[guid]::N
 $source=Get-Content -Raw (Join-Path $repo 'packaging/Update-FromRelease.ps1')
 $common=Get-Content -Raw (Join-Path $repo 'runtime/Common.psm1')
 $common+=@'
+# Match the parent pipe decoder explicitly; Windows console/OEM defaults differ.
+if ($env:IMMICH_TEST_REAL_INPUT -eq '1') {[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)}
 function Assert-Administrator {}
 function Resolve-ImmichInstallPaths {param($Scope,$InstallRoot,$DataRoot) return @{InstallRoot=$InstallRoot;DataRoot=$DataRoot}}
 function Read-Host {
     param($Prompt)
+    # Windows ConsoleHost may write Read-Host's prompt directly to its console,
+    # bypassing redirected stdout. Record the actual localized argument separately.
+    [IO.File]::WriteAllText($env:IMMICH_TEST_PROMPT,[string]$Prompt,[Text.UTF8Encoding]::new($false))
     Add-Content $env:IMMICH_TEST_EVENTS enter
     if ($env:IMMICH_TEST_REAL_INPUT -eq '1') {return Microsoft.PowerShell.Utility\Read-Host $Prompt}
     Write-Host $Prompt; return ''
@@ -75,6 +80,7 @@ try {
             $env:IMMICH_TEST_MODE=$mode
             $env:IMMICH_TEST_REAL_INPUT='0'
             $env:IMMICH_TEST_EVENTS=Join-Path $case events
+            $env:IMMICH_TEST_PROMPT=Join-Path $case prompt.txt
             Set-Content "$package/installer/Update-FromRelease.ps1" $source
             Set-Content "$package/runtime/Common.psm1" $common
             Set-Content "$package/installer/Test-ReleasePackage.ps1" 'param($PackageRoot,$Version); Add-Content $env:IMMICH_TEST_EVENTS validate; if($env:IMMICH_TEST_MODE -eq "validate-fail"){throw "fixture-secret-must-not-leak"}; if($env:IMMICH_TEST_MODE -eq "validate-exit"){exit 9}'
@@ -106,6 +112,8 @@ try {
                     $info.RedirectStandardInput=$true
                     $info.RedirectStandardOutput=$true
                     $info.RedirectStandardError=$true
+                    $info.StandardOutputEncoding=[Text.UTF8Encoding]::new($false)
+                    $info.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
                     foreach ($arg in @('-NoLogo','-NoProfile','-File',"$package/installer/Update-FromRelease.ps1",'-InstallRoot',$root,'-DataRoot',$data,'-Scope','CurrentUser','-Interactive','-Language',$language)) {$info.ArgumentList.Add($arg)}
                     $process=[Diagnostics.Process]::Start($info)
                     try {
@@ -141,10 +149,17 @@ try {
             } elseif ($logs.Count) {throw "$mode must not create unnecessary log files"}
             if (@($events|Where-Object {$_ -eq 'enter'}).Count -ne 1 -or $events[-1] -ne 'enter') {throw "$mode must wait once after all update/tray work"}
             $close=if($language -eq 'ja'){'Enterキーを押して'}else{'Press Enter to close'}
-            if (-not $message.Contains($close)) {throw "$mode missing localized shell acknowledgement"}
+            $prompt=[IO.File]::ReadAllText($env:IMMICH_TEST_PROMPT,[Text.Encoding]::UTF8)
+            if (-not $prompt.Contains($close)) {
+                $units=($prompt.ToCharArray()|ForEach-Object {'U+{0:X4}' -f [int]$_}) -join ' '
+                throw "$language/$mode missing localized acknowledgement; prompt='$prompt'; code units=$units; captured output='$message'"
+            }
             if ($mode -eq 'latest') {
                 $latest=if($language -eq 'ja'){'最新版です'}else{'You have the latest version'}
-                if (-not $message.Contains($latest) -or $events -contains 'apply' -or $events -contains 'tray-replaced' -or $events -notcontains 'check') {throw 'Latest must follow a successful release check without applying anything'}
+                if (-not $message.Contains($latest) -or $events -contains 'apply' -or $events -contains 'tray-replaced' -or $events -notcontains 'check') {
+                    $units=($message.ToCharArray()|ForEach-Object {'U+{0:X4}' -f [int]$_}) -join ' '
+                    throw "$language/$mode latest result is missing or performed extra work; captured output='$message'; code units=$units; events=$($events -join ',')"
+                }
             } elseif ($mode -eq 'success') {
                 if ($events -notcontains 'nested-lock' -or $events -notcontains 'tray-replaced' -or (Test-Path "$data/staging/v3.2.2.6")) {throw 'Applied update did not survive tray restart / clean staging / recurse mutex'}
             } elseif ($message -match 'You have the latest version|最新版です|updated successfully|更新が完了しました') {throw "$mode must never claim latest or success"}
@@ -159,5 +174,5 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:IMMICH_TEST_MODE,Env:IMMICH_TEST_EVENTS,Env:IMMICH_TEST_REAL_INPUT -ErrorAction SilentlyContinue
+    Remove-Item Env:IMMICH_TEST_MODE,Env:IMMICH_TEST_EVENTS,Env:IMMICH_TEST_PROMPT,Env:IMMICH_TEST_REAL_INPUT -ErrorAction SilentlyContinue
 }
