@@ -11,3 +11,4 @@ server/0008-cross-platform-glob-paths.patch
 server/0009-cross-platform-external-library-paths.patch
 machine-learning/0001-native-windows-uvicorn.patch
 machine-learning/0002-native-windows-directml.patch
+machine-learning/0003-lightweight-supervisor-imports.patch
