@@ -201,7 +201,7 @@ if($postgresServiceObject.Status -ne 'Running'){throw "PostgreSQL Windows servic
 if (-not (Test-WindowsAbsolutePath $MediaRoot)) { throw 'MediaRoot must be an absolute Windows drive or UNC path.' }
 if (-not (Test-Path -LiteralPath $MediaRoot)) { throw "MediaRoot does not exist: $MediaRoot" }
 if (-not $PrepareOnly -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'current'))) {
-    $stopScript = Join-Path $InstallRoot 'current\runtime\launchers\Stop-Immich.ps1'
+    $stopScript = Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
     if (-not (Test-Path -LiteralPath $stopScript -PathType Leaf)) {
         throw "Cannot safely replace the existing Immich installation because its stop script is missing: $stopScript"
     }

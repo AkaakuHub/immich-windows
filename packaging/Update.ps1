@@ -85,7 +85,7 @@ function Save-UpgradeState {
 }
 Save-UpgradeState
 
-$stopScript=Join-Path $previousRelease 'runtime\launchers\Stop-Immich.ps1'
+$stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
 $backup=$null
 try {
     $candidateRelease = Join-Path $InstallRoot "releases\v$candidateVersion"

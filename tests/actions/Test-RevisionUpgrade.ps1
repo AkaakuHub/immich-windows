@@ -28,6 +28,9 @@ $envs['IMMICH_HOST']='127.0.0.1'
 Write-EnvFile -Path $envFile -Values $envs
 & (Join-Path $legacyRelease 'runtime\launchers\Start-Immich.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -EnvFile $envFile
 
+# The new updater must use its own fixed shutdown code, not depend on legacy launcher behavior.
+Set-Content (Join-Path $legacyRelease 'runtime/launchers/Stop-Immich.ps1') "throw 'Legacy shutdown code must not be used by the new updater.'"
+
 # Incomplete candidate must fail before shutdown or any DB/config mutation.
 $invalid=Join-Path $env:RUNNER_TEMP ("invalid-candidate-"+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $invalid | Out-Null

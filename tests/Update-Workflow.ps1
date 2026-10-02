@@ -38,6 +38,7 @@ try {
   Set-Content "$pkg/installer/Test-ReleasePackage.ps1" 'param($PackageRoot)'
   Set-Content "$pkg/runtime/launchers/Start-Immich.ps1" 'param($EnvFile,$InstallRoot,$DataRoot); Add-Content $env:IMMICH_TEST_EVENTS start; if ($env:IMMICH_TEST_FAIL -in @("start","same-payload-start")) { throw "Injected start failure" }'
   Set-Content "$old/runtime/launchers/Stop-Immich.ps1" 'param($EnvFile,$InstallRoot,$DataRoot); Add-Content $env:IMMICH_TEST_EVENTS stop'
+  Copy-Item "$old/runtime/launchers/Stop-Immich.ps1" "$pkg/runtime/launchers/Stop-Immich.ps1"
   Set-Content "$pkg/tests/Smoke-Windows.ps1" 'param($InstallRoot,$DataRoot,$PostgresRoot); Add-Content $env:IMMICH_TEST_EVENTS smoke; if ($env:IMMICH_TEST_FAIL -eq "smoke") { throw "Injected smoke failure" }'
   Set-Content "$pkg/migration/New-DatabaseBackup.ps1" 'param($EnvFile,$PostgresRoot); Add-Content $env:IMMICH_TEST_EVENTS backup; if ($env:IMMICH_TEST_FAIL -eq "backup") { throw "Injected backup failure" }; $path=Join-Path (Split-Path $EnvFile) backup.dump; Set-Content $path dump; return $path'
   '{"schemaVersion":1,"immichVersion":"v3.2.2"}'|Set-Content "$old/manifest.json"

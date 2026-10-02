@@ -50,7 +50,7 @@ try {
     $state.status='recovering'
     $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stateFile -Encoding utf8
 
-& (Join-Path $previousRelease 'runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+& (Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
 
 # A Windows PostgreSQL extension DLL is global to the PostgreSQL installation,
 # not release-local. Put back the extension binaries paired with the previous
