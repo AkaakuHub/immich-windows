@@ -64,8 +64,7 @@ try {
         $node = Join-Path $current 'runtime\node\node.exe'
         $serverEntry = Join-Path $current 'server\dist\main.js'
         Start-UserProcess 'ImmichServer' $node ('"{0}"' -f $serverEntry) $current
-        $python = Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
-        if (-not $python) { throw 'Packaged machine-learning Python runtime not found.' }
+        $python = Get-ImmichPythonExecutable -ReleaseRoot $current
         $serverPort = $env:IMMICH_PORT
         $serverHost = $env:IMMICH_HOST
         $pythonPath = $env:PYTHONPATH

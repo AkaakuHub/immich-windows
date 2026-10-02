@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $mlRoot = Join-Path $ReleaseRoot 'machine-learning'
-$python = Get-ChildItem (Join-Path $mlRoot 'python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' } | Select-Object -First 1
+$python = Get-ImmichPythonExecutable -ReleaseRoot $ReleaseRoot
 $requirements = Join-Path $mlRoot 'requirements.txt'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
 $uv = Join-Path $InstallRoot "tools\uv\$($manifest.dependencies.uv.version)\uv.exe"

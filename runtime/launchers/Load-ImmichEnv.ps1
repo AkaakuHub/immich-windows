@@ -26,12 +26,11 @@ if ($ServiceRole -eq 'Server') {
     & (Join-Path $release 'runtime\node\node.exe') (Join-Path $release 'server\dist\main.js')
     exit $LASTEXITCODE
 } elseif ($ServiceRole -eq 'MachineLearning') {
-    $python = @(Get-ChildItem (Join-Path $release 'machine-learning\python-runtime') -Filter python.exe -File -Recurse | Where-Object { $_.FullName -notmatch '\\Scripts\\' })
-    if ($python.Count -ne 1) { throw 'Expected exactly one packaged ML Python runtime.' }
+    $python = Get-ImmichPythonExecutable -ReleaseRoot $release
     $env:IMMICH_HOST = if ($env:IMMICH_HOST_ML) { $env:IMMICH_HOST_ML } else { '127.0.0.1' }
     $env:IMMICH_PORT = if ($env:IMMICH_PORT_ML) { $env:IMMICH_PORT_ML } else { '3003' }
     $env:PYTHONPATH = Join-Path $release 'machine-learning\app'
     Set-Location -LiteralPath (Join-Path $release 'machine-learning')
-    & $python[0].FullName -m immich_ml
+    & $python.FullName -m immich_ml
     exit $LASTEXITCODE
 }
