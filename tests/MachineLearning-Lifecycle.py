@@ -2,11 +2,13 @@
 
 import ast
 import asyncio
+import builtins
+import pickle
 import signal
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 
@@ -19,6 +21,62 @@ def read_tree(name):
 
 def compile_nodes(nodes, filename):
     return compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), filename, "exec")
+
+
+class SupervisorImportTests(unittest.TestCase):
+    def setUp(self):
+        self.package = ModuleType("immich_ml")
+        self.package.__path__ = [str(SOURCE)]
+        self.modules = patch.dict(sys.modules, {"immich_ml": self.package})
+        self.modules.start()
+        self.addCleanup(self.modules.stop)
+
+        # The shared enums must stay usable before any third-party imports.
+        original_import = builtins.__import__
+
+        def stdlib_only(name, *args, **kwargs):
+            if name.split(".")[0] not in sys.stdlib_module_names:
+                raise AssertionError(f"Shared enums imported a non-stdlib module: {name}")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", stdlib_only):
+            exec(compile_nodes(read_tree("__init__.py").body, "__init__.py"), self.package.__dict__)
+
+    def shared_imports(self, filename):
+        nodes = [node for node in read_tree(filename).body if isinstance(node, ast.ImportFrom)
+                 and any(alias.name in {"ModelPrecision", "StrEnum"} for alias in node.names)]
+        self.assertTrue(nodes, f"{filename} must import the shared enums")
+        for node in nodes:
+            self.assertEqual((node.level, node.module), (1, None))
+        namespace = {"__package__": "immich_ml"}
+        exec(compile_nodes(nodes, filename), namespace)
+        return namespace
+
+    def test_config_precision_does_not_import_schemas(self):
+        config = self.shared_imports("config.py")
+        self.assertIs(config["ModelPrecision"], self.package.ModelPrecision)
+        self.assertNotIn("immich_ml.schemas", sys.modules)
+
+    def test_schema_exports_preserve_identity_and_enum_behavior(self):
+        schemas = self.shared_imports("schemas.py")
+        self.assertIs(schemas["ModelPrecision"], self.package.ModelPrecision)
+        self.assertIs(schemas["StrEnum"], self.package.StrEnum)
+        self.assertEqual(list(self.package.ModelPrecision), ["FP16", "FP32"])
+        self.assertEqual(str(self.package.ModelPrecision.FP32), "FP32")
+        self.assertIs(self.package.ModelPrecision("FP16"), self.package.ModelPrecision.FP16)
+        self.assertTrue(issubclass(self.package.ModelPrecision, schemas["StrEnum"]))
+        for filename in ("config.py", "schemas.py"):
+            self.assertFalse(any(isinstance(node, ast.ClassDef) and node.name in {"ModelPrecision", "StrEnum"}
+                                 for node in read_tree(filename).body))
+
+    def test_precision_pickle_compatibility(self):
+        schemas = ModuleType("immich_ml.schemas")
+        schemas.__dict__.update(self.shared_imports("schemas.py"))
+        with patch.dict(sys.modules, {"immich_ml.schemas": schemas}):
+            old_pickle = b"cimmich_ml.schemas\nModelPrecision\n(VFP32\ntR."
+            self.assertIs(pickle.loads(old_pickle), self.package.ModelPrecision.FP32)
+            self.assertIs(pickle.loads(pickle.dumps(self.package.ModelPrecision.FP16)),
+                          self.package.ModelPrecision.FP16)
 
 
 class LauncherTests(unittest.TestCase):
