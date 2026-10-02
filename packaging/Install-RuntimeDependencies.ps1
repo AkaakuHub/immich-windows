@@ -125,9 +125,14 @@ $pythonRoot = Join-Path $ReleaseRoot 'machine-learning\python-runtime'
 # This private interpreter is launched via python -m; never copy path-bound console launchers.
 if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
     (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name 'python')) {
-    $sourcePython = Join-Path $reuseSource 'machine-learning\python-runtime'
+    $sourcePythonRoot = Join-Path $reuseSource 'machine-learning\python-runtime'
+    # uv also creates a major.minor alias junction; copy only the actual pinned distribution.
+    $distributions = @(Get-ChildItem -LiteralPath $sourcePythonRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+            $_.Name -like "cpython-$($versions.python.version)-*" })
+    $sourcePython = if ($distributions.Count -eq 1) { $distributions[0].FullName } else { $null }
     $sourceMarker = Join-Path $reuseSource 'machine-learning\.dependencies-installed.json'
-    if (Test-Path -LiteralPath $sourceMarker -PathType Leaf) {
+    if ($sourcePython -and (Test-Path -LiteralPath $sourceMarker -PathType Leaf)) {
         $portable = -not [bool](Get-ChildItem -LiteralPath $sourcePython -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -eq 'pyvenv.cfg' -or $_.Extension -eq '.egg-link' })
         foreach ($pth in (Get-ChildItem -LiteralPath $sourcePython -Recurse -Filter '*.pth' -File -ErrorAction SilentlyContinue)) {
@@ -137,7 +142,7 @@ if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
         }
         if ($portable) {
             try {
-                Copy-ImmichDependencyTree -Source $sourcePython -Destination $pythonRoot -ExcludeDirectoryNames @('Scripts')
+                Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts')
                 Write-Host 'Reused installed Python runtime and packages (no download).'
             } catch { Write-Warning "Cannot reuse Python runtime. $($_.Exception.Message)" }
         }
