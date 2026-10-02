@@ -24,37 +24,201 @@ function ConvertTo-WindowsArgument {
     $builder.ToString()
 }
 
-function Set-ImmichUpdateShortcut {
+function Get-ImmichLocalUrl {
+    param([Parameter(Mandatory)][string]$EnvFile)
+    $values=Read-EnvFile $EnvFile
+    $port=if ($values['IMMICH_PORT']) { [int]$values['IMMICH_PORT'] } else { 2283 }
+    if ($port -lt 1 -or $port -gt 65535) { throw 'IMMICH_PORT must be between 1 and 65535.' }
+    $hostname=[string]$values['IMMICH_HOST']
+    if (-not $hostname -or $hostname -in @('0.0.0.0','::','[::]')) { $hostname='localhost' }
+    return [UriBuilder]::new('http',$hostname,$port).Uri.AbsoluteUri
+}
+
+function Get-ImmichMenuStrings {
+    param([string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+    # As in upstream i18n, keep message keys separate from locale selection and accept regional tags.
+    # Windows menus need only English and Japanese; no web i18n runtime is loaded here.
+    $language=$Culture.Replace('_','-').Split('-')[0].ToLowerInvariant()
+    $strings=@{
+        en=@{
+            openName='Open Immich';openDescription='Open your photo library in the default browser'
+            startName='Start Immich';startDescription='Start the Immich server and machine learning'
+            stopName='Stop Immich';stopDescription='Stop Immich without deleting photos or settings'
+            updateName='Update Immich';updateDescription='Update Immich while preserving photos and settings'
+        }
+        ja=@{
+            openName='Immichを開く';openDescription='ブラウザーで写真ライブラリを開きます'
+            startName='Immichを起動';startDescription='Immichのサーバーと機械学習を起動します'
+            stopName='Immichを停止';stopDescription='Immichを停止します。写真や設定は削除しません'
+            updateName='Immichを更新';updateDescription='既存の写真と設定を維持して最新版へ更新します'
+        }
+    }
+    return [pscustomobject]$strings[$(if ($language -eq 'ja') { 'ja' } else { 'en' })]
+}
+
+function Get-ImmichManagedShortcutNames {
+    foreach ($language in @('en','ja')) {
+        $text=Get-ImmichMenuStrings $language
+        $text.openName; $text.startName; $text.stopName; $text.updateName
+    }
+}
+
+function Get-ImmichStartMenuEntries {
     param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
-          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true)
-    $programs = [Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
-    $directory = Join-Path $programs 'Immich'
-    $path = Join-Path $directory 'Update Immich.lnk'
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,
+          [string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+    $text=Get-ImmichMenuStrings $Culture
+    $hostPath=Join-Path $PSHOME 'pwsh.exe'
+    $current=Join-Path $InstallRoot 'current'
+    $envFile=Join-Path $DataRoot 'immich.env'
+    $icon=Join-Path $current 'build\www\favicon.ico'
+    $quote={ param([string]$Value) "'"+$Value.Replace("'","''")+"'" }
+    $commonArguments=" -InstallRoot $(& $quote $InstallRoot) -DataRoot $(& $quote $DataRoot) -EnvFile $(& $quote $envFile)"
+    $actions=@(
+        @{Id='open';Name=$text.openName;Description=$text.openDescription;Elevate=$false;Command="Import-Module $(& $quote (Join-Path $current 'runtime\Common.psm1')) -Force; Start-Process -FilePath (Get-ImmichLocalUrl -EnvFile $(& $quote $envFile))"},
+        @{Id='start';Name=$text.startName;Description=$text.startDescription;Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Start-Immich.ps1'))$commonArguments"},
+        @{Id='stop';Name=$text.stopName;Description=$text.stopDescription;Elevate=$true;Command="& $(& $quote (Join-Path $current 'runtime\launchers\Stop-Immich.ps1'))$commonArguments"},
+        @{Id='update';Name=$text.updateName;Description=$text.updateDescription;Elevate=$true;Command=$null}
+    )
+    $backgroundTemplate=@'
+try {
+    $ErrorActionPreference='Stop'
+    __IMMICH_ACTION__
+} catch {
+    $dialog=New-Object -ComObject WScript.Shell
+    [void]$dialog.Popup($_.Exception.Message,0,'Immich',16)
+    exit 1
+}
+'@
+    foreach ($action in $actions) {
+        $windowStyle=7
+        if ($action.Command) {
+            $command=$backgroundTemplate.Replace('__IMMICH_ACTION__',$action.Command)
+            $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        } else {
+            $script=Join-Path $current 'installer\Update-FromRelease.ps1'
+            $arguments=(@('-NoProfile','-NoExit','-File',$script,'-Scope',$Scope,'-InstallRoot',$InstallRoot,'-DataRoot',$DataRoot) | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+            $windowStyle=1
+        }
+        $target=$hostPath
+        if ($action.Elevate -and $Scope -eq 'AllUsers') {
+            $command="Start-Process -FilePath $(& $quote $hostPath) -ArgumentList $(& $quote $arguments) -Verb RunAs"
+            $target=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $arguments='-NoProfile -WindowStyle Hidden -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+            $windowStyle=7
+        }
+        [pscustomobject]@{Id=$action.Id;Name=$action.Name;TargetPath=$target;Arguments=$arguments;IconLocation="$icon,0";WorkingDirectory=$InstallRoot;Description=$action.Description;WindowStyle=$windowStyle}
+    }
+}
+
+function Initialize-ImmichShellLink {
+    if ('Immich.Windows.ShortcutStore' -as [type]) { return }
+    # Use IShellLinkW/IPersistFile directly: WScript shortcut persistence can lose non-ANSI file names.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+namespace Immich.Windows {
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+        void GetIDList(out IntPtr pidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int count);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int count);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+        void GetHotkey(out short key);
+        void SetHotkey(short key);
+        void GetShowCmd(out int command);
+        void SetShowCmd(int command);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+    public sealed class ShortcutInfo {
+        public string TargetPath;
+        public string Arguments;
+        public string IconLocation;
+    }
+    public static class ShortcutStore {
+        static object Create() {
+            return Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"), true));
+        }
+        public static void Write(string path, string target, string args, string icon, string directory, string description, int show) {
+            object value=Create();
+            try {
+                var link=(IShellLinkW)value;
+                link.SetPath(target);
+                link.SetArguments(args);
+                link.SetIconLocation(icon,0);
+                link.SetWorkingDirectory(directory);
+                link.SetDescription(description);
+                link.SetShowCmd(show);
+                ((IPersistFile)value).Save(path,true);
+            } finally { Marshal.FinalReleaseComObject(value); }
+        }
+        public static ShortcutInfo Read(string path) {
+            object value=Create();
+            try {
+                ((IPersistFile)value).Load(path,0);
+                var link=(IShellLinkW)value;
+                var target=new StringBuilder(32768);
+                var args=new StringBuilder(32768);
+                var icon=new StringBuilder(32768);
+                int index;
+                link.GetPath(target,target.Capacity,IntPtr.Zero,4);
+                link.GetArguments(args,args.Capacity);
+                link.GetIconLocation(icon,icon.Capacity,out index);
+                return new ShortcutInfo {TargetPath=target.ToString(),Arguments=args.ToString(),IconLocation=icon.ToString()+","+index};
+            } finally { Marshal.FinalReleaseComObject(value); }
+        }
+    }
+}
+'@
+}
+
+function Write-ImmichShortcut {
+    param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)]$Entry)
+    Initialize-ImmichShellLink
+    if (-not $Entry.IconLocation.EndsWith(',0')) { throw 'Immich shortcut must use icon index zero.' }
+    $icon=$Entry.IconLocation.Substring(0,$Entry.IconLocation.Length-2)
+    [Immich.Windows.ShortcutStore]::Write($Path,$Entry.TargetPath,$Entry.Arguments,$icon,$Entry.WorkingDirectory,$Entry.Description,$Entry.WindowStyle)
+}
+
+function Read-ImmichShortcut {
+    param([Parameter(Mandatory)][string]$Path)
+    Initialize-ImmichShellLink
+    return [Immich.Windows.ShortcutStore]::Read($Path)
+}
+
+function Set-ImmichStartMenu {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
+          [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,[bool]$Enabled=$true,
+          [string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+    $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
+    $directory=Join-Path $programs 'Immich'
+    $names=@(Get-ImmichManagedShortcutNames | Sort-Object -Unique)
     if (-not $Enabled) {
-        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        foreach ($name in $names) { Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue }
         return
     }
+    $icon=Join-Path $InstallRoot 'current\build\www\favicon.ico'
+    if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) { throw "The packaged upstream Immich icon is missing: $icon" }
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $hostPath = Join-Path $PSHOME 'pwsh.exe'
-    $script = Join-Path $InstallRoot 'current\installer\Update-FromRelease.ps1'
-    $arguments = (@('-NoProfile','-NoExit','-File',$script,'-Scope',$Scope,'-InstallRoot',$InstallRoot,'-DataRoot',$DataRoot) |
-        ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($path)
-    $shortcut.WorkingDirectory = $InstallRoot
-    $shortcut.IconLocation = "$hostPath,0"
-    $shortcut.Description = 'Update Immich while preserving existing settings and media.'
-    if ($Scope -eq 'AllUsers') {
-        # A hidden non-elevated launcher opens one visible elevated update window with the usual UAC prompt.
-        $command = "Start-Process -FilePath '" + $hostPath.Replace("'","''") + "' -ArgumentList '" + $arguments.Replace("'","''") + "' -Verb RunAs"
-        $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-        $shortcut.WindowStyle = 7
-    } else {
-        $shortcut.TargetPath = $hostPath
-        $shortcut.Arguments = $arguments
+    $entries=@(Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $Culture)
+    foreach ($entry in $entries) {
+        Write-ImmichShortcut -Path (Join-Path $directory "$($entry.Name).lnk") -Entry $entry
     }
-    $shortcut.Save()
+    # Remove entries for the previous UI language, but never delete a currently selected name.
+    foreach ($name in $names | Where-Object { $_ -notin $entries.Name }) {
+        Remove-Item -LiteralPath (Join-Path $directory "$name.lnk") -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-WindowsReleaseVersion {

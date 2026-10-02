@@ -20,7 +20,7 @@ if ($PSCmdlet.ShouldProcess($InstallRoot,'Remove Immich application releases')) 
         $valkey = Join-Path $InstallRoot 'current\dependencies\valkey\ValkeyService.exe'
         if (Test-Path $valkey) { & $valkey uninstall --service-name ImmichValkey 2>$null }
     }
-    Set-ImmichUpdateShortcut -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Enabled $false
+    Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Enabled $false
     Remove-Item $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 if ($RemovePersistentData -and $PSCmdlet.ShouldProcess($DataRoot,'Remove Immich persistent config/cache/logs/Valkey data')) { Remove-Item $DataRoot -Recurse -Force -ErrorAction SilentlyContinue }

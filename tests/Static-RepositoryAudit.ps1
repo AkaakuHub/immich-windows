@@ -78,6 +78,41 @@ $stopSource=Get-Content -Raw (Join-Path $root 'runtime/launchers/Stop-Immich.ps1
 Assert-True ($stopSource.TrimEnd().EndsWith('exit 0')) 'A verified successful stop must not propagate a stale taskkill exit code.'
 Assert-True ($stopSource -match "Valkey did not finish its graceful save and shutdown") 'Valkey must finish its save before process cleanup.'
 
+$menuEnv=Join-Path ([IO.Path]::GetTempPath()) ('immich-menu-'+[guid]::NewGuid().ToString('N')+'.env')
+$previousSystemRoot=$env:SystemRoot
+try {
+    if (-not $env:SystemRoot) { $env:SystemRoot=[IO.Path]::GetTempPath() }
+    foreach ($culture in @('ja-JP','en-US','fr-FR')) {
+    foreach ($scope in @('AllUsers','CurrentUser')) {
+        $entries=@(Get-ImmichStartMenuEntries -InstallRoot (Join-Path $root "test install's folder") -DataRoot (Join-Path $root "test data's folder") -Scope $scope -Culture $culture)
+        Assert-True ($entries.Count -eq 4) 'Exactly four daily-use Start menu entries are required.'
+        $expectedNames=if ($culture -eq 'ja-JP') { 'Immichを開く,Immichを起動,Immichを停止,Immichを更新' } else { 'Open Immich,Start Immich,Stop Immich,Update Immich' }
+        Assert-True (($entries.Name -join ',') -eq $expectedNames) 'Start menu labels must follow the UI locale.'
+        foreach ($entry in $entries) {
+            Assert-True ($entry.IconLocation -match 'favicon\.ico,0$') 'Every menu item must use the packaged upstream icon.'
+            Assert-True ($entry.IconLocation -notmatch 'pwsh\.exe') 'PowerShell must not be used as the Start menu icon.'
+            if ($entry.Arguments -match '-EncodedCommand ([A-Za-z0-9+/=]+)$') {
+                $command=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
+                $tokens=$null;$errors=$null
+                [void][System.Management.Automation.Language.Parser]::ParseInput($command,[ref]$tokens,[ref]$errors)
+                Assert-True (@($errors).Count -eq 0) 'Shortcut command must parse with spaces and apostrophes in paths.'
+                if ($entry.Id -eq 'open') {
+                    Assert-True ($command -match 'Get-ImmichLocalUrl' -and $command -notmatch '-Verb RunAs') 'Open must use current config without browser elevation.'
+                }
+            }
+        }
+    }
+    }
+    Assert-True ((Get-ImmichMenuStrings 'ja_JP').openName -eq 'Immichを開く') 'Locale normalization must accept the upstream underscore form.'
+    Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='0.0.0.0';IMMICH_PORT='2345'})
+    Assert-True ((Get-ImmichLocalUrl $menuEnv) -eq 'http://localhost:2345/') 'Open must use the configured port.'
+    Write-EnvFile $menuEnv ([ordered]@{IMMICH_HOST='::1';IMMICH_PORT='3456'})
+    Assert-True ((Get-ImmichLocalUrl $menuEnv) -eq 'http://[::1]:3456/') 'Open must reread changed IPv6/port settings.'
+} finally {
+    $env:SystemRoot=$previousSystemRoot
+    Remove-Item -LiteralPath $menuEnv -Force -ErrorAction SilentlyContinue
+}
+
 $upstream=Get-Content -Raw -LiteralPath (Join-Path $root 'upstream.json')|ConvertFrom-Json
 Assert-True ($upstream.version -match '^v[0-9]+\.[0-9]+\.[0-9]+$') "Invalid upstream version: $($upstream.version)"
 Assert-True ($upstream.commit -match '^[0-9a-f]{40}$') 'upstream.json must pin a full 40-character commit SHA.'
@@ -249,4 +284,27 @@ print('DirectML policy: 11 cases passed (mocked ORT; no hardware inference claim
 '@
     & python -c $policyTest $SourceRoot
     if ($LASTEXITCODE -ne 0) { throw 'DirectML policy tests failed.' }
+}
+
+# A small Windows-only round trip catches locale/Unicode shortcut failures before the full install job.
+Initialize-ImmichShellLink
+if ($IsWindows -and $SourceRoot) {
+    $shortcutRoot=Join-Path ([IO.Path]::GetTempPath()) ("Immich 日本語 user's "+[guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory $shortcutRoot -Force|Out-Null
+        $icon=Join-Path $shortcutRoot '本家.ico'
+        Copy-Item (Join-Path $SourceRoot 'web/static/favicon.ico') $icon
+        foreach ($culture in @('en-US','ja-JP')) {
+        foreach ($scope in @('AllUsers','CurrentUser')) {
+            foreach ($entry in (Get-ImmichStartMenuEntries -InstallRoot $shortcutRoot -DataRoot $shortcutRoot -Scope $scope -Culture $culture)) {
+                $entry.IconLocation="$icon,0"
+                $path=Join-Path $shortcutRoot "$culture-$scope-$($entry.Name).lnk"
+                Write-ImmichShortcut -Path $path -Entry $entry
+                $actual=Read-ImmichShortcut $path
+                Assert-True ($actual.TargetPath -ieq $entry.TargetPath -and $actual.Arguments -ceq $entry.Arguments -and $actual.IconLocation -ieq $entry.IconLocation) 'Unicode Start menu shortcut round trip failed.'
+            }
+        }
+        }
+        Write-Host 'Localized Windows shortcuts: sixteen English/Japanese native save/load cases passed.'
+    } finally { Remove-Item -LiteralPath $shortcutRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

@@ -16,7 +16,7 @@ if ($manifest.immichVersion -notmatch '^v\d+\.\d+\.\d+$' -or ($Version -and $pac
     -not $manifest.mediaStack.productionQualified) { throw 'The package is not a qualified Windows native release.' }
 
 foreach ($required in @(
-    'server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','machine-learning\requirements.txt',
+    'build\www\favicon.ico','server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','machine-learning\requirements.txt',
     'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json',
     'installer\Install-RuntimeDependencies.ps1','installer\Install-MachineLearningDependencies.ps1',
     'sharp-libvips-qualification.json','installer\Update.ps1','runtime\Common.psm1',

@@ -416,8 +416,8 @@ if (-not $DoNotStart) {
     & (Join-Path $current 'runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
 }
 if ($Scope -eq 'CurrentUser') { Set-ImmichUserStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Enabled $true }
-Set-ImmichUpdateShortcut -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
-Write-Host 'For future updates, open Start > Immich > Update Immich.'
+Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+Write-Host ("For future updates, open Start > Immich > " + (Get-ImmichMenuStrings).updateName)
 Write-Host "Installed native Immich for $Scope from $release"
 Write-Host "Persistent config: $envFile"
 } catch {

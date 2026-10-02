@@ -80,4 +80,4 @@ MACHINE_LEARNING_DEVICE_ID=0
 
 ## 次回からの更新
 
-スタートメニューの **Immich → Update Immich** を開きます。AllUsersはWindowsの管理者確認に応答してください。既存の設置先・設定を使って最新のWindows改訂へ更新します。詳しくは[更新手順](operations.md)を参照してください。
+スタートメニューの **Immich → Immichを更新**（英語表示では **Update Immich**）を開きます。AllUsersはWindowsの管理者確認に応答してください。既存の設置先・設定を使って最新のWindows改訂へ更新します。詳しくは[更新手順](operations.md)を参照してください。
