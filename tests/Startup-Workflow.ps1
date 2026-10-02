@@ -97,11 +97,16 @@ function taskkill.exe {
 
 try {
     New-Item -ItemType Directory -Path $base | Out-Null
-    # A temporary drive lets the bundled Valkey path validation run on Linux as well.
-    $usedDrives = @((Get-PSDrive).Name)
-    $driveName = @([char[]](90..68) | ForEach-Object { [string]$_ } | Where-Object { $_ -notin $usedDrives })[0]
-    New-PSDrive -Name $driveName -PSProvider FileSystem -Root $base | Out-Null
-    $fixtureRoot = "${driveName}:/"
+    # Windows already has a native drive path. Keep fixture files under the actual
+    # temp directory rather than introducing a second, provider-only drive mapping.
+    $fixtureRoot = $base
+    if (-not $IsWindows) {
+        # Only Unix needs a temporary drive for bundled Valkey's drive-path validation.
+        $usedDrives = @((Get-PSDrive).Name)
+        $driveName = @([char[]](90..68) | ForEach-Object { [string]$_ } | Where-Object { $_ -notin $usedDrives })[0]
+        New-PSDrive -Name $driveName -PSProvider FileSystem -Root $base | Out-Null
+        $fixtureRoot = "${driveName}:/"
+    }
     $launchers = Join-Path $fixtureRoot 'launchers'
     New-Item -ItemType Directory -Path $launchers | Out-Null
     foreach ($launcher in @('Start-Immich.ps1','Stop-Immich.ps1')) { Copy-Item (Join-Path $repo "runtime/launchers/$launcher") (Join-Path $launchers $launcher) }
