@@ -5,6 +5,8 @@ actual Git objects, and the now-reviewed main tree are the trust boundary.
 No cache entry or artifact's self-reported success is accepted as test evidence.
 """
 import argparse
+import base64
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -229,7 +231,7 @@ def artifacts_for(api, run_id):
             if a['name'] == ARTIFACT and not a['expired']]
 
 
-def verify(api, run, artifact, version, destination, pr=None, allow_original_attempt=False):
+def verify(api, run, artifact, version, destination, pr=None, allow_original_attempt=False, target_tree=None):
     with tempfile.TemporaryDirectory() as temporary:
         archive = Path(temporary) / 'bundle.zip'
         try:
@@ -258,8 +260,37 @@ def verify(api, run, artifact, version, destination, pr=None, allow_original_att
             raise NotReusable('Historical tested Git object is no longer available') from error
         raise
     jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
-    validate_provenance(record, run, jobs, artifact, source, git('rev-parse', 'HEAD^{tree}'), api.repo, pr)
+    validate_provenance(record, run, jobs, artifact, source, target_tree or git('rev-parse', 'HEAD^{tree}'), api.repo, pr)
     return record
+
+
+def select_qualified_pr(api, sha, version, target_tree=None, native_directory=None):
+    pulls = list(api.pages(f'commits/{sha}/pulls'))
+    for candidate in pulls:
+        pr = api.get(f"pulls/{candidate['number']}")
+        if not (pr['merged'] and pr['merge_commit_sha'] == sha and pr['base']['ref'] == 'main'
+                and pr['head'].get('repo') and pr['head']['repo']['full_name'] == api.repo):
+            continue
+        runs = api.pages(f"actions/workflows/build-windows.yml/runs?event=pull_request&head_sha={pr['head']['sha']}", 'workflow_runs')
+        for run in runs:
+            # Do not bypass a newer failed/pending qualification with an older green run.
+            if run['status'] != 'completed' or run['conclusion'] != 'success' or run['head_repository']['full_name'] != api.repo:
+                break
+            artifacts = artifacts_for(api, run['id'])
+            if not artifacts:
+                break  # Expired/missing evidence: perform a fresh qualification.
+            require(len(artifacts) == 1, 'Ambiguous qualification artifacts')
+            artifact = artifacts[0]
+            with tempfile.TemporaryDirectory() as temporary:
+                try:
+                    # Reject missing/stale native evidence before downloading the larger package.
+                    raw = download_native(api, run, native_directory) if native_directory is not None else None
+                    record = verify(api, run, artifact, version, Path(temporary), pr, target_tree=target_tree)
+                except NotReusable as error:
+                    summary(f'Fresh qualification required: {error}')
+                    break
+            return pr, run, artifact, record, raw
+    return None
 
 
 def plan():
@@ -274,35 +305,155 @@ def plan():
     values['publish'] = release_policy(api, version)
     if os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/main':
         sha = os.environ['GITHUB_SHA']
-        pulls = list(api.pages(f'commits/{sha}/pulls'))
-        for candidate in pulls:
-            pr = api.get(f"pulls/{candidate['number']}")
-            if not (pr['merged'] and pr['merge_commit_sha'] == sha and pr['base']['ref'] == 'main'
-                    and pr['head'].get('repo') and pr['head']['repo']['full_name'] == api.repo):
-                continue
-            runs = api.pages(f"actions/workflows/build-windows.yml/runs?event=pull_request&head_sha={pr['head']['sha']}", 'workflow_runs')
-            for run in runs:
-                # Do not bypass a newer failed/pending qualification with an older green run.
-                if run['status'] != 'completed' or run['conclusion'] != 'success' or run['head_repository']['full_name'] != api.repo:
-                    break
-                artifacts = artifacts_for(api, run['id'])
-                if not artifacts:
-                    break  # Expired/missing evidence: perform a fresh qualification.
-                require(len(artifacts) == 1, 'Ambiguous qualification artifacts')
-                artifact = artifacts[0]
-                with tempfile.TemporaryDirectory() as temporary:
-                    try:
-                        record = verify(api, run, artifact, version, Path(temporary), pr)
-                    except NotReusable as error:
-                        summary(f'Fresh qualification required: {error}')
-                        break
-                values.update(reuse=True, artifact_id=artifact['id'], artifact_digest=artifact['digest'],
-                              run_id=run['id'], source_commit=record['sourceCommit'])
-                summary(f"Reusing qualified PR #{pr['number']} run {run['id']} attempt {run['run_attempt']}; identical Git tree {record['sourceTree']}. No repeated build or tests. Artifact {artifact['id']} ({artifact['digest']}).")
-                output(values)
-                return
+        selected = select_qualified_pr(api, sha, version)
+        if selected:
+            pr, run, artifact, record, _ = selected
+            values.update(reuse=True, artifact_id=artifact['id'], artifact_digest=artifact['digest'],
+                          run_id=run['id'], source_commit=record['sourceCommit'])
+            summary(f"Reusing qualified PR #{pr['number']} run {run['id']} attempt {run['run_attempt']}; identical Git tree {record['sourceTree']}. No repeated build or tests. Artifact {artifact['id']} ({artifact['digest']}).")
+            output(values)
+            return
     summary('No reusable qualification selected. Run the full build and test gate once.')
     output(values)
+
+
+def native_artifact_for(api, run_id):
+    artifacts = [a for a in api.pages(f'actions/runs/{run_id}/artifacts', 'artifacts')
+                 if a['name'] == 'libvips' and not a['expired']]
+    require(len(artifacts) <= 1, 'Ambiguous raw libvips artifacts')
+    return artifacts[0] if artifacts else None
+
+
+def validate_native_provenance(api, run, artifact):
+    require(run['repository']['full_name'] == run['head_repository']['full_name'] == api.repo
+            and run['status'] == 'completed' and run['conclusion'] == 'success'
+            and run['event'] == 'pull_request' and run['path'] == WORKFLOW,
+            'Raw libvips source is not a successful same-repository PR qualification')
+    provenance = artifact['workflow_run']
+    require(provenance['id'] == run['id'] and provenance['head_sha'] == run['head_sha']
+            and provenance['repository_id'] == provenance['head_repository_id']
+            == run['repository']['id'] == run['head_repository']['id'],
+            'Raw libvips artifact belongs to another run/head/repository')
+    jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+    codec = [j for j in jobs if j['name'] == 'codec' and j['conclusion'] == 'success'
+             and j['run_attempt'] == run['run_attempt']]
+    if not codec:
+        raise NotReusable('Raw libvips has no successful codec job in the current attempt')
+    require(len(codec) == 1, 'Ambiguous current-attempt codec jobs')
+    # Artifact records lack run_attempt. Bind creation to the actual codec job
+    # rather than accepting a leftover artifact from an earlier attempt.
+    created = datetime.fromisoformat(artifact['created_at'])
+    if created < datetime.fromisoformat(codec[0]['started_at']):
+        raise NotReusable('Raw libvips belongs to a previous codec attempt')
+    require(created <= datetime.fromisoformat(codec[0]['completed_at']),
+            'Raw libvips was created after the selected codec job')
+
+
+def validate_native_bundle(archive, destination):
+    root_files = {'immich-windows-libvips.json', 'versions.json', 'LICENSE', 'README.md', 'ChangeLog'}
+    with zipfile.ZipFile(archive) as bundle:
+        entries = bundle.infolist()
+        names = [e.filename for e in entries]
+        require(len(names) == len(set(n.casefold() for n in names)), 'Duplicate raw libvips entries')
+        require({'immich-windows-libvips.json', 'lib/libvips-42.dll', 'lib/libglib-2.0-0.dll'} <= set(names),
+                'Raw libvips bundle is incomplete')
+        require(sum(e.file_size for e in entries) <= MAX_BYTES, 'Oversized raw libvips bundle')
+        for entry in entries:
+            name = entry.filename
+            parts = name.rstrip('/').split('/')
+            require(entry.orig_filename == name and not any(p in ('', '.', '..') for p in parts)
+                    and ':' not in name and '\\' not in name
+                    and not (entry.external_attr >> 16 & 0o170000 == 0o120000)
+                    and (name in root_files or (parts[0] == 'lib' and
+                         (entry.is_dir() or (len(parts) > 1 and name.endswith('.dll'))))),
+                    'Unsafe or unexpected raw libvips entry')
+        require(bundle.getinfo('immich-windows-libvips.json').file_size < 64 * 1024,
+                'Oversized native build metadata')
+        metadata = json.loads(bundle.read('immich-windows-libvips.json').decode('utf-8-sig'))
+        require(metadata.get('schemaVersion') == 1, 'Invalid native build metadata schema')
+        fields = ('nativeBuildInputsSha256', 'mediaPatchesSha256')
+        require(all(re.fullmatch(r'[0-9a-f]{64}', metadata.get(field, '')) for field in fields),
+                'Missing native build identity')
+        expected = json.loads(subprocess.check_output([
+            'pwsh', '-NoLogo', '-NoProfile', '-Command',
+            'Import-Module ./build/NativeMediaValidation.psm1 -Force; '
+            'Get-NativeMediaBuildIdentity -RepositoryRoot (Get-Location).Path | ConvertTo-Json -Compress'
+        ], text=True, encoding='utf-8'))
+        if any(metadata[field] != expected[field] for field in fields):
+            raise NotReusable('Native inputs changed; build libvips from the current inputs')
+        for entry in entries:
+            if entry.is_dir():
+                continue
+            target = destination / entry.filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with bundle.open(entry) as source, target.open('wb') as output:
+                shutil.copyfileobj(source, output)
+    subprocess.run([
+        'pwsh', '-NoLogo', '-NoProfile', '-Command',
+        'Import-Module ./build/NativeMediaValidation.psm1 -Force; '
+        "Assert-WindowsPeTlsDirectory -Path (Join-Path $env:NATIVE_BUNDLE_ROOT 'lib/libglib-2.0-0.dll')"
+    ], env=dict(os.environ, NATIVE_BUNDLE_ROOT=str(destination.resolve())), check=True)
+
+
+def download_native(api, run, destination):
+    artifact = native_artifact_for(api, run['id'])
+    if artifact is None:
+        raise NotReusable('Raw libvips artifact is missing or expired')
+    validate_native_provenance(api, run, artifact)
+    with tempfile.TemporaryDirectory() as temporary:
+        archive = Path(temporary) / 'libvips.zip'
+        try:
+            api.download(artifact, archive)
+        except urllib.error.HTTPError as error:
+            if error.code in (404, 410):
+                raise NotReusable('Raw libvips artifact is no longer available') from error
+            raise
+        validate_native_bundle(archive, destination)
+    return artifact
+
+
+def prepare_native():
+    api = API()
+    destination = Path('artifacts/native/sharp-libvips-custom')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
+            bundle = Path(temporary) / 'bundle'
+            selected_run = os.environ.get('QUALIFIED_RUN_ID')
+            if selected_run:
+                # These immutable identities come only from this workflow's plan job,
+                # which already verified the complete merged tree and qualification.
+                require(os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/main',
+                        'Selected qualification may seed only the main push cache')
+                run = api.get(f'actions/runs/{int(selected_run)}')
+                qualified = artifacts_for(api, run['id'])
+                require(len(qualified) == 1 and str(qualified[0]['id']) == os.environ['QUALIFIED_ARTIFACT_ID']
+                        and qualified[0]['digest'] == os.environ['QUALIFIED_ARTIFACT_DIGEST'],
+                        'Selected qualification artifact changed before cache seeding')
+                artifact = download_native(api, run, bundle)
+            else:
+                require(os.environ['GITHUB_EVENT_NAME'] == 'pull_request', 'Native bootstrap requires a PR base')
+                event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+                base = event['pull_request']['base']
+                require(base['ref'] == 'main' and SHA.fullmatch(base['sha']), 'Invalid native bootstrap base')
+                source = api.get(f"git/commits/{base['sha']}")
+                require(source['sha'] == base['sha'], 'Native bootstrap base identity mismatch')
+                pin_file = api.get(f"contents/upstream.json?ref={base['sha']}")
+                require(pin_file['encoding'] == 'base64', 'Invalid base version response')
+                pin = json.loads(base64.b64decode(pin_file['content']))
+                version = f"{pin['version']}.{pin['windowsRevision']}"
+                selected = select_qualified_pr(api, base['sha'], version, source['tree']['sha'], native_directory=bundle)
+                if selected is None:
+                    raise NotReusable('No qualified raw libvips artifact for this merged base')
+                _, run, _, _, artifact = selected
+            if destination.exists():
+                shutil.rmtree(destination)
+            bundle.rename(destination)
+        output({'reused': True})
+        summary(f"Reused raw libvips artifact {artifact['id']} from qualified run {run['id']}; current native inputs and PE TLS verified. No native rebuild.")
+    except NotReusable as error:
+        output({'reused': False})
+        summary(f'Native cache not seeded: {error}')
 
 
 def prepare_publish(version, directory):
@@ -335,7 +486,7 @@ def prepare_publish(version, directory):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['plan', 'record', 'prepare-publish'])
+    parser.add_argument('command', choices=['plan', 'record', 'prepare-publish', 'prepare-native'])
     parser.add_argument('--version')
     parser.add_argument('--directory', type=Path, default=Path('dist'))
     args = parser.parse_args()
@@ -343,5 +494,7 @@ if __name__ == '__main__':
         plan()
     elif args.command == 'record':
         record_bundle(args.version, args.directory)
+    elif args.command == 'prepare-native':
+        prepare_native()
     else:
         prepare_publish(args.version, args.directory)

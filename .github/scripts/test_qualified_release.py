@@ -33,7 +33,14 @@ def zip_bytes(entries):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in entries:
-            archive.writestr(name, content)
+            if isinstance(name, str):
+                # ZipInfo normalizes separators on Windows; fixtures must preserve raw attack bytes.
+                entry = zipfile.ZipInfo('fixture')
+                entry.filename = entry.orig_filename = name
+                entry.compress_type = zipfile.ZIP_DEFLATED
+            else:
+                entry = name
+            archive.writestr(entry, content)
     return stream.getvalue()
 
 
@@ -769,6 +776,285 @@ class ControlFlowTests(OfflineTestCase):
         self.git.return_value = 'f' * 40
         with self.assertRaises(ValueError):
             release.prepare_publish(VERSION, self.directory / 'publish')
+
+
+class NativeReuseTests(OfflineTestCase):
+    install_fixture = ControlFlowTests.install_fixture
+    select_pr_artifact = ControlFlowTests.select_pr_artifact
+
+    def setUp(self):
+        super().setUp()
+        previous = Path.cwd()
+        os.chdir(self.directory)
+        self.addCleanup(os.chdir, previous)
+        Path('upstream.json').write_text(json.dumps({'version': 'v3.2.2', 'windowsRevision': 5}))
+        self.api = FixtureAPI()
+        self.enterContext(mock.patch.object(release, 'API', return_value=self.api))
+        self.identity = {'nativeBuildInputsSha256': 'a' * 64, 'mediaPatchesSha256': 'b' * 64}
+        self.identity_command = self.enterContext(mock.patch.object(
+            release.subprocess, 'check_output', return_value=json.dumps(self.identity)))
+        self.pe_command = self.enterContext(mock.patch.object(release.subprocess, 'run'))
+        event_path = self.directory / 'event.json'
+        event_path.write_text(json.dumps({'pull_request': {'base': {'ref': 'main', 'sha': MERGED}}}))
+        os.environ.update(GITHUB_EVENT_NAME='pull_request', GITHUB_REF='refs/pull/18/merge',
+                          GITHUB_SHA='f' * 40, GITHUB_EVENT_PATH=str(event_path))
+
+    def native_entries(self):
+        return [('immich-windows-libvips.json', json.dumps(dict(schemaVersion=1, **self.identity))),
+                ('lib/libvips-42.dll', b'fixture vips'), ('lib/libglib-2.0-0.dll', b'fixture glib'),
+                ('LICENSE', b'fixture license')]
+
+    def install_native(self, entries=None):
+        values = self.install_fixture()
+        _, run, jobs, _, _, _ = values
+        for job in jobs:
+            job.update(started_at='2026-10-02T08:00:00Z', completed_at='2026-10-02T08:40:00Z')
+        content = zip_bytes(self.native_entries() if entries is None else entries)
+        self.raw_content = content
+        raw = dict(id=301, name='libvips', expired=False, workflow_run={
+            'id': run['id'], 'head_sha': run['head_sha'], 'repository_id': 44, 'head_repository_id': 44},
+            created_at='2026-10-02T08:39:00Z', size_in_bytes=len(content),
+            digest='sha256:' + hashlib.sha256(content).hexdigest())
+        self.api.collections['actions/runs/100/artifacts'].append(raw)
+        self.api.objects[f'git/commits/{MERGED}'] = {'sha': MERGED, 'tree': {'sha': TREE}}
+        self.api.objects[f'contents/upstream.json?ref={MERGED}'] = {
+            'encoding': 'base64', 'content': release.base64.b64encode(json.dumps({
+                'version': 'v3.2.2', 'windowsRevision': 4}).encode()).decode()}
+        self.opener.return_value.open.side_effect = lambda request, **kwargs: io.BytesIO(
+            content if '/artifacts/301/' in request.full_url else self.content)
+        return values, raw
+
+    def downloaded_ids(self):
+        return [call.args[0].full_url.split('/artifacts/')[1].split('/')[0]
+                for call in self.opener.return_value.open.call_args_list]
+
+    def test_bootstrap_uses_exact_base_version_tree_and_raw_archive_once(self):
+        self.install_native()
+        release.prepare_native()
+        self.assertEqual(self.outputs(), {'reused': 'true'})
+        self.assertEqual(self.downloaded_ids(), ['301', '300'])
+        self.assertEqual(Path('artifacts/native/sharp-libvips-custom/lib/libvips-42.dll').read_bytes(), b'fixture vips')
+        self.identity_command.assert_called_once()
+        self.pe_command.assert_called_once()
+        self.git.assert_not_called()  # Current PR tree/version intentionally differ from the base.
+        self.assertIn('Assert-WindowsPeTlsDirectory', self.pe_command.call_args.args[0][-1])
+
+    def test_main_seed_uses_plan_identity_without_downloading_qualification_again(self):
+        values, _ = self.install_native()
+        self.select_pr_artifact(values[3])
+        os.environ.update(GITHUB_EVENT_NAME='push', GITHUB_REF='refs/heads/main', GITHUB_SHA=MERGED)
+        release.prepare_native()
+        self.assertEqual(self.outputs()['reused'], 'true')
+        self.assertEqual(self.downloaded_ids(), ['301'])
+        self.assertNotIn(('get', f'git/commits/{MERGED}'), self.api.calls)
+
+    def test_changed_native_inputs_do_not_download_or_hash_the_package(self):
+        self.install_native()
+        self.identity_command.return_value = json.dumps(dict(self.identity, nativeBuildInputsSha256='c' * 64))
+        release.prepare_native()
+        self.assertEqual(self.outputs()['reused'], 'false')
+        self.assertEqual(self.downloaded_ids(), ['301'])
+        self.pe_command.assert_not_called()
+        self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
+
+    def test_missing_expired_or_wrongly_named_raw_evidence_does_not_download_package(self):
+        for state in ('missing', 'expired', 'release proxy'):
+            _, raw = self.install_native()
+            if state == 'missing':
+                self.api.collections['actions/runs/100/artifacts'].remove(raw)
+            elif state == 'expired':
+                raw['expired'] = True
+            else:
+                raw['name'] = 'native-dependencies'
+            with self.subTest(state=state):
+                release.prepare_native()
+                self.assertEqual(self.outputs()['reused'], 'false')
+        self.opener.return_value.open.assert_not_called()
+
+    def test_latest_failed_pending_missing_or_expired_run_never_uses_older_green_native(self):
+        path = f'actions/workflows/build-windows.yml/runs?event=pull_request&head_sha={HEAD}'
+        for state in ('failed', 'pending', 'missing raw', 'expired raw', 'missing qualification'):
+            values, raw = self.install_native()
+            newest = copy.deepcopy(values[1])
+            newest['id'] = 101
+            self.api.collections[path] = [newest, values[1]]
+            artifacts = [dict(values[3], id=400), dict(raw, id=401)]
+            self.api.collections['actions/runs/101/artifacts'] = artifacts
+            if state == 'failed':
+                newest['conclusion'] = 'failure'
+            elif state == 'pending':
+                newest.update(status='in_progress', conclusion=None)
+            elif state == 'missing raw':
+                artifacts.pop()
+            elif state == 'expired raw':
+                artifacts[1]['expired'] = True
+            else:
+                artifacts.pop(0)
+            self.api.calls.clear()
+            with self.subTest(state=state):
+                release.prepare_native()
+                self.assertEqual(self.outputs()['reused'], 'false')
+                self.assertNotIn(('pages', 'actions/runs/100/artifacts', 'artifacts'), self.api.calls)
+        self.opener.return_value.open.assert_not_called()
+
+    def test_main_seed_rejects_changed_selected_qualification(self):
+        values, _ = self.install_native()
+        self.select_pr_artifact(values[3])
+        os.environ.update(GITHUB_EVENT_NAME='push', GITHUB_REF='refs/heads/main', QUALIFIED_ARTIFACT_DIGEST='sha256:'+'f'*64)
+        with self.assertRaisesRegex(ValueError, 'Selected qualification'):
+            release.prepare_native()
+        self.opener.return_value.open.assert_not_called()
+
+    def test_bootstrap_requires_merged_same_repo_base_pr_and_successful_qualification(self):
+        for state in ('unmerged', 'wrong base', 'fork', 'different merge', 'tree mismatch'):
+            values, _ = self.install_native()
+            pr = values[5]
+            if state == 'unmerged':
+                pr['merged'] = False
+            elif state == 'wrong base':
+                pr['base']['ref'] = 'other'
+            elif state == 'fork':
+                pr['head']['repo']['full_name'] = 'attacker/fork'
+            elif state == 'different merge':
+                pr['merge_commit_sha'] = 'f' * 40
+            else:
+                self.api.objects[f'git/commits/{MERGED}']['tree']['sha'] = 'f' * 40
+            with self.subTest(state=state):
+                release.prepare_native()
+                self.assertEqual(self.outputs()['reused'], 'false')
+                self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
+
+    def test_raw_artifact_run_head_repository_and_attempt_are_verified(self):
+        for state in ('run', 'head', 'repository', 'before job', 'after job', 'job skipped', 'job old attempt', 'run failed'):
+            values, raw = self.install_native()
+            if state == 'run':
+                raw['workflow_run']['id'] = 999
+            elif state == 'head':
+                raw['workflow_run']['head_sha'] = 'f' * 40
+            elif state == 'repository':
+                raw['workflow_run']['head_repository_id'] = 999
+            elif state == 'before job':
+                raw['created_at'] = '2026-10-02T07:59:59Z'
+            elif state == 'after job':
+                raw['created_at'] = '2026-10-02T08:40:01Z'
+            elif state == 'run failed':
+                values[1]['conclusion'] = 'failure'
+            else:
+                codec = next(j for j in values[2] if j['name'] == 'codec')
+                codec['conclusion' if state == 'job skipped' else 'run_attempt'] = 'skipped' if state == 'job skipped' else 1
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                release.validate_native_provenance(self.api, values[1], raw)
+        self.opener.return_value.open.assert_not_called()
+
+    def test_partial_rerun_with_stale_codec_evidence_falls_back_without_downloading(self):
+        for state in ('no current-attempt codec', 'prior-attempt raw timestamp'):
+            values, _ = self.install_native()
+            run, jobs = values[1], values[2]
+            run['run_attempt'] = 3  # The qualification/raw artifacts still belong to attempt 2.
+            current_jobs = [dict(job, run_attempt=3, started_at='2026-10-02T09:00:00Z',
+                                 completed_at='2026-10-02T09:40:00Z') for job in jobs
+                            if state != 'no current-attempt codec' or job['name'] != 'codec']
+            self.api.collections['actions/runs/100/attempts/3/jobs'] = current_jobs
+            with self.subTest(state=state):
+                release.prepare_native()
+                self.assertEqual(self.outputs()['reused'], 'false')
+                self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
+        self.opener.return_value.open.assert_not_called()
+        self.identity_command.assert_not_called()
+        self.pe_command.assert_not_called()
+
+    def test_raw_digest_mismatch_and_ambiguous_raw_artifacts_fail_closed(self):
+        for state in ('digest', 'ambiguous'):
+            _, raw = self.install_native()
+            if state == 'digest':
+                raw['digest'] = 'sha256:' + '0' * 64
+            else:
+                self.api.collections['actions/runs/100/artifacts'].append(copy.deepcopy(raw))
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                release.prepare_native()
+            self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
+        self.identity_command.assert_not_called()
+
+    def test_raw_download_expiry_falls_back_but_permission_and_server_errors_fail(self):
+        for code in (404, 410, 403, 500):
+            self.install_native()
+            self.opener.return_value.open.side_effect = urllib.error.HTTPError('fixture', code, 'Unavailable', {}, None)
+            with self.subTest(code=code):
+                if code in (404, 410):
+                    release.prepare_native()
+                    self.assertEqual(self.outputs()['reused'], 'false')
+                else:
+                    with self.assertRaises(urllib.error.HTTPError):
+                        release.prepare_native()
+            self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
+
+    def test_unsafe_extra_duplicate_and_symlink_raw_entries_are_rejected(self):
+        link = zipfile.ZipInfo('lib/link.dll')
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16
+        for name in ('../outside.dll', '/lib/absolute.dll', 'lib/../outside.dll',
+                     'lib\\outside.dll', 'lib/outside.dll\0ignored', 'lib/x:stream.dll', 'lib/run.ps1', 'qualification.json',
+                     'lib/LIBVIPS-42.dll', link):
+            entries = self.native_entries() + [(name, b'not allowed')]
+            self.install_native(entries)
+            with zipfile.ZipFile(io.BytesIO(self.raw_content)) as archive:
+                self.assertEqual(archive.infolist()[-1].orig_filename,
+                                 name if isinstance(name, str) else name.filename)
+            with self.subTest(name=str(name)), self.assertRaises(ValueError):
+                release.prepare_native()
+        self.identity_command.assert_not_called()
+
+    def test_malformed_identity_and_oversized_native_archive_are_rejected(self):
+        for state in ('schema', 'missing hash', 'bad hash', 'metadata size', 'total size'):
+            entries = self.native_entries()
+            metadata = json.loads(entries[0][1])
+            if state == 'schema':
+                metadata['schemaVersion'] = 2
+            elif state == 'missing hash':
+                metadata.pop('nativeBuildInputsSha256')
+            elif state == 'bad hash':
+                metadata['mediaPatchesSha256'] = 'invalid'
+            elif state == 'metadata size':
+                metadata['padding'] = 'x' * (64 * 1024)
+            entries[0] = (entries[0][0], json.dumps(metadata))
+            self.install_native(entries)
+            with self.subTest(state=state):
+                if state == 'total size':
+                    archive = self.directory / 'raw.zip'
+                    archive.write_bytes(zip_bytes(entries))
+                    with mock.patch.object(release, 'MAX_BYTES', 1), self.assertRaises(ValueError):
+                        release.validate_native_bundle(archive, self.directory / 'raw')
+                else:
+                    with self.assertRaises(ValueError):
+                        release.prepare_native()
+        self.identity_command.assert_not_called()
+
+    def test_failed_pe_validation_never_publishes_native_cache_directory(self):
+        self.install_native()
+        self.pe_command.side_effect = release.subprocess.CalledProcessError(1, 'pwsh')
+        with self.assertRaises(release.subprocess.CalledProcessError):
+            release.prepare_native()
+        self.assertEqual(self.downloaded_ids(), ['301'])
+        self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
+
+
+class NativeWorkflowTests(unittest.TestCase):
+    def test_native_reuse_is_cache_miss_only_and_seeding_does_not_block_publication(self):
+        workflow = Path(__file__).parents[1] / 'workflows/build-windows.yml'
+        text = workflow.read_text()
+        codec = text.split('  codec:\n', 1)[1].split('  seed-codec-cache:\n', 1)[0]
+        seed = text.split('  seed-codec-cache:\n', 1)[1].split('  postgres:\n', 1)[0]
+        publish = text.split('  publish:\n', 1)[1]
+        self.assertIn("if: steps.codec-cache.outputs.cache-hit != 'true' && github.event_name == 'pull_request'", codec)
+        self.assertIn("if: steps.codec-cache.outputs.cache-hit != 'true' && steps.native-reuse.outputs.reused != 'true'", codec)
+        self.assertIn('retention-days: 14', codec)
+        self.assertIn("github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true'", seed)
+        self.assertIn("if: steps.codec-cache.outputs.cache-hit != 'true'", seed)
+        self.assertIn("if: steps.native-reuse.outputs.reused == 'true'", seed)
+        self.assertNotIn('seed-codec-cache', publish)
+        keys = [line.strip() for line in text.splitlines() if line.strip().startswith('key: libvips-')]
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0], keys[1])
 
 
 if __name__ == '__main__':
