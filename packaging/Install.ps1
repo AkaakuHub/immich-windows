@@ -79,6 +79,11 @@ function Start-ElevatedInstaller {
     }
     Remove-Item -LiteralPath $failureReport -Force -ErrorAction SilentlyContinue
     Write-Host 'Elevated installation completed.'
+    if (-not $InstallerParameters['PrepareOnly']) {
+        $trayPaths=Resolve-ImmichInstallPaths -Scope AllUsers -InstallRoot ([string]$InstallerParameters['InstallRoot']) -DataRoot ([string]$InstallerParameters['DataRoot'])
+        Set-ImmichTrayStartup -InstallRoot $trayPaths.InstallRoot -DataRoot $trayPaths.DataRoot -Scope AllUsers
+        if (-not $InstallerParameters['DoNotStart']) { Start-ImmichTray -InstallRoot $trayPaths.InstallRoot -DataRoot $trayPaths.DataRoot -Scope AllUsers }
+    }
     exit 0
 }
 
@@ -318,6 +323,7 @@ $envValues = [ordered]@{}
 foreach ($pair in $sourceEnv.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 foreach ($pair in $managedEnvValues.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 Write-EnvFile -Path $envFile -Values $envValues
+Write-ImmichTrayConnectionHint -InstallRoot $InstallRoot -DataRoot $DataRoot
 if ($Scope -eq 'AllUsers') { Protect-ImmichDataRoot -Path $DataRoot }
 Set-CurrentReleaseJunction -InstallRoot $InstallRoot -ReleasePath $release
 $valkeyConfig = Join-Path $DataRoot 'valkey.conf'
@@ -416,8 +422,10 @@ if (-not $DoNotStart) {
     & (Join-Path $current 'runtime\launchers\Start-Immich.ps1') -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot
 }
 if ($Scope -eq 'CurrentUser') { Set-ImmichUserStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Enabled $true }
-Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
-Write-Host ("For future updates, open Start > Immich > " + (Get-ImmichMenuStrings).updateName)
+Remove-ImmichLegacyStartMenu -Scope $Scope
+Set-ImmichTrayStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+if (-not $DoNotStart) { Start-ImmichTray -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope }
+Write-Host 'For daily controls, use the Immich icon in the Windows notification area (including the hidden-icons arrow).'
 Write-Host "Installed native Immich for $Scope from $release"
 Write-Host "Persistent config: $envFile"
 } catch {

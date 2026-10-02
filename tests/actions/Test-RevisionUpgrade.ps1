@@ -11,28 +11,28 @@ param(
 $ErrorActionPreference='Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This destructive fixture is restricted to disposable CI installations.' }
 Import-Module (Join-Path $PSScriptRoot '..\..\runtime\Common.psm1') -Force
-function Assert-StartMenu {
-    param([string]$Culture=[Globalization.CultureInfo]::CurrentUICulture.Name)
+function Assert-TrayRegistration {
+    $entry=Get-ImmichTrayEntry -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+    $path=Join-Path ([Environment]::GetFolderPath('Startup')) ($entry.Name+'.lnk')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing tray startup shortcut: $path" }
+    $shortcut=Read-ImmichShortcut $path
+    if ($shortcut.IconLocation -ine $entry.IconLocation -or $shortcut.TargetPath -ine $entry.TargetPath -or $shortcut.Arguments -cne $entry.Arguments) { throw 'Tray startup does not use the expected icon, paths and scope.' }
     $programs=[Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))
-    $directory=Join-Path $programs 'Immich'
-    $entries=@(Get-ImmichStartMenuEntries -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $Culture)
-    foreach ($entry in $entries) {
-        $path=Join-Path $directory "$($entry.Name).lnk"
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing Start menu shortcut: $path" }
-        $shortcut=Read-ImmichShortcut $path
-        if ($shortcut.IconLocation -ine $entry.IconLocation -or -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'current\build\www\favicon.ico'))) { throw "Invalid Immich icon: $path" }
-        if ($shortcut.TargetPath -ine $entry.TargetPath -or $shortcut.Arguments -cne $entry.Arguments) { throw "Incorrect shortcut launch command: $path" }
+    foreach ($name in Get-ImmichManagedShortcutNames) {
+        if (Test-Path -LiteralPath (Join-Path $programs "Immich\$name.lnk")) { throw 'An unwanted legacy Start-menu shortcut remains.' }
     }
-    foreach ($name in (Get-ImmichManagedShortcutNames | Where-Object { $_ -notin $entries.Name })) {
-        if (Test-Path -LiteralPath (Join-Path $directory "$name.lnk")) { throw "Obsolete localized shortcut was not removed: $name" }
-    }
-    Write-Host "Start menu verified for ${Scope}: four shortcuts using upstream Immich icon."
+    $check=Start-Process -FilePath $entry.TargetPath -ArgumentList ($entry.Arguments+' --check') -Wait -PassThru
+    if ($check.ExitCode -ne 0) { throw "Installed tray validation failed (exit $($check.ExitCode))." }
+    Write-Host "Tray startup verified for ${Scope}: upstream icon, all four actions, no legacy Start-menu entries."
 }
-Assert-StartMenu
-foreach ($culture in @('ja-JP','en-US',[Globalization.CultureInfo]::CurrentUICulture.Name)) {
-    Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Culture $culture
-    Assert-StartMenu -Culture $culture
-}
+Assert-TrayRegistration
+# Simulate exactly the managed legacy entries; the update must remove them and
+# leave a user's unrelated shortcut alone.
+$legacyMenu=Join-Path ([Environment]::GetFolderPath($(if ($Scope -eq 'AllUsers') { 'CommonPrograms' } else { 'Programs' }))) 'Immich'
+New-Item -ItemType Directory $legacyMenu -Force | Out-Null
+foreach ($name in Get-ImmichManagedShortcutNames) { Set-Content (Join-Path $legacyMenu "$name.lnk") 'managed legacy fixture' }
+$unrelated=Join-Path $legacyMenu 'My own shortcut.lnk'
+Set-Content $unrelated 'user fixture'
 $envFile=Join-Path $DataRoot 'immich.env'
 $current=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
 $manifest=Get-Content -Raw (Join-Path $current 'manifest.json')|ConvertFrom-Json
@@ -147,4 +147,6 @@ if (-not $rejected) { throw 'Equal-version update was accepted.' }
 Wait-HttpOk -Uri "http://127.0.0.1:$($after['IMMICH_PORT'])/api/server/ping" -TimeoutSeconds 10
 Write-Host "Running $Scope installation: legacy-to-revision update, config preservation, invalid/equal-version rejection passed."
 
-Assert-StartMenu
+Assert-TrayRegistration
+if (-not (Test-Path -LiteralPath $unrelated)) { throw 'Legacy menu cleanup removed a user-owned shortcut.' }
+Remove-Item -LiteralPath $unrelated

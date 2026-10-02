@@ -20,7 +20,20 @@ if ($PSCmdlet.ShouldProcess($InstallRoot,'Remove Immich application releases')) 
         $valkey = Join-Path $InstallRoot 'current\dependencies\valkey\ValkeyService.exe'
         if (Test-Path $valkey) { & $valkey uninstall --service-name ImmichValkey 2>$null }
     }
-    Set-ImmichStartMenu -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Enabled $false
-    Remove-Item $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Stop-ImmichTray -InstallRoot $InstallRoot
+    Set-ImmichTrayStartup -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope -Enabled $false
+    Remove-ImmichLegacyStartMenu -Scope $Scope
+    # The tray releases its singleton just before process exit. Allow Windows to
+    # release the executable image, but never silently claim a partial removal.
+    $deadline=[DateTime]::UtcNow.AddSeconds(10)
+    do {
+        try {
+            if (Test-Path -LiteralPath $InstallRoot) { Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop }
+            break
+        } catch {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Immich application files are still in use. Close any other users' tray instances and retry uninstall. $($_.Exception.Message)" }
+            Start-Sleep -Milliseconds 200
+        }
+    } while ($true)
 }
 if ($RemovePersistentData -and $PSCmdlet.ShouldProcess($DataRoot,'Remove Immich persistent config/cache/logs/Valkey data')) { Remove-Item $DataRoot -Recurse -Force -ErrorAction SilentlyContinue }

@@ -67,6 +67,8 @@ if ($customSharp) {
 }
 
 Copy-Directory (Join-Path $root 'runtime') (Join-Path $Destination 'runtime')
+& (Join-Path $root 'build\Build-Tray.ps1') -Destination (Join-Path $Destination 'runtime\tray\ImmichTray.exe')
+Remove-Item -LiteralPath (Join-Path $Destination 'runtime\tray\ImmichTray.cs')
 $installerDestination = Join-Path $Destination 'installer'
 New-Item -ItemType Directory -Path $installerDestination -Force | Out-Null
 foreach ($name in @(
