@@ -1,4 +1,5 @@
 import difflib
+import hashlib
 import json
 import sys
 import unittest
@@ -363,6 +364,41 @@ class PatchTests(unittest.TestCase):
     def test_context_drift_uses_clean_three_way_merge(self):
         changed = self.preflight(self.before.replace('line 4\n', 'upstream improvement\n'))
         self.assertIn('patches/server/fix.patch', changed)
+        self.assertIn('+Windows fix', changed['patches/server/fix.patch'])
+        self.assertIn('upstream improvement', changed['patches/server/fix.patch'])
+
+    def test_three_way_base_blob_preserves_bytes_with_windows_text_mode(self):
+        # This trailing line is outside the patch context. Preserve both UTF-8
+        # and existing CRLF bytes, as well as the LF bytes in the original source.
+        self.before += 'UTF-8: caf\u00e9 \u65e5\u672c\u8a9e\r\n'
+        source_bytes = self.before.encode('utf-8')
+        expected_hash = hashlib.sha1(b'blob ' + str(len(source_bytes)).encode('ascii')
+                                    + b'\0' + source_bytes).hexdigest()
+        run = check.subprocess.run
+        blob_hashes, three_way_results = [], []
+
+        def windows_run(arguments, **kwargs):
+            # Emulate TextIOWrapper's Windows stdin conversion even on Linux;
+            # still run real Git so a wrong blob cannot satisfy --3way.
+            text_input = kwargs.get('text') and kwargs.get('input') is not None
+            if text_input:
+                kwargs['input'] = kwargs['input'].replace('\n', '\r\n').encode('utf-8')
+                kwargs['text'] = False
+            result = run(arguments, **kwargs)
+            if text_input:
+                result.stdout = result.stdout.decode('utf-8')
+                result.stderr = result.stderr.decode('utf-8')
+            if arguments[3:] == ['hash-object', '-w', '--stdin']:
+                digest = result.stdout.decode('ascii') if isinstance(result.stdout, bytes) else result.stdout
+                blob_hashes.append(digest.strip())
+            if arguments[3:5] == ['apply', '--3way']:
+                three_way_results.append(result.returncode)
+            return result
+
+        with patch.object(check.subprocess, 'run', side_effect=windows_run):
+            changed = self.preflight(self.before.replace('line 4\n', 'upstream improvement\n'))
+        self.assertEqual(blob_hashes, [expected_hash])
+        self.assertEqual(three_way_results, [0])
         self.assertIn('+Windows fix', changed['patches/server/fix.patch'])
         self.assertIn('upstream improvement', changed['patches/server/fix.patch'])
 

@@ -189,10 +189,14 @@ def prepare_patches(api, main, old_commit, new_commit):
         patches[name] = patch
 
     def command(directory, *arguments, check=True, data=None):
-        result = subprocess.run(['git', '-C', str(directory), *arguments], input=data, text=True,
+        # Blob stdin must bypass Windows text-mode newline conversion. Keep the
+        # output interface textual for callers that inspect hashes and patches.
+        result = subprocess.run(['git', '-C', str(directory), *arguments], input=data,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
                                          GIT_ATTR_NOSYSTEM='1'))
+        result.stdout = result.stdout.decode('utf-8')
+        result.stderr = result.stderr.decode('utf-8', errors='replace')
         if check and result.returncode:
             raise ValueError(f"Patch preparation Git command failed: {' '.join(arguments)}\n{result.stderr.strip()}")
         return result
@@ -213,7 +217,7 @@ def prepare_patches(api, main, old_commit, new_commit):
             patch_file = Path(temporary) / 'change.patch'
             patch_file.write_text(patch, encoding='utf-8', newline='')
             old_tree = command(old, 'write-tree').stdout.strip()
-            old_bytes = {path: (old / path).read_text(encoding='utf-8') for path in paths}
+            old_bytes = {path: (old / path).read_bytes() for path in paths}
             command(old, 'apply', '--index', '--whitespace=error-all', str(patch_file))
             full_patch = command(old, 'diff', '--binary', '--full-index', old_tree).stdout
             require(full_patch, f'Empty patch: {name}')
