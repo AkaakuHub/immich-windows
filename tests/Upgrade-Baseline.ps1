@@ -6,9 +6,13 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('immich-baseline-tests-'+[guid]::New
 function Invoke-RestMethod {
     param([uri]$Uri,$Headers,$TimeoutSec)
     if ($Uri.Host -cne 'api.github.com' -or $Uri.AbsolutePath -cne '/repos/AkaakuHub/immich-windows/releases') { throw 'Unexpected release API target.' }
+    if ($Uri.Query -cnotmatch '\A\?per_page=100&page=([1-9][0-9]*)\z') { throw 'Unexpected release API query.' }
+    $page=[int]$Matches[1]
+    if (-not $global:ImmichBaselineFixture.Pages.ContainsKey($page)) { throw "Unexpected release API page: $page" }
     $global:ImmichBaselineFixture.Queries++
-    if ($global:ImmichBaselineFixture.Mode -eq 'pagination' -and $Uri.Query -match 'page=1$') { return @((1..100) | ForEach-Object { @{tag_name='v3.2.4.0';draft=$false;prerelease=$false;assets=@()} }) }
-    return $global:ImmichBaselineFixture.Releases
+    # The real cmdlet emits a top-level JSON array as one pipeline object.
+    # Returning an enumerated array here masks an extra @() in the caller.
+    Write-Output -NoEnumerate $global:ImmichBaselineFixture.Pages[$page]
 }
 function Invoke-WebRequest {
     param([string]$Uri,[string]$OutFile,$TimeoutSec)
@@ -18,7 +22,7 @@ function Invoke-WebRequest {
     $global:ImmichBaselineFixture.DownloadCount++
 }
 try {
-    foreach ($mode in @('success','pagination','cached-native','no-older','bad-digest','bad-size','bad-content','wrong-url','duplicate-asset','mismatched-version','bad-source-commit','wrong-native-pin','cached-native-corrupt','existing-destination')) {
+    foreach ($mode in @('success','single-release','pagination','pagination-empty-tail','cached-native','no-older','empty-releases','bad-digest','bad-size','bad-content','wrong-url','duplicate-asset','mismatched-version','bad-source-commit','wrong-native-pin','cached-native-corrupt','existing-destination')) {
         $case=Join-Path $root $mode
         $source=Join-Path $case 'source'
         $destination=Join-Path $case 'destination'
@@ -60,24 +64,47 @@ try {
             [pscustomobject]@{tag_name='v3.2.3.9';draft=$true;prerelease=$false;assets=@()},
             [pscustomobject]@{tag_name='v3.2.3.8';draft=$false;prerelease=$true;assets=@()},
             [pscustomobject]@{tag_name='v3.2.3.00';draft=$false;prerelease=$false;assets=@()},
+            [pscustomobject]@{tag_name='V3.2.3.0';draft=$false;prerelease=$false;assets=@()},
+            [pscustomobject]@{tag_name='v3.2.3.0-rc.1';draft=$false;prerelease=$false;assets=@()},
+            [pscustomobject]@{tag_name="v3.2.3.0`n";draft=$false;prerelease=$false;assets=@()},
             [pscustomobject]@{tag_name='v3.2.2.7';draft=$false;prerelease=$false;assets=@()},
             [pscustomobject]@{tag_name='v3.2.2.8';draft=$false;prerelease=$false;assets=$assets}
         )
         if ($mode -eq 'no-older') { $releases=@($releases[0]) }
+        if ($mode -eq 'single-release') { $releases=@($releases[-1]) }
+        if ($mode -eq 'empty-releases') { $releases=@() }
+        $pages=@{1=$releases}
+        if ($mode -eq 'pagination') {
+            # A full page with an eligible version must not hide a newer
+            # baseline on a later page; API ordering is not version ordering.
+            $pages=@{1=@((1..100) | ForEach-Object { [pscustomobject]@{tag_name='v3.2.2.7';draft=$false;prerelease=$false;assets=@()} });2=$releases}
+        }
+        if ($mode -eq 'pagination-empty-tail') { $pages=@{1=@((1..100) | ForEach-Object { $releases[-1] });2=@()} }
         if ($mode -in @('cached-native','cached-native-corrupt')) {
             Copy-Item -LiteralPath $native -Destination $cache
             if ($mode -eq 'cached-native-corrupt') { Add-Content -LiteralPath (Join-Path $cache $nativeName) 'tampered' }
         }
         if ($mode -eq 'existing-destination') { New-Item -ItemType Directory $destination | Out-Null }
-        $global:ImmichBaselineFixture=@{Mode=$mode;Releases=$releases;Downloads=$downloads;Queries=0;DownloadCount=0};$caught=$null;$result=$null
+        $global:ImmichBaselineFixture=@{Pages=$pages;Downloads=$downloads;Queries=0;DownloadCount=0};$caught=$null;$result=$null
         try { $result=& (Join-Path $repo 'tests/actions/Get-UpgradeBaseline.ps1') -CandidatePackageRoot $candidate -Destination $destination -DownloadCache $cache }
         catch { $caught=$_ }
-        if ($mode -in @('success','pagination','cached-native')) {
+        if ($mode -in @('success','single-release','pagination','pagination-empty-tail','cached-native')) {
             if ($caught) { throw $caught }
             if ($result.Version -cne 'v3.2.2.8' -or -not (Test-Path -LiteralPath (Join-Path $result.PackageRoot 'manifest.json'))) { throw 'Baseline selection/extraction failed.' }
             if ($global:ImmichBaselineFixture.DownloadCount -ne $(if ($mode -eq 'cached-native') {1} else {2})) { throw 'Unexpected repeated baseline acquisition.' }
-            if ($global:ImmichBaselineFixture.Queries -ne $(if ($mode -eq 'pagination') {2} else {1})) { throw 'Incorrect API pagination.' }
-        } elseif (-not $caught) { throw "Unsafe baseline was accepted: $mode" }
+            if ($global:ImmichBaselineFixture.Queries -ne $(if ($mode -in @('pagination','pagination-empty-tail')) {2} else {1})) { throw 'Incorrect API pagination.' }
+        } else {
+            if (-not $caught) { throw "Unsafe baseline was accepted: $mode" }
+            $expectedError=switch ($mode) {
+                { $_ -in @('no-older','empty-releases') } { 'No published stable Windows release precedes' }
+                { $_ -in @('bad-digest','duplicate-asset') } { 'Missing unique SHA-256 verified baseline asset' }
+                { $_ -in @('bad-size','bad-content','cached-native-corrupt') } { 'Baseline asset SHA-256 or size mismatch' }
+                'wrong-url' { 'Unexpected baseline asset URL' }
+                { $_ -in @('mismatched-version','bad-source-commit','wrong-native-pin') } { 'Baseline package identity or native archive provenance does not match' }
+                'existing-destination' { 'Upgrade baseline destination already exists' }
+            }
+            if (-not $caught.Exception.Message.Contains($expectedError)) { throw "Wrong rejection for ${mode}: $($caught.Exception.Message)" }
+        }
         Write-Host "PASS verified upgrade baseline: $mode"
     }
 } finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Remove-Variable ImmichBaselineFixture -Scope Global -ErrorAction SilentlyContinue }

@@ -17,7 +17,10 @@ if ($env:GH_TOKEN) { $headers.Authorization="Bearer $env:GH_TOKEN" }
 $eligible=@()
 $page=1
 do {
-    $releases=@(Invoke-RestMethod -Uri "https://api.github.com/repos/AkaakuHub/immich-windows/releases?per_page=100&page=$page" -Headers $headers -TimeoutSec 60)
+    # Invoke-RestMethod emits a JSON array as one pipeline object. Assign it
+    # before normalizing, so @() does not wrap the entire page in another array.
+    $response=Invoke-RestMethod -Uri "https://api.github.com/repos/AkaakuHub/immich-windows/releases?per_page=100&page=$page" -Headers $headers -TimeoutSec 60
+    $releases=@($response)
     foreach ($release in $releases) {
         if ($release.draft -or $release.prerelease -or [string]$release.tag_name -cnotmatch $tagPattern) { continue }
         $version=[version]$release.tag_name.Substring(1)
