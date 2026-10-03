@@ -269,8 +269,14 @@ function Start-ImmichTray {
         Write-Host 'No desktop shell is available in this session. Immich tray will start at the next desktop sign-in.'
         return
     }
-    $desktop.Dispose()
-    if (Test-ImmichElevated) {
+    try {
+        $elevated=Test-ImmichElevated
+        if ($elevated -and [Immich.Windows.DesktopShell]::IsElevated($desktop)) {
+            Write-Warning (Get-ImmichProgressText trayDeferred)
+            return
+        }
+    } finally { $desktop.Dispose() }
+    if ($elevated) {
         [Immich.Windows.DesktopShell]::Execute($entry.TargetPath,$entry.Arguments,$InstallRoot)
     } else {
         # Start is idempotent via the tray's SID/session/install mutex. Replacement
@@ -643,6 +649,7 @@ function Get-ImmichProgressText {
         verify=@('Checking the updated installation','更新後の動作を確認中')
         complete=@('Completed','完了');failed=@('Failed','失敗');elapsed=@('elapsed','経過');items=@('items','件')
         selection=@('If the console title says Select, press Esc to leave selection mode.','タイトルに「選択」と表示された場合はEscで選択を解除してください。')
+        trayDeferred=@('The desktop shell is elevated, so Immich tray was not started. This does not block server installation. Start the tray from a non-elevated desktop.','デスクトップシェルが管理者権限で動作しているため、Immichトレイは起動していません。サーバーのインストールは続行できます。管理者権限ではないデスクトップからトレイを起動してください。')
     }
     if (-not $messages.ContainsKey($Key)) { throw "Unknown progress message: $Key" }
     return $messages[$Key][[int]$ja]

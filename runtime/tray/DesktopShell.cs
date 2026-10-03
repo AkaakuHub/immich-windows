@@ -57,7 +57,7 @@ namespace Immich.Windows {
                 return token;
             } finally { CloseHandle(handle); }
         }
-        static bool IsElevated(Process process) {
+        public static bool IsElevated(Process process) {
             IntPtr token = ReadProcessToken(process);
             try {
                 int elevated, returned;
