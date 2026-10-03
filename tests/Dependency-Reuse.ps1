@@ -30,56 +30,6 @@ try {
     Write-Fixture (Join-Path $new 'server/.immich/plugin-sdk/index.js') 'changed'
     Check (-not (Test-ImmichDependencyInputsEqual $old $new server)) 'Changed SDK reused.'
     Check (Test-ImmichDependencyInputsEqual $old $new cli) 'Unchanged CLI was invalidated by server change.'
-    $tree=Join-Path $base tree;$copy=Join-Path $base copy
-    Write-Fixture (Join-Path $tree 'Lib/data.txt') 'original'
-    Write-Fixture (Join-Path $tree 'Scripts/tool.exe') 'old-launcher'
-    Copy-ImmichDependencyTree $tree $copy -ExcludeDirectoryNames Scripts
-    Check (-not (Test-Path (Join-Path $copy Scripts))) 'Copied path-bound launcher.'
-    Write-Fixture (Join-Path $copy 'Lib/data.txt') 'new'
-    Check ((Get-Content -Raw (Join-Path $tree 'Lib/data.txt')) -ceq 'original') 'Donor was modified.'
-    Reject { Copy-ImmichDependencyTree $tree $copy }
-    Reject { Copy-ImmichDependencyTree $tree $tree }
-    Reject { Copy-ImmichDependencyTree $tree (Join-Path $tree child) }
-    $linked=Join-Path $base linked
-    New-Item -ItemType Directory -Path $linked | Out-Null
-    $link=Join-Path $linked alias
-    New-Item -ItemType $(if($IsWindows){'Junction'}else{'SymbolicLink'}) -Path $link -Target $tree | Out-Null
-    $links+=$link
-    $rejected=Join-Path $base rejected
-    Reject { Copy-ImmichDependencyTree $linked $rejected }
-    Check (-not (Test-Path $rejected)) 'Rejected link copy created candidate.'
-    Reject { Copy-ImmichDependencyTree (Join-Path $link Lib) $rejected }
-
-    # The portability check shares the copy's preflight inventory. A rejected
-    # runtime must never create a partial candidate or modify the donor.
-    $pythonTree=Join-Path $base 'portable-python'
-    Write-Fixture (Join-Path $pythonTree 'Lib/site-packages/relative.pth') './local-package'
-    Write-Fixture (Join-Path $pythonTree 'Scripts/launcher.exe') 'path-bound launcher, excluded'
-    Copy-ImmichDependencyTree $pythonTree (Join-Path $base 'portable-copy') -ExcludeDirectoryNames Scripts -PythonSourceRelease $old
-    foreach ($bad in @(
-        @{Name='pyvenv.cfg';Text='home = C:\old'},
-        @{Name='bad.egg-link';Text='C:\old'},
-        @{Name='absolute.pth';Text='C:\old\packages'},
-        @{Name='absolute.pth';Text='/old/packages'},
-        @{Name='absolute.pth';Text='\\server\share'},
-        @{Name='absolute.pth';Text="import sys; sys.path.append('$old')"}
-    )) {
-        $badPath=Join-Path $pythonTree ('Lib/site-packages/'+$bad.Name)
-        Write-Fixture $badPath $bad.Text
-        Reject { Copy-ImmichDependencyTree $pythonTree $rejected -ExcludeDirectoryNames Scripts -PythonSourceRelease $old }
-        Check (-not (Test-Path $rejected)) 'Rejected Python reuse created a candidate.'
-        Remove-Item -LiteralPath $badPath
-    }
-    $nativeTree=Join-Path $base 'native-tree'
-    Write-Fixture (Join-Path $nativeTree '@img/sharp-win32-x64/lib/replace.dll') 'old DLL'
-    Write-Fixture (Join-Path $nativeTree '@img/sharp-win32-x64/lib/sharp.node') 'binding'
-    Write-Fixture (Join-Path $nativeTree 'other/replace.dll') 'unrelated DLL'
-    $nativeCopy=Join-Path $base 'native-copy'
-    Copy-ImmichDependencyTree $nativeTree $nativeCopy -ExcludeRelativeFiles '@img/sharp-win32-x64/lib/replace.dll'
-    Check (-not (Test-Path (Join-Path $nativeCopy '@img/sharp-win32-x64/lib/replace.dll'))) 'Copied a staged Sharp replacement unnecessarily.'
-    Check (Test-Path (Join-Path $nativeCopy '@img/sharp-win32-x64/lib/sharp.node')) 'Excluded the Sharp Node binding.'
-    Check (Test-Path (Join-Path $nativeCopy 'other/replace.dll')) 'Excluded a same-named unrelated DLL.'
-
     # Discovery is bounded to supported layouts. Nested executables and uv's
     # alias junction must not create ambiguity or redirect to another runtime.
     $pythonRelease=Join-Path $base 'python-release'
@@ -225,7 +175,7 @@ try {
     Check ($finish.Count -eq 1 -and $state.Finished) 'Final progress missing.'
     $again=@(Update-ImmichProgress -State $state -Finished 6>&1)
     Check ($again.Count -eq 0) 'Completed progress emitted twice.'
-    Write-Host 'PASS dependency reuse: input identity, independent copies, portable Python, bounded discovery, precise Sharp exclusions, selective ZIP extraction, unsafe links.'
+    Write-Host 'PASS dependency reuse: input identity, bounded Python discovery, independent Sharp replacement, selective ZIP extraction.'
 } finally {
     foreach($link in $links){[IO.Directory]::Delete($link)}
     if(Test-Path $base){Remove-Item -LiteralPath $base -Recurse -Force}

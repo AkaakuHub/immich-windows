@@ -239,23 +239,28 @@ if ($ResumeExistingRelease) {
 } else {
     $release = Install-ReleaseDirectory -PackageRoot $PackageRoot -InstallRoot $InstallRoot
 }
+$dependencyReusePlan=$null
+if ($UpdateController) { $dependencyReusePlan=[Collections.Generic.List[object]]::new() }
 foreach ($dependencyInstaller in @(
     (Join-Path $release 'installer\Install-RuntimeDependencies.ps1'),
     (Join-Path $PackageRoot 'runtime\launchers\Install-NodeDependencies.ps1'),
     (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1')
 )) {
     $global:LASTEXITCODE=0
-    & $dependencyInstaller -ReleaseRoot $release -InstallRoot $InstallRoot
+    $dependencyArguments=@{ReleaseRoot=$release;InstallRoot=$InstallRoot}
+    if ($UpdateController) { $dependencyArguments.DependencyReusePlan=$dependencyReusePlan }
+    & $dependencyInstaller @dependencyArguments
     if ($LASTEXITCODE -ne 0) { throw "Dependency preparation failed: $dependencyInstaller (exit $LASTEXITCODE)." }
 }
 if ($PrepareOnly) { Write-Host "Candidate dependencies prepared: $release"; return }
 if ($UpdateController) {
     # Keep preparation and activation in one invocation. The controller stops
-    # the old release, then this installer classifies the actual prepared bytes.
-    # No dependency installer or payload writer runs between that proof and activation.
-    $context = [pscustomobject]@{PackageRoot=$PackageRoot;Release=$release;PreviousRelease=$existingRelease;InstallRoot=$InstallRoot;DataRoot=$DataRoot;Scope=$Scope}
+    # the old release, then classify prepared bytes plus unchanged transfer sources.
+    # The controller records and renames those exact directories after backup; no
+    # package manager changes those directories between classification and activation.
+    $context = [pscustomobject]@{PackageRoot=$PackageRoot;Release=$release;PreviousRelease=$existingRelease;InstallRoot=$InstallRoot;DataRoot=$DataRoot;Scope=$Scope;DependencyReusePlan=$dependencyReusePlan}
     & $UpdateController 'Prepared' $context | Out-Null
-    $ApplicationOnly = Test-ImmichDatabasePayloadEqual -PreviousRelease $existingRelease -CandidateRelease $release
+    $ApplicationOnly = Test-ImmichDatabasePayloadEqual -PreviousRelease $existingRelease -CandidateRelease $release -DependencyReusePlan $dependencyReusePlan
     & $UpdateController 'DatabaseCompared' $context ([bool]$ApplicationOnly) | Out-Null
 }
 $current = Join-Path $InstallRoot 'current'

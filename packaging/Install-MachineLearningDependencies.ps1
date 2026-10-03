@@ -2,17 +2,28 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReleaseRoot,
-    [Parameter(Mandatory)][string]$InstallRoot
+    [Parameter(Mandatory)][string]$InstallRoot,
+    [Collections.Generic.List[object]]$DependencyReusePlan
 )
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $mlRoot = Join-Path $ReleaseRoot 'machine-learning'
-$python = Get-ImmichPythonExecutable -ReleaseRoot $ReleaseRoot
 $requirements = Join-Path $mlRoot 'requirements.txt'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
 $uv = Join-Path $InstallRoot "tools\uv\$($manifest.dependencies.uv.version)\uv.exe"
 $statePath = Join-Path $mlRoot '.dependencies-installed.json'
+$deferred=@($DependencyReusePlan | Where-Object { $_.relativePath -like 'machine-learning/python-runtime/*' })
+if ($deferred.Count) {
+    # Runtime planning already matched the installed marker, Python pin and
+    # candidate requirements. The updater validates imports after the directory rename.
+    if ($deferred.Count -ne 1) { throw 'Ambiguous deferred Python runtime.' }
+    $state=[ordered]@{immichVersion=$manifest.immichVersion;python=$manifest.dependencies.python.version;requirementsSha256=[string]$deferred[0].requirementsSha256}
+    $state | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath $statePath
+    Write-Host 'Keeping unchanged Machine Learning packages; imports will be checked after shutdown.'
+    return
+}
+$python = Get-ImmichPythonExecutable -ReleaseRoot $ReleaseRoot
 foreach ($path in @($(if ($python) { $python.FullName }),$uv,$requirements)) {
     if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Machine Learning runtime input is missing: $path" }
 }
@@ -21,10 +32,9 @@ $expectedState = [ordered]@{
     python = $manifest.dependencies.python.version
     requirementsSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirements).Hash.ToLowerInvariant()
 }
-# The runtime installer may have seeded local packages from the active release.
-$source = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot
-$markers = @($statePath)
-if ($source) { $markers += (Join-Path $source 'machine-learning\.dependencies-installed.json') }
+# Only this environment's completion marker can skip uv. An old release's marker
+# does not describe a new independent environment created during preparation.
+$markers=@($statePath)
 foreach ($marker in $markers) {
     if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { continue }
     try { $installedState = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json } catch { continue }

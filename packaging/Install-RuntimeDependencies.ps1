@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReleaseRoot,
-    [Parameter(Mandatory)][string]$InstallRoot
+    [Parameter(Mandatory)][string]$InstallRoot,
+    [Collections.Generic.List[object]]$DependencyReusePlan
 )
 
 Set-StrictMode -Version Latest
@@ -15,6 +16,7 @@ $reuseSource = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot
 $reuseManifest = if ($reuseSource) { Get-Content -Raw -LiteralPath (Join-Path $reuseSource 'manifest.json') | ConvertFrom-Json } else { $null }
 
 function Reuse-Runtime([string]$Name,[string]$RelativePath,[string[]]$Required) {
+    if ($null -eq $DependencyReusePlan) { return }
     if (-not $reuseSource -or -not (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name $Name)) { return }
     $source = Join-Path $reuseSource $RelativePath
     $destination = Join-Path $ReleaseRoot $RelativePath
@@ -24,10 +26,7 @@ function Reuse-Runtime([string]$Name,[string]$RelativePath,[string[]]$Required) 
         $actual = & (Join-Path $source 'node.exe') --version
         if ($LASTEXITCODE -ne 0 -or ([string]$actual).Trim().TrimStart('v') -ne $versions.node.version) { return }
     }
-    try {
-        Copy-ImmichDependencyTree -Source $source -Destination $destination -Label $Name
-        Write-Host "Reused installed $Name runtime (no download)."
-    } catch { Write-Warning "Cannot reuse $Name runtime; using its pinned archive. $($_.Exception.Message)" }
+    Add-ImmichDependencyReuse -Plan $DependencyReusePlan -PreviousRelease $reuseSource -CandidateRelease $ReleaseRoot -RelativePath $RelativePath -Label $Name
 }
 
 $cache = Join-Path $InstallRoot 'cache\downloads'
@@ -90,7 +89,7 @@ Reuse-Runtime 'ffmpeg' 'runtime\ffmpeg' @('ffmpeg.exe','ffprobe.exe')
 Reuse-Runtime 'valkey' 'dependencies\valkey' @('ValkeyService.exe','valkey-server.exe','valkey-cli.exe')
 Reuse-Runtime 'winsw' 'runtime\winsw' @($versions.winsw.asset)
 
-$nodeRoot = Join-Path $ReleaseRoot 'runtime\node'
+$nodeRoot = Get-ImmichDependencyReadPath -Path (Join-Path $ReleaseRoot 'runtime\node') -DependencyReusePlan $DependencyReusePlan
 $nodeExe = Join-Path $nodeRoot 'node.exe'
 if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $nodeRoot 'npm.cmd') -PathType Leaf)) {
     if (Test-Path -LiteralPath $nodeRoot) { Remove-Item -LiteralPath $nodeRoot -Recurse -Force }
@@ -103,7 +102,7 @@ if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf) -or -not (Test-Path -L
 }
 if (((& $nodeExe --version).Trim().TrimStart('v')) -ne $versions.node.version) { throw 'Installed Node version does not match manifest.' }
 
-$ffmpegRoot = Join-Path $ReleaseRoot 'runtime\ffmpeg'
+$ffmpegRoot = Get-ImmichDependencyReadPath -Path (Join-Path $ReleaseRoot 'runtime\ffmpeg') -DependencyReusePlan $DependencyReusePlan
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffmpeg.exe') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffprobe.exe') -PathType Leaf)) {
     if (Test-Path -LiteralPath $ffmpegRoot) { Remove-Item -LiteralPath $ffmpegRoot -Recurse -Force }
     $ffmpegChecksum = if ($versions.ffmpeg.PSObject.Properties['sha256']) { [string]$versions.ffmpeg.sha256 } else { $null }
@@ -114,15 +113,16 @@ if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffmpeg.exe') -PathType 
 }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffprobe.exe') -PathType Leaf)) { throw 'FFmpeg runtime is missing ffprobe.exe.' }
 
-$valkeyRoot = Join-Path $ReleaseRoot 'dependencies\valkey'
+$valkeyRoot = Get-ImmichDependencyReadPath -Path (Join-Path $ReleaseRoot 'dependencies\valkey') -DependencyReusePlan $DependencyReusePlan
 if (-not (Test-Path -LiteralPath (Join-Path $valkeyRoot 'ValkeyService.exe') -PathType Leaf)) {
     $valkeyStage = Expand-CachedZip $versions.valkey.asset "https://github.com/valkey-windows/valkey-windows/releases/download/$($versions.valkey.version)/$($versions.valkey.asset)"
     $valkeyExe = Get-ChildItem -LiteralPath $valkeyStage -Filter ValkeyService.exe -File -Recurse | Select-Object -First 1
     if (-not $valkeyExe) { throw 'Valkey archive does not contain ValkeyService.exe.' }
-    Copy-DirectoryContents $valkeyExe.Directory.FullName $valkeyRoot
+    if (Test-Path -LiteralPath $valkeyRoot) { Copy-DirectoryContents $valkeyExe.Directory.FullName $valkeyRoot }
+    else { Move-ExtractedDirectory $valkeyExe.Directory.FullName $valkeyRoot }
 }
 
-$winswRoot = Join-Path $ReleaseRoot 'runtime\winsw'
+$winswRoot = Get-ImmichDependencyReadPath -Path (Join-Path $ReleaseRoot 'runtime\winsw') -DependencyReusePlan $DependencyReusePlan
 $winswExe = Join-Path $winswRoot $versions.winsw.asset
 if (-not (Test-Path -LiteralPath $winswExe -PathType Leaf)) {
     $winswUri = "https://github.com/winsw/winsw/releases/download/v$($versions.winsw.version)/$($versions.winsw.asset)"
@@ -142,26 +142,18 @@ if (-not (Test-Path -LiteralPath $uvExe -PathType Leaf)) {
     [IO.File]::Move($uvFile.FullName,$uvExe,$true)
 }
 $pythonRoot = Join-Path $ReleaseRoot 'machine-learning\python-runtime'
-# This private interpreter is launched via python -m; never copy path-bound console launchers.
-if (-not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
-    (Test-ImmichDependencyPinEqual -Previous $reuseManifest -Candidate $manifest -Name 'python')) {
-    $sourcePythonRoot = Join-Path $reuseSource 'machine-learning\python-runtime'
-    # uv also creates a major.minor alias junction; copy only the actual pinned distribution.
-    $distributions = @(Get-ChildItem -LiteralPath $sourcePythonRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
-            $_.Name -like "cpython-$($versions.python.version)-*" })
-    $sourcePython = if ($distributions.Count -eq 1) { $distributions[0].FullName } else { $null }
-    $sourceMarker = Join-Path $reuseSource 'machine-learning\.dependencies-installed.json'
-    if ($sourcePython -and (Test-Path -LiteralPath $sourceMarker -PathType Leaf)) {
-        try {
-            Copy-ImmichDependencyTree -Source $sourcePython -Destination (Join-Path $pythonRoot $distributions[0].Name) -ExcludeDirectoryNames @('Scripts') -Label Python -PythonSourceRelease $reuseSource
-            Write-Host 'Reused installed Python runtime and packages (no download).'
-        } catch {
-            Write-Warning "Cannot reuse Python runtime; using pinned installation. $($_.Exception.Message)"
-        }
-    }
+$deferredPython=$null
+$pythonInputs=@{}
+# The controlled updater transfers only the exact unchanged package set. Changed
+# requirements use uv's existing cache in an independent environment.
+if ($null -ne $DependencyReusePlan -and -not (Test-Path -LiteralPath $pythonRoot) -and $reuseSource -and
+    (Test-ImmichPythonDependencyReusable -PreviousRelease $reuseSource -CandidateRelease $ReleaseRoot -Inputs $pythonInputs)) {
+    $deferredPython=Get-ImmichPythonExecutable -ReleaseRoot $reuseSource
+    $relative='machine-learning/python-runtime/'+$deferredPython.Directory.Name
+    Add-ImmichDependencyReuse -Plan $DependencyReusePlan -PreviousRelease $reuseSource -CandidateRelease $ReleaseRoot -RelativePath $relative -Label 'Python runtime and packages'
+    $DependencyReusePlan[$DependencyReusePlan.Count-1] | Add-Member -NotePropertyName requirementsSha256 -NotePropertyValue $pythonInputs.requirementsSha256
 }
-$pythonExe = Get-ImmichPythonExecutable -ReleaseRoot $ReleaseRoot -AllowMissing
+$pythonExe = if ($deferredPython) { $deferredPython } else { Get-ImmichPythonExecutable -ReleaseRoot $ReleaseRoot -AllowMissing }
 if (-not $pythonExe) {
     $env:UV_CACHE_DIR = Join-Path $InstallRoot 'cache\uv'
     $env:UV_PYTHON_INSTALL_DIR = $pythonRoot
@@ -178,6 +170,17 @@ if ($LASTEXITCODE -ne 0 -or ([string]$pythonVersion).Trim() -ne $versions.python
 $nativeZipName = "immich-windows-$packageVersion-native-dependencies.zip"
 $inventoryProperty = $manifest.PSObject.Properties['nativeDependencyFiles']
 if (-not $inventoryProperty -or -not @($inventoryProperty.Value.PSObject.Properties).Count) { throw 'Native dependency file inventory is missing.' }
+# Decide the server tree before native staging so unchanged Sharp is never copied
+# out of the old modules only to be copied into the new modules again.
+$serverDeferred=$false
+$nodeInputs=@{}
+if ($null -ne $DependencyReusePlan -and $reuseSource -and
+    -not (Test-Path -LiteralPath (Join-Path $ReleaseRoot 'server/node_modules')) -and
+    (Test-ImmichNodeProjectReusable -PreviousRelease $reuseSource -CandidateRelease $ReleaseRoot -Project server -Inputs $nodeInputs)) {
+    Add-ImmichDependencyReuse -Plan $DependencyReusePlan -PreviousRelease $reuseSource -CandidateRelease $ReleaseRoot -RelativePath 'server/node_modules' -Label 'server Node packages'
+    $DependencyReusePlan[$DependencyReusePlan.Count-1] | Add-Member -NotePropertyName dependencyInputHash -NotePropertyValue $nodeInputs.server
+    $serverDeferred=$true
+}
 $nativeProgress=Start-ImmichProgress -Key native
 $nativeChecked=0
 $nativeTotal=@($inventoryProperty.Value.PSObject.Properties).Count
@@ -193,7 +196,7 @@ function Get-CheckedNativeHash([string]$Path) {
 }
 # Sharp injection replaces a complete DLL set, so staging must never contain only a changed subset.
 $sharpNeedsStage = Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\sharp\lib')
-foreach ($entry in ($inventoryProperty.Value.PSObject.Properties | Where-Object { $_.Name.StartsWith('dependencies/sharp/') })) {
+foreach ($entry in ($inventoryProperty.Value.PSObject.Properties | Where-Object { -not $serverDeferred -and $_.Name.StartsWith('dependencies/sharp/') })) {
     $path = Join-Path $ReleaseRoot $entry.Name.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
     if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
         (Get-CheckedNativeHash $path) -ine $entry.Value) { $sharpNeedsStage=$true }
@@ -202,6 +205,7 @@ foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
     Update-ImmichProgress -State $nativeProgress -Completed $nativeChecked -Total $nativeTotal
     $nativeChecked++
     $relative = [string]$entry.Name
+    if ($serverDeferred -and $relative.StartsWith('dependencies/sharp/')) { continue }
     if ($relative -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or $relative.Contains('\')) { throw "Invalid native payload path: $relative" }
     $installedRelative = $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
     $target = Join-Path $ReleaseRoot $relative

@@ -1,5 +1,5 @@
 #requires -Version 7.0
-param([switch]$ForceCrossVolumeFallback,[switch]$ForceNativeCrossDeviceError,[switch]$ForceMovePermissionError,[switch]$VerifyFfmpegChecksum,[switch]$RejectFfmpegChecksum)
+param([switch]$ForceCrossVolumeFallback,[switch]$ForceNativeCrossDeviceError,[switch]$ForceMovePermissionError,[switch]$VerifyFfmpegChecksum,[switch]$RejectFfmpegChecksum,[switch]$ReuseInstalled)
 # Tiny real ZIPs exercise disposable stage promotion; no network or native tools.
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -15,6 +15,7 @@ try {
  $archives=@(
   @{Name='node-fixture.zip';Files=@{'node-fixture/node.exe'='node';'node-fixture/npm.cmd'='npm';'node-fixture/node_modules/npm/index.js'='package'}},
   @{Name='ffmpeg-fixture.zip';Files=@{'ffmpeg-fixture/bin/ffmpeg.exe'='ffmpeg';'ffmpeg-fixture/bin/ffprobe.exe'='ffprobe'}},
+  @{Name='valkey.zip';Files=@{'valkey/ValkeyService.exe'='valkey';'valkey/valkey-server.exe'='server';'valkey/valkey-cli.exe'='cli'}},
   @{Name='uv-0.12.18-uv-fixture.zip';Files=@{'uv.exe'='uv'}},
   @{Name='immich-windows-v3.2.2.2-native-dependencies.zip';Files=@{'dependencies/postgres-extensions/vector/vector.dll'='native';'unused/large.dll'='must not extract'}}
  )
@@ -32,13 +33,31 @@ try {
  Write-Fixture (Join-Path $release manifest.json) ($manifest|ConvertTo-Json -Depth 10)
  Write-Fixture (Join-Path $release 'runtime/Common.psm1') (Get-Content -Raw (Join-Path $repo 'runtime/Common.psm1'))
  Write-Fixture (Join-Path $release 'installer/Install-RuntimeDependencies.ps1') (Get-Content -Raw (Join-Path $repo 'packaging/Install-RuntimeDependencies.ps1'))
- Write-Fixture (Join-Path $release 'dependencies/valkey/ValkeyService.exe') 'existing valkey'
  Write-Fixture (Join-Path $release 'runtime/winsw/WinSW-x64.exe') 'existing winsw'
  $python=Join-Path $release 'machine-learning/python-runtime/cpython-3.11.14-windows-x86_64-none/python.exe'
  Write-Fixture $python python
  $node=Join-Path $release 'runtime/node/node.exe'
  Set-Item "function:global:$node" { $global:LASTEXITCODE=0; 'v24.15.0' };$commands+=$node
  Set-Item "function:global:$python" { $global:LASTEXITCODE=0; '3.11.14' };$commands+=$python
+ $reusePlan=$null
+ if ($ReuseInstalled) {
+  $old=Join-Path $root 'releases/v3.2.2.1'
+  Write-Fixture (Join-Path $old manifest.json) ($manifest|ConvertTo-Json -Depth 10)
+  foreach ($file in @('runtime/node/node.exe','runtime/node/npm.cmd','runtime/node/node_modules/npm/bin/npm-cli.js','runtime/node/node_modules/npm/index.js','runtime/ffmpeg/ffmpeg.exe','runtime/ffmpeg/ffprobe.exe','dependencies/valkey/ValkeyService.exe','dependencies/valkey/valkey-server.exe','dependencies/valkey/valkey-cli.exe','runtime/winsw/WinSW-x64.exe')) { Write-Fixture (Join-Path $old $file) 'installed' }
+  foreach ($name in @('runtime/winsw','machine-learning/python-runtime')) { Remove-Item -LiteralPath (Join-Path $release $name) -Recurse -Force }
+  $oldPython=Join-Path $old 'machine-learning/python-runtime/cpython-3.11.14-windows-x86_64-none/python.exe'
+  Write-Fixture $oldPython python
+  Write-Fixture (Join-Path (Split-Path $oldPython) 'Lib/site-packages/numpy/data') package
+  foreach ($r in @($old,$release)) { Write-Fixture (Join-Path $r 'machine-learning/requirements.txt') 'numpy==1.0' }
+  $hash=(Get-FileHash (Join-Path $release 'machine-learning/requirements.txt')).Hash
+  Write-Fixture (Join-Path $old 'machine-learning/.dependencies-installed.json') (@{python='3.11.14';requirementsSha256=$hash}|ConvertTo-Json)
+  $oldNode=Join-Path $old 'runtime/node/node.exe'
+  Set-Item "function:global:$oldNode" { $global:LASTEXITCODE=0;'v24.15.0' };$commands+=$oldNode
+  Set-Item "function:global:$oldPython" { $global:LASTEXITCODE=0;'3.11.14' };$commands+=$oldPython
+  Write-Fixture (Join-Path $root 'tools/uv/0.12.18/uv.exe') 'uv'
+  New-Item -ItemType $(if($IsWindows){'Junction'}else{'SymbolicLink'}) (Join-Path $root current) -Target $old | Out-Null
+  $reusePlan=[Collections.Generic.List[object]]::new()
+ }
  function Invoke-WebRequest { throw 'A cached fixture unexpectedly attempted network access.' }
  function Copy-Item {
   [CmdletBinding()]param([Parameter(ValueFromPipeline,Position=0)]$Path,[string]$LiteralPath,[Parameter(Position=1)][string]$Destination,[switch]$Recurse,[switch]$Force)
@@ -68,7 +87,20 @@ try {
   $previousMoveHook=$moveHook.GetValue($null);$moveHook.SetValue($null,$true)
  }
  $failed=$false
- try { & (Join-Path $release 'installer/Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $root } catch { $failed=$true; if (-not $ForceMovePermissionError -and -not $RejectFfmpegChecksum) { throw }; if ($RejectFfmpegChecksum) { Check ($_.Exception.Message -like '*checksum mismatch*') 'FFmpeg did not fail for its checksum.' } }
+ try { & (Join-Path $release 'installer/Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $root -DependencyReusePlan $reusePlan } catch { $failed=$true; if (-not $ForceMovePermissionError -and -not $RejectFfmpegChecksum) { throw }; if ($RejectFfmpegChecksum) { Check ($_.Exception.Message -like '*checksum mismatch*') 'FFmpeg did not fail for its checksum.' } }
+ if ($ReuseInstalled) {
+  Check (-not $failed) 'Installed runtime planning failed.'
+  Check ($reusePlan.Count -eq 5) 'Unchanged runtime/Python trees were not all deferred.'
+  foreach ($entry in $reusePlan) {
+   Check (Test-Path -LiteralPath $entry.source -PathType Container) 'Preparation consumed the live source.'
+   Check (-not (Test-Path -LiteralPath $entry.destination)) 'Preparation copied an unchanged dependency tree.'
+  }
+  Move-ImmichReusedDependencies $reusePlan $old $release
+  Check ((Get-Content -Raw (Join-Path $release 'runtime/node/node_modules/npm/index.js')) -ceq 'installed') 'Unchanged Node was replaced from the archive.'
+  Move-ImmichReusedDependencies $reusePlan $old $release -Restore
+  Write-Host 'PASS real runtime installer: five unchanged trees deferred, no full scan/copy/extract/download, exact rename and recovery.'
+  return
+ }
  if ($RejectFfmpegChecksum) {
   Check $failed 'Invalid FFmpeg checksum was accepted.'
   Check (-not (Test-Path (Join-Path $release 'runtime/ffmpeg/ffmpeg.exe'))) 'Unverified FFmpeg was extracted.'
@@ -81,7 +113,7 @@ try {
   Write-Host 'PASS runtime staging: permission failure stays failed, no copy fallback'
   return
  }
- foreach ($pair in @(@('runtime/node/node_modules/npm/index.js','package'),@('runtime/ffmpeg/ffmpeg.exe','ffmpeg'),@($nativePath,'native'))) {
+ foreach ($pair in @(@('runtime/node/node_modules/npm/index.js','package'),@('runtime/ffmpeg/ffmpeg.exe','ffmpeg'),@('dependencies/valkey/ValkeyService.exe','valkey'),@($nativePath,'native'))) {
   Check ((Get-Content -Raw (Join-Path $release $pair[0])) -ceq $pair[1]) "Promoted payload differs: $($pair[0])"
  }
  Check ((Get-Content -Raw (Join-Path $root 'tools/uv/0.12.18/uv.exe')) -ceq 'uv') 'uv extraction was not promoted.'
@@ -89,7 +121,7 @@ try {
  foreach ($archive in $archives) { Check (Test-Path (Join-Path $cache $archive.Name)) 'Reusable download archive was removed.' }
  if ($ForceNativeCrossDeviceError) { Check ($promotionCopies.Count -gt 0) 'Native cross-device fallback was not exercised.' }
  Check (-not (Test-Path (Join-Path $release unused))) 'Unneeded native ZIP content was extracted.'
- Write-Host "PASS runtime staging: Node/FFmpeg/uv/native promotions, cached ZIP retention, no extraction copy or network (cross-volume fallback=$ForceCrossVolumeFallback)"
+ Write-Host "PASS runtime staging: Node/FFmpeg/Valkey/uv/native promotions, cached ZIP retention, no extraction copy or network (cross-volume fallback=$ForceCrossVolumeFallback)"
 } finally {
  if ($moveHook) { $moveHook.SetValue($null,$previousMoveHook) }
  foreach ($command in $commands) { Remove-Item "function:global:$command" -ErrorAction SilentlyContinue }

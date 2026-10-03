@@ -1,0 +1,95 @@
+#requires -Version 7.0
+# Tiny local fixtures only. Invalid tool executables ensure reuse runs no npm/pnpm.
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot '../runtime/Common.psm1') -Force
+function Check([bool]$Value,[string]$Message) { if (-not $Value) { throw $Message } }
+function Write-Fixture([string]$Path,[string]$Text) { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path)); [IO.File]::WriteAllText($Path,$Text) }
+$base=Join-Path ([IO.Path]::GetTempPath()) ('node-reuse-'+[guid]::NewGuid().ToString('N'))
+$current=Join-Path $base 'current'
+$standaloneNode=$null
+try {
+    $old=Join-Path $base 'releases/v3.2.2.1';$new=Join-Path $base 'releases/v3.2.2.2'
+    $manifest=@{target='windows-x64-native';dependencies=@{node=@{version='24.15.0';asset='node.zip'};pnpm=@{version='11.22.0'}};nativeDependencyFiles=@{'dependencies/sharp/lib/custom.dll'=('a'*64);'dependencies/sharp/versions.json'=('b'*64)};nativeDependencyMetadata=@{'dependencies/sharp/versions.json'='e30='}}
+    $manifestText=$manifest|ConvertTo-Json -Depth 6
+    foreach ($root in @($old,$new)) {
+        Write-Fixture (Join-Path $root 'manifest.json') $manifestText
+        foreach ($project in @('server','cli')) {
+            Write-Fixture (Join-Path $root "$project/package.json") '{"dependencies":{"demo":"1.0.0"}}'
+            foreach ($name in @('pnpm-lock.yaml','pnpm-workspace.yaml')) { Write-Fixture (Join-Path $root "$project/$name") 'same' }
+        }
+        Write-Fixture (Join-Path $root 'server/.immich/plugin-sdk/index.js') 'same sdk'
+    }
+    foreach ($project in @('server','cli')) {
+        Write-Fixture (Join-Path $old "$project/node_modules/demo/package.json") '{"name":"demo","main":"index.js"}'
+        Write-Fixture (Join-Path $old "$project/node_modules/demo/index.js") 'unchanged package'
+    }
+    foreach ($name in @('node.exe','npm.cmd')) { Write-Fixture (Join-Path $old "runtime/node/$name") 'must not execute' }
+    $state=@{node='24.15.0';pnpm='11.22.0';server=(Get-ImmichDependencyInputHash $old server);cli=(Get-ImmichDependencyInputHash $old cli)}
+    Write-Fixture (Join-Path $old '.node-dependencies-installed.json') ($state|ConvertTo-Json)
+    Check (Test-ImmichNodeProjectReusable $old $new server) 'Identical server dependencies were not reusable.'
+    Write-Fixture (Join-Path $new 'server/pnpm-lock.yaml') 'changed lock'
+    Check (-not (Test-ImmichNodeProjectReusable $old $new server)) 'Changed lockfile was reused.'
+    Write-Fixture (Join-Path $new 'server/pnpm-lock.yaml') 'same'
+    $manifest.nativeDependencyFiles['dependencies/sharp/lib/custom.dll']='c'*64
+    Write-Fixture (Join-Path $new 'manifest.json') ($manifest|ConvertTo-Json -Depth 6)
+    Check (-not (Test-ImmichNodeProjectReusable $old $new server)) 'Changed Sharp stack was reused.'
+    Check (Test-ImmichNodeProjectReusable $old $new cli) 'Sharp changes invalidated the independent CLI.'
+    Write-Fixture (Join-Path $new 'manifest.json') $manifestText
+    $linkType=if($IsWindows){'Junction'}else{'SymbolicLink'}
+    New-Item -ItemType $linkType -Path $current -Target $old | Out-Null
+    $plan=[Collections.Generic.List[object]]::new()
+    Add-ImmichDependencyReuse -Plan $plan -PreviousRelease $old -CandidateRelease $new -RelativePath 'runtime/node' -Label Node
+    Add-ImmichDependencyReuse -Plan $plan -PreviousRelease $old -CandidateRelease $new -RelativePath 'server/node_modules' -Label 'server Node packages'
+    $plan[-1] | Add-Member -NotePropertyName dependencyInputHash -NotePropertyValue $state.server
+    # A resume may leave incomplete obsolete staging; it is not needed for a
+    # fully reusable server tree and must not trigger a scan or reinjection.
+    Write-Fixture (Join-Path $new 'dependencies/sharp/lib/partial.dll') 'redundant staging'
+    Write-Fixture (Join-Path $new 'dependencies/sharp/versions.json') '{}'
+    & (Join-Path $PSScriptRoot '../runtime/launchers/Install-NodeDependencies.ps1') -ReleaseRoot $new -InstallRoot $base -DependencyReusePlan $plan
+    Check ($plan.Count -eq 3) 'The unchanged CLI was not added to the deferred plan.'
+    foreach ($project in @('server','cli')) {
+        Check (-not (Test-Path -LiteralPath (Join-Path $new "$project/node_modules"))) 'Preparation copied or moved a dependency tree before shutdown.'
+        Check ((Get-Content -Raw -LiteralPath (Join-Path $old "$project/node_modules/demo/index.js")) -ceq 'unchanged package') 'Preparation changed the running dependencies.'
+    }
+    Check (-not (Test-Path -LiteralPath (Join-Path $base 'tools'))) 'Unchanged dependencies bootstrapped package managers.'
+    Check (-not (Test-Path -LiteralPath (Join-Path $new 'dependencies/sharp/lib'))) 'Unchanged Sharp retained redundant DLL staging.'
+    Check (-not (Test-Path -LiteralPath (Join-Path $new 'dependencies/sharp/versions.json'))) 'Unchanged Sharp retained redundant metadata staging.'
+    Check (Test-Path -LiteralPath (Join-Path $new '.node-dependencies-installed.json')) 'Prepared dependency inputs were not recorded.'
+
+    # Standalone preparation does not inspect current or copy its dependencies.
+    # An invalid current shape would throw if the old source lookup still ran.
+    [IO.Directory]::Delete($current)
+    [void][IO.Directory]::CreateDirectory($current)
+    $standalone=Join-Path $base 'releases/standalone'
+    Write-Fixture (Join-Path $standalone 'manifest.json') $manifestText
+    foreach ($project in @('server','cli')) {
+        Write-Fixture (Join-Path $standalone "$project/package.json") '{"dependencies":{}}'
+        foreach ($name in @('pnpm-lock.yaml','pnpm-workspace.yaml')) { Write-Fixture (Join-Path $standalone "$project/$name") 'same' }
+    }
+    Write-Fixture (Join-Path $standalone 'server/.immich/plugin-sdk/index.js') 'same sdk'
+    foreach ($name in @('node.exe','npm.cmd')) { Write-Fixture (Join-Path $standalone "runtime/node/$name") 'fixture executable' }
+    Write-Fixture (Join-Path $base 'tools/pnpm/11.22.0/node_modules/pnpm/bin/pnpm.cjs') 'existing manager'
+    $standaloneNode=Join-Path $standalone 'runtime/node/node.exe'
+    $managerCalls=[Collections.Generic.List[object]]::new()
+    $managerStub={
+        # PowerShell functions receive the native argument array as one value;
+        # flatten it the same way native-command argument passing does.
+        $managerCalls.Add(@($args | ForEach-Object { $_ }))
+        [void][IO.Directory]::CreateDirectory((Join-Path $PWD.Path 'node_modules'))
+        $global:LASTEXITCODE=0
+    }.GetNewClosure()
+    Set-Item "function:global:$standaloneNode" $managerStub
+    & (Join-Path $PSScriptRoot '../runtime/launchers/Install-NodeDependencies.ps1') -ReleaseRoot $standalone -InstallRoot $base
+    Check ($managerCalls.Count -eq 2) 'Standalone preparation did not use pnpm for both projects.'
+    foreach ($arguments in $managerCalls) {
+        Check ($arguments -contains '--prefer-offline') 'pnpm cache-first behavior was removed.'
+        Check ($arguments -contains '--frozen-lockfile') 'pnpm lockfile enforcement was removed.'
+        Check ($arguments -contains (Join-Path $base 'cache/pnpm-store')) 'pnpm did not use the existing shared store.'
+    }
+    Write-Host 'PASS Node dependencies: unchanged trees deferred; changed lock/Sharp rejected; standalone uses existing pnpm store without reading current'
+} finally {
+    if ($standaloneNode) { Remove-Item "function:global:$standaloneNode" -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $current) { [IO.Directory]::Delete($current) }
+    if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
+}

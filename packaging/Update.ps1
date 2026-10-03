@@ -76,6 +76,7 @@ $state=[ordered]@{
     candidateVersion="v$candidateVersion"
     databaseBackup=$null
     databaseUnchanged=$false
+    dependencyTransfers=@()
     startedAtUtc=[DateTime]::UtcNow.ToString('o')
     completedAtUtc=$null
     failure=$null
@@ -139,7 +140,14 @@ try {
         }
         $updateProgress.switch=Start-ImmichProgress -Key switch
         $state.status='installing'
+        $state.dependencyTransfers=@()
+        if ($Context.PSObject.Properties['DependencyReusePlan'] -and $null -ne $Context.DependencyReusePlan) { $state.dependencyTransfers=$Context.DependencyReusePlan.ToArray() }
+        # Journal before rename. A crash between directories is recovered by their
+        # source/destination presence; there is no tree scan or copy fallback.
         Save-UpgradeState
+        if ($state.dependencyTransfers.Count) { Write-Host "Recovery script: $(Join-Path $candidateRelease 'installer/Recover-Upgrade.ps1')" }
+        Move-ImmichReusedDependencies -DependencyReusePlan $state.dependencyTransfers -PreviousRelease $previousRelease -CandidateRelease $candidateRelease
+        Assert-ImmichReusedDependencies -DependencyReusePlan $state.dependencyTransfers -CandidateRelease $candidateRelease
     }
     $global:LASTEXITCODE=0
     & (Join-Path $PSScriptRoot 'Install.ps1') `
@@ -185,9 +193,16 @@ try {
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')
     $state.failure=$failure.Exception.ToString()
     Save-UpgradeState
-    try { if (-not $preparationFailed) { & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot } }
-    catch { Write-Warning "Immich shutdown also failed: $($_.Exception.Message)" }
-    throw "Upgrade failed. Recovery state: $stateFile. Database backup: $($state.databaseBackup). $($failure.Exception.Message)"
+    try {
+        if (-not $preparationFailed) {
+            $global:LASTEXITCODE=0
+            & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+            if ($LASTEXITCODE -ne 0) { throw "Immich shutdown failed with exit code $LASTEXITCODE." }
+            Move-ImmichReusedDependencies -DependencyReusePlan $state.dependencyTransfers -PreviousRelease $previousRelease -CandidateRelease $candidateRelease -Restore
+        }
+    } catch { Write-Warning "Shutdown or dependency restoration also failed; explicit recovery is required: $($_.Exception.Message)" }
+    $recoveryRoot=if ($state.candidateRelease) { [string]$state.candidateRelease } else { $PackageRoot }
+    throw "Upgrade failed. Recovery script: $(Join-Path $recoveryRoot 'installer/Recover-Upgrade.ps1'). Recovery state: $stateFile. Database backup: $($state.databaseBackup). $($failure.Exception.Message)"
 }
 
 # All entrypoints share this post-qualification lifecycle. Keep the v8 tray

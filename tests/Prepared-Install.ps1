@@ -8,7 +8,7 @@ function Check([bool]$Value,[string]$Message) { if (-not $Value) { throw $Messag
 function Write-Fixture([string]$Path,[string]$Text) { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path)); [IO.File]::WriteAllText($Path,$Text) }
 $executables=@()
 try {
- foreach ($mode in @('same','bootstrap-entry','env-mutates','env-stop-mutates','validation-exit','dependency-exit','changed','stop-mutates','resume','ml-failure','prepare-only','standalone-app-only','standalone-changed')) {
+ foreach ($mode in @('same','same-move','move-smoke-failure','bootstrap-entry','env-mutates','env-stop-mutates','validation-exit','dependency-exit','changed','stop-mutates','resume','ml-failure','prepare-only','standalone-app-only','standalone-changed')) {
     $case=Join-Path $base $mode;$root=Join-Path $case install;$data=Join-Path $case data;$package=Join-Path $case package;$pg=Join-Path $case postgres
     $oldTag=if ($mode -eq 'bootstrap-entry') {'v3.2.2.8'} else {'v3.2.2.1'}
     $candidateTag=if ($mode -eq 'bootstrap-entry') {'v3.2.4.0'} else {'v3.2.2.2'}
@@ -21,6 +21,7 @@ try {
         Write-Fixture (Join-Path $path manifest.json) ($manifest|ConvertTo-Json -Depth 10)
         foreach ($file in @('server/package.json','server/pnpm-lock.yaml','server/pnpm-workspace.yaml','server/dist/main.js','server/.immich/plugin-sdk/index.js','dependencies/postgres-extensions/vector/vector.dll','runtime/vc-runtime/runtime.dll','runtime/node/node.exe')) { Write-Fixture (Join-Path $path $file) 'same payload' }
     }
+    if ($mode -in @('same-move','move-smoke-failure')) { Remove-Item -LiteralPath (Join-Path $package 'runtime/node') -Recurse }
     foreach ($rootPath in @($old,$package)) { foreach ($extension in @('vector','vchord')) { Write-Fixture (Join-Path $rootPath "dependencies/postgres-extensions/$extension/$extension.control") "default_version = '1.0.0'" } }
     $manifest.windowsRevision=if ($mode -eq 'bootstrap-entry') {8} else {1};$manifest.packageVersion=$oldTag;$manifest.immichVersion='v3.2.2';$manifest.upstreamCommit='a'*40
     Write-Fixture (Join-Path $old manifest.json) ($manifest|ConvertTo-Json -Depth 10)
@@ -42,10 +43,10 @@ function Install-ReleaseDirectory {
  return $release
 }
 function Test-ImmichDatabasePayloadEqual {
- param($PreviousRelease,$CandidateRelease)
+ param($PreviousRelease,$CandidateRelease,$DependencyReusePlan)
  Add-Content $env:IMMICH_TEST_PREPARED_EVENTS compare
  if (@(Get-Content $env:IMMICH_TEST_PREPARED_EVENTS) -notcontains 'stop') { throw 'DB classification ran before shutdown.' }
- return Test-ImmichDatabasePayloadEqualCore $PreviousRelease $CandidateRelease
+ return Test-ImmichDatabasePayloadEqualCore $PreviousRelease $CandidateRelease -DependencyReusePlan $DependencyReusePlan
 }
 function Set-CurrentReleaseJunction {
  param($InstallRoot,$ReleasePath)
@@ -64,11 +65,11 @@ Export-ModuleMember -Function *
     Write-Fixture (Join-Path $package 'installer/Remove-ObsoleteReleases.ps1') 'function Remove-ImmichObsoleteReleases {param($InstallRoot,$DataRoot,$CurrentReleasePath,$PreviousReleasePath,$EnvFile); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS cleanup}'
     Write-Fixture (Join-Path $package 'installer/Test-ReleasePackage.ps1') 'param($PackageRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS validate; if ($env:IMMICH_TEST_PREPARED_MODE -eq "validation-exit") { exit 9 }'
     foreach ($stage in @(@('installer/Install-RuntimeDependencies.ps1','runtime'),@('runtime/launchers/Install-NodeDependencies.ps1','node'),@('installer/Install-MachineLearningDependencies.ps1','ml'))) {
-        Write-Fixture (Join-Path $package $stage[0]) ('param($ReleaseRoot,$InstallRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS '+$stage[1]+'; if ($env:IMMICH_TEST_PREPARED_MODE -eq "env-mutates" -and "'+$stage[1]+'" -eq "node") { Add-Content (Join-Path (Split-Path $InstallRoot) "data/immich.env") "DB_PASSWORD=edited-during-preparation" }; if ($env:IMMICH_TEST_PREPARED_MODE -eq "dependency-exit" -and "'+$stage[1]+'" -eq "runtime") { exit 7 }; if ($env:IMMICH_TEST_PREPARED_MODE -eq "ml-failure" -and "'+$stage[1]+'" -eq "ml") { throw "Dependency preparation failed" }; $global:LASTEXITCODE=0')
+        Write-Fixture (Join-Path $package $stage[0]) ('param($ReleaseRoot,$InstallRoot,$DependencyReusePlan); if ($env:IMMICH_TEST_PREPARED_MODE -in @(''same-move'',''move-smoke-failure'') -and '''+$stage[1]+''' -eq ''runtime'') { Add-ImmichDependencyReuse -Plan $DependencyReusePlan -PreviousRelease (Get-CurrentReleaseTarget $InstallRoot) -CandidateRelease $ReleaseRoot -RelativePath ''runtime/node'' -Label Node }; Add-Content $env:IMMICH_TEST_PREPARED_EVENTS '+$stage[1]+'; if ($env:IMMICH_TEST_PREPARED_MODE -eq "env-mutates" -and "'+$stage[1]+'" -eq "node") { Add-Content (Join-Path (Split-Path $InstallRoot) "data/immich.env") "DB_PASSWORD=edited-during-preparation" }; if ($env:IMMICH_TEST_PREPARED_MODE -eq "dependency-exit" -and "'+$stage[1]+'" -eq "runtime") { exit 7 }; if ($env:IMMICH_TEST_PREPARED_MODE -eq "ml-failure" -and "'+$stage[1]+'" -eq "ml") { throw "Dependency preparation failed" }; $global:LASTEXITCODE=0')
     }
     Write-Fixture (Join-Path $package 'runtime/launchers/Stop-Immich.ps1') 'param($EnvFile,$DataRoot,$InstallRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS stop; if ($env:IMMICH_TEST_PREPARED_MODE -eq "env-stop-mutates") { Add-Content $EnvFile "DB_PASSWORD=edited-during-stop" }; if ($env:IMMICH_TEST_PREPARED_MODE -eq "stop-mutates") { Set-Content (Join-Path (Get-CurrentReleaseTarget $InstallRoot) "server/dist/main.js") changed }; $global:LASTEXITCODE=0'
     Write-Fixture (Join-Path $package 'runtime/launchers/Start-Immich.ps1') 'param($EnvFile,$DataRoot,$InstallRoot,[switch]$UpgradeInProgress); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS start; $global:LASTEXITCODE=0'
-    Write-Fixture (Join-Path $package 'tests/Smoke-Windows.ps1') 'param($InstallRoot,$DataRoot,$PostgresRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS smoke; $global:LASTEXITCODE=0'
+    Write-Fixture (Join-Path $package 'tests/Smoke-Windows.ps1') 'param($InstallRoot,$DataRoot,$PostgresRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS smoke; if ($env:IMMICH_TEST_PREPARED_MODE -eq ''move-smoke-failure'') { throw ''Injected smoke failure'' }; $global:LASTEXITCODE=0'
     Write-Fixture (Join-Path $package 'migration/New-DatabaseBackup.ps1') 'param($EnvFile,$PostgresRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS backup; $path=Join-Path (Split-Path $EnvFile) backup.dump; Set-Content $path backup; $global:LASTEXITCODE=0; return $path'
     foreach ($name in @('postgres','psql','pg_dump','pg_restore')) {
         $exe=Join-Path $pg "bin/$name.exe";Write-Fixture $exe fixture;$executables+=$exe
@@ -102,6 +103,12 @@ Export-ModuleMember -Function *
         Check ($failed -and $events -notcontains 'activate' -and $events -notcontains 'backup') 'Concurrent config edit allowed stale-config activation or backup.'
         Check (($events -contains 'stop') -eq ($mode -eq 'env-stop-mutates')) 'Config changed during preparation stopped the running instance.'
         Check ((Get-Content -Raw (Join-Path $data immich.env)) -match 'edited-during-') 'Concurrent config edit was overwritten.'
+    } elseif ($mode -eq 'move-smoke-failure') {
+        Check ($failed -and $events -contains 'activate' -and $events -contains 'smoke') 'Transferred dependency failure did not reach the recovery case.'
+        Check (Test-Path (Join-Path $old 'runtime/node/node.exe')) 'Failed candidate did not restore the old runtime.'
+        Check (-not (Test-Path (Join-Path $candidate 'runtime/node/node.exe'))) 'Failure restoration copied the runtime.'
+        Check ((Get-CurrentReleaseTarget $root) -eq $candidate) 'Failure unexpectedly switched releases automatically.'
+        Check ((Get-Content -Raw (Join-Path $data 'state/upgrade-recovery.json')|ConvertFrom-Json).status -eq 'failed') 'Candidate with restored dependencies was not startup-blocked.'
     } elseif ($mode -eq 'ml-failure') {
         Check ($failed -and $events -notcontains 'stop' -and $events -notcontains 'activate') 'Failed dependencies changed the running release.'
     } elseif ($mode -eq 'prepare-only') {
@@ -114,6 +121,11 @@ Export-ModuleMember -Function *
         $compare=[array]::IndexOf($events,'compare');$activation=[array]::IndexOf($events,'activate')
         Check (-not @($events[($compare+1)..$activation]|Where-Object {$_ -in @('runtime','node','ml','copy')}).Count) 'Prepared payload was modified after its DB proof.'
         Check (($events -contains 'backup') -eq ($mode -in @('changed','stop-mutates','bootstrap-entry'))) "$mode backup policy is wrong"
+    }
+    if ($mode -eq 'same-move') {
+        Check (-not (Test-Path (Join-Path $old 'runtime/node/node.exe'))) 'Successful update copied instead of moved Node.'
+        Check (Test-Path (Join-Path $candidate 'runtime/node/node.exe')) 'Successful update did not transfer Node.'
+        Check ($events -notcontains 'backup') 'Deferred identical Node triggered an unnecessary DB backup.'
     }
     if ($mode -eq 'bootstrap-entry') {
         $actual=Get-Content -Raw (Join-Path (Get-CurrentReleaseTarget $root) manifest.json)|ConvertFrom-Json

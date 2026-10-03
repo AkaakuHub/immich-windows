@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReleaseRoot,
-    [Parameter(Mandatory)][string]$InstallRoot
+    [Parameter(Mandatory)][string]$InstallRoot,
+    [System.Collections.Generic.List[object]]$DependencyReusePlan
 )
 
 Set-StrictMode -Version Latest
@@ -10,82 +11,62 @@ $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
 Import-Module (Join-Path $PSScriptRoot '..\Common.psm1') -Force
 $statePath = Join-Path $ReleaseRoot '.node-dependencies-installed.json'
+$plannedInputs=@{}
+foreach ($entry in $DependencyReusePlan) {
+    if ($entry.relativePath -match '^(server|cli)[\\/]node_modules$') {
+        $project=$Matches[1]
+        if (-not $entry.PSObject.Properties['dependencyInputHash'] -or [string]$entry.dependencyInputHash -notmatch '^[0-9a-fA-F]{64}$') { throw 'Planned Node reuse is missing its checked dependency inputs.' }
+        $plannedInputs[$project]=[string]$entry.dependencyInputHash
+    }
+}
 $expectedState = [ordered]@{
     node = $manifest.dependencies.node.version
     pnpm = $manifest.dependencies.pnpm.version
-    server = Get-ImmichDependencyInputHash -ReleaseRoot $ReleaseRoot -Project server
-    cli = Get-ImmichDependencyInputHash -ReleaseRoot $ReleaseRoot -Project cli
+    server = if ($plannedInputs.ContainsKey('server')) { $plannedInputs.server } else { Get-ImmichDependencyInputHash -ReleaseRoot $ReleaseRoot -Project server }
+    cli = if ($plannedInputs.ContainsKey('cli')) { $plannedInputs.cli } else { Get-ImmichDependencyInputHash -ReleaseRoot $ReleaseRoot -Project cli }
 }
 $customSharp = Join-Path $ReleaseRoot 'dependencies\sharp\lib'
 $stagedSharpDlls=@()
-$sharpReplacementFiles=@()
-if (Test-Path -LiteralPath $customSharp -PathType Container) {
+if (-not $plannedInputs.ContainsKey('server') -and (Test-Path -LiteralPath $customSharp -PathType Container)) {
     $customVersions = Join-Path (Split-Path -Parent $customSharp) 'versions.json'
     if (-not (Test-Path -LiteralPath $customVersions -PathType Leaf)) { throw "Custom Sharp version metadata is missing: $customVersions" }
     $stagedSharpDlls=@(Get-ChildItem -LiteralPath $customSharp -Filter '*.dll' -File -Recurse)
     $expectedDlls=@($manifest.nativeDependencyFiles.PSObject.Properties | Where-Object { $_.Name -like 'dependencies/sharp/lib/*.dll' })
     $stagedNames=@($stagedSharpDlls | ForEach-Object { 'dependencies/sharp/lib/'+[IO.Path]::GetRelativePath($customSharp,$_.FullName).Replace('\','/') } | Sort-Object)
     if (-not $expectedDlls.Count -or ($stagedNames -join "`n") -cne (($expectedDlls.Name | Sort-Object) -join "`n")) { throw 'Custom Sharp staging must contain the complete native DLL inventory.' }
-    $sharpReplacementFiles=@($stagedNames | ForEach-Object { $_.Replace('dependencies/sharp/','@img/sharp-win32-x64/') })
 }
-$source = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot
-$sourceManifest = if ($source) { Get-Content -Raw (Join-Path $source 'manifest.json') | ConvertFrom-Json } else { $null }
-function Read-DependencyState([string]$Path) {
-    try { if (Test-Path -LiteralPath $Path) { return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json } }
-    catch { Write-Warning "Ignoring invalid dependency completion marker: $Path" }
-    return $null
-}
-function Test-SourceProjectInputs([string]$Project) {
-    try { return (Get-ImmichDependencyInputHash -ReleaseRoot $source -Project $Project) -ceq [string]$expectedState[$Project] }
-    catch { return $false }
-}
-function Test-NodeProjectComplete([string]$Root,[string]$Project) {
-    try {
-        $package=Get-Content -Raw -LiteralPath (Join-Path $Root "$Project\package.json") | ConvertFrom-Json
-        foreach ($dependency in $package.dependencies.PSObject.Properties) {
-            $metadata=Join-Path $Root "$Project\node_modules\$($dependency.Name)\package.json"
-            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { return $false }
-            $installed=Get-Content -Raw -LiteralPath $metadata | ConvertFrom-Json
-            if (-not $installed.PSObject.Properties['name'] -or [string]$installed.name -cne $dependency.Name) { return $false }
-            if ($installed.PSObject.Properties['main'] -and [string]$installed.main -and
-                -not (Test-Path -LiteralPath (Join-Path (Split-Path $metadata) $installed.main))) {
-                # Node also resolves extensionless files and directory indexes.
-                $main=Join-Path (Split-Path $metadata) $installed.main
-                if (-not (Test-Path "$main.js") -and -not (Test-Path "$main.json") -and -not (Test-Path "$main.node")) { return $false }
-            }
-        }
-        return $true
-    } catch { return $false }
-}
-$sourceState = if ($source) { Read-DependencyState (Join-Path $source '.node-dependencies-installed.json') } else { $null }
-$sourceComplete = $sourceState -and $sourceState.PSObject.Properties['node'] -and $sourceState.PSObject.Properties['pnpm'] -and
-    [string]$sourceState.node -eq [string]$manifest.dependencies.node.version -and
-    [string]$sourceState.pnpm -eq [string]$manifest.dependencies.pnpm.version
-$installedState = Read-DependencyState $statePath
+$source = if ($null -ne $DependencyReusePlan) { Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot } else { $null }
+$installedState = Read-ImmichNodeDependencyState $statePath
 $skip = @{}
+$deferred = @{}
 foreach ($project in @('server','cli')) {
     $modules = Join-Path $ReleaseRoot "$project\node_modules"
+    $plannedModules = Get-ImmichDependencyReadPath -Path $modules -DependencyReusePlan $DependencyReusePlan
+    $deferred[$project] = $plannedModules -ine $modules
+    if ($deferred[$project]) {
+        # Runtime preparation already proved this server tree reusable before
+        # omitting its native staging. Keep this invocation read-only until stop.
+        if (-not $source -or $plannedModules -ine (Join-Path $source "$project\node_modules") -or
+            -not $plannedInputs.ContainsKey($project)) {
+            throw "Planned $project Node dependency reuse no longer matches this update."
+        }
+        $skip[$project] = $true
+        continue
+    }
     $skip[$project] = $installedState -and $installedState.PSObject.Properties[$project] -and
         [string]$installedState.$project -ceq [string]$expectedState[$project] -and
         [string]$installedState.node -eq [string]$expectedState.node -and
         [string]$installedState.pnpm -eq [string]$expectedState.pnpm -and
-        (Test-Path -LiteralPath $modules -PathType Container) -and (Test-NodeProjectComplete $ReleaseRoot $project)
-    if (-not $skip[$project] -and -not (Test-Path -LiteralPath $modules) -and $sourceComplete -and
-        (Test-ImmichDependencyPinEqual $sourceManifest $manifest 'node') -and
-        (Test-ImmichDependencyPinEqual $sourceManifest $manifest 'pnpm') -and
-        (Test-SourceProjectInputs $project) -and (Test-NodeProjectComplete $source $project) -and
-        (-not $sourceState.PSObject.Properties[$project] -or [string]$sourceState.$project -ceq [string]$expectedState[$project])) {
-        try {
-            # Staging already contains these complete replacements. Do not copy
-            # the old DLLs into the candidate merely to discard them below.
-            $exclude=if ($project -eq 'server') { $sharpReplacementFiles } else { @() }
-            Copy-ImmichDependencyTree -Source (Join-Path $source "$project\node_modules") -Destination $modules -Label "$project Node packages" -ExcludeRelativeFiles $exclude
-            $skip[$project] = $true
-            Write-Host "Reused installed $project Node packages (dependency inputs unchanged)."
-        } catch { Write-Warning "Cannot reuse $project Node packages. $($_.Exception.Message)" }
+        (Test-Path -LiteralPath $modules -PathType Container) -and (Test-ImmichNodeProjectComplete $ReleaseRoot $project)
+    if (-not $skip[$project] -and $source -and -not (Test-Path -LiteralPath $modules) -and
+        (Test-ImmichNodeProjectReusable -PreviousRelease $source -CandidateRelease $ReleaseRoot -Project $project -Inputs $expectedState)) {
+        Add-ImmichDependencyReuse -Plan $DependencyReusePlan -PreviousRelease $source -CandidateRelease $ReleaseRoot -RelativePath "$project/node_modules" -Label "$project Node packages"
+        $DependencyReusePlan[-1] | Add-Member -NotePropertyName dependencyInputHash -NotePropertyValue ([string]$expectedState[$project])
+        $skip[$project] = $true
+        $deferred[$project] = $true
     }
 }
-$nodeRoot = Join-Path $ReleaseRoot 'runtime\node'
+$nodeRoot = Get-ImmichDependencyReadPath -Path (Join-Path $ReleaseRoot 'runtime\node') -DependencyReusePlan $DependencyReusePlan
 $node = Join-Path $nodeRoot 'node.exe'
 $npm = Join-Path $nodeRoot 'npm.cmd'
 foreach ($required in @($node,$npm)) {
@@ -154,7 +135,13 @@ try {
         if (-not $skip[$projectName]) { Install-ProjectDependencies $project }
     }
 
-    if (Test-Path -LiteralPath $customSharp -PathType Container) {
+    if ($deferred['server']) {
+        # A resumed preparation may still contain redundant candidate staging.
+        # The complete unchanged installed tree will be transferred after stop.
+        foreach ($path in @($customSharp,(Join-Path (Split-Path -Parent $customSharp) 'versions.json'))) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+        }
+    } elseif (Test-Path -LiteralPath $customSharp -PathType Container) {
         $sharpLib = Join-Path $ReleaseRoot 'server\node_modules\@img\sharp-win32-x64\lib'
         if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Installed Sharp runtime is missing: $sharpLib" }
         foreach ($dll in (Get-ChildItem -LiteralPath $sharpLib -Filter '*.dll' -File -Recurse)) {

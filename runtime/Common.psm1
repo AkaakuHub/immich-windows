@@ -316,7 +316,7 @@ function Get-WindowsPackageVersion {
 }
 
 function Test-ImmichDatabasePayloadEqual {
-    param([Parameter(Mandatory)][string]$PreviousRelease,[Parameter(Mandatory)][string]$CandidateRelease)
+    param([Parameter(Mandatory)][string]$PreviousRelease,[Parameter(Mandatory)][string]$CandidateRelease,$DependencyReusePlan)
     $previous = Get-Content -Raw (Join-Path $PreviousRelease 'manifest.json') | ConvertFrom-Json
     $candidate = Get-Content -Raw (Join-Path $CandidateRelease 'manifest.json') | ConvertFrom-Json
     foreach ($field in @('immichVersion','upstreamCommit')) {
@@ -333,23 +333,27 @@ function Test-ImmichDatabasePayloadEqual {
     $requiredFiles = @('server\package.json','server\pnpm-lock.yaml','server\pnpm-workspace.yaml','runtime\node\node.exe')
     $requiredDirectories = @('server\dist','server\.immich','dependencies\postgres-extensions','runtime\vc-runtime')
     $fingerprints = @()
+    $hashes=@{}
     foreach ($root in @($PreviousRelease,$CandidateRelease)) {
         $files = @()
         foreach ($relative in $requiredFiles) {
             $path = Join-Path $root $relative
+            if ($root -eq $CandidateRelease) { $path=Get-ImmichDependencyReadPath -Path $path -DependencyReusePlan $DependencyReusePlan }
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
-            $files += Get-Item -LiteralPath $path
+            $files += [pscustomobject]@{FullName=$path;RelativePath=$relative.Replace('\','/')}
         }
         foreach ($relative in $requiredDirectories) {
             $path = Join-Path $root $relative
             if (-not (Test-Path -LiteralPath $path -PathType Container)) { return $false }
             $entries = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force | Where-Object { $_.Name -ne 'build-inputs.json' -and $_.FullName -notmatch '[\\/]runtime[\\/]vc-runtime[\\/]vc-runtime\.json$' })
             if (-not $entries.Count) { return $false }
-            $files += $entries
+            $files += @($entries | ForEach-Object { [pscustomobject]@{FullName=$_.FullName;RelativePath=[IO.Path]::GetRelativePath($root,$_.FullName).Replace('\','/')} })
         }
         $lines = @($files | ForEach-Object {
-            $relative = [IO.Path]::GetRelativePath($root,$_.FullName).Replace('\','/')
-            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            $relative = $_.RelativePath
+            $key=[IO.Path]::GetFullPath($_.FullName)
+            if (-not $hashes.ContainsKey($key)) { $hashes[$key]=(Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash }
+            $hash=$hashes[$key]
             "$relative=$hash"
         } | Sort-Object)
         $fingerprints += ($lines -join "`n")
@@ -674,7 +678,9 @@ function Update-ImmichProgress {
     if ($Finished -or $Failed) { $State.Finished=$true;$State.Watch.Stop() }
 }
 
-# Dependencies are copied into an isolated candidate; the running release is never modified.
+# Preparation never modifies the running release. Controlled updates defer unchanged
+# directories for a journaled rename after shutdown; standalone preparation uses
+# the existing package managers and caches.
 function Get-ImmichDependencySource {
     param([string]$InstallRoot,[string]$ReleaseRoot)
     $source = Get-CurrentReleaseTarget -InstallRoot $InstallRoot
@@ -743,6 +749,75 @@ function Test-ImmichDependencyInputsEqual {
     try { return (Get-ImmichDependencyInputHash $PreviousRelease $Project) -ceq (Get-ImmichDependencyInputHash $CandidateRelease $Project) }
     catch { return $false }
 }
+function Read-ImmichNodeDependencyState {
+    param([string]$Path)
+    try { if (Test-Path -LiteralPath $Path -PathType Leaf) { return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json } }
+    catch { Write-Warning "Ignoring invalid dependency completion marker: $Path" }
+    return $null
+}
+function Test-ImmichNodeProjectComplete {
+    param([string]$Root,[ValidateSet('server','cli')][string]$Project)
+    try {
+        $package=Get-Content -Raw -LiteralPath (Join-Path $Root "$Project/package.json") | ConvertFrom-Json
+        foreach ($dependency in $package.dependencies.PSObject.Properties) {
+            $metadata=Join-Path $Root "$Project/node_modules/$($dependency.Name)/package.json"
+            if (-not (Test-Path -LiteralPath $metadata -PathType Leaf)) { return $false }
+            $installed=Get-Content -Raw -LiteralPath $metadata | ConvertFrom-Json
+            if (-not $installed.PSObject.Properties['name'] -or [string]$installed.name -cne $dependency.Name) { return $false }
+            if ($installed.PSObject.Properties['main'] -and [string]$installed.main -and
+                -not (Test-Path -LiteralPath (Join-Path (Split-Path $metadata) $installed.main))) {
+                $main=Join-Path (Split-Path $metadata) $installed.main
+                if (-not (Test-Path "$main.js") -and -not (Test-Path "$main.json") -and -not (Test-Path "$main.node")) { return $false }
+            }
+        }
+        return $true
+    } catch { return $false }
+}
+function Test-ImmichSharpInputsEqual {
+    param($Previous,$Candidate)
+    $inventories=@()
+    foreach ($manifest in @($Previous,$Candidate)) {
+        if (-not $manifest -or -not $manifest.PSObject.Properties['nativeDependencyFiles']) { return $false }
+        $entries=@($manifest.nativeDependencyFiles.PSObject.Properties | Where-Object { $_.Name.StartsWith('dependencies/sharp/') })
+        if (-not $entries.Count) { return $false }
+        $inventories+=((@($entries | Sort-Object Name -CaseSensitive | ForEach-Object { $_.Name+'='+([string]$_.Value).ToLowerInvariant() })) -join "`n")
+    }
+    if ($inventories[0] -cne $inventories[1]) { return $false }
+    # Both the complete DLL set and its embedded version metadata must agree.
+    foreach ($field in @('nativeDependencyMetadata')) {
+        $values=@()
+        foreach ($manifest in @($Previous,$Candidate)) {
+            $metadata=$manifest.PSObject.Properties[$field]
+            if (-not $metadata) { return $false }
+            $entries=@($metadata.Value.PSObject.Properties | Where-Object { $_.Name.StartsWith('dependencies/sharp/') })
+            if (-not $entries.Count) { return $false }
+            $values+=((@($entries | Sort-Object Name -CaseSensitive | ForEach-Object { $_.Name+'='+[string]$_.Value })) -join "`n")
+        }
+        if ($values[0] -cne $values[1]) { return $false }
+    }
+    return $true
+}
+function Test-ImmichNodeProjectReusable {
+    param([string]$PreviousRelease,[string]$CandidateRelease,[ValidateSet('server','cli')][string]$Project,[Collections.IDictionary]$Inputs)
+    try {
+        $previous=Get-Content -Raw -LiteralPath (Join-Path $PreviousRelease 'manifest.json') | ConvertFrom-Json
+        $candidate=Get-Content -Raw -LiteralPath (Join-Path $CandidateRelease 'manifest.json') | ConvertFrom-Json
+        $state=Read-ImmichNodeDependencyState (Join-Path $PreviousRelease '.node-dependencies-installed.json')
+        if (-not $state -or -not $state.PSObject.Properties['node'] -or -not $state.PSObject.Properties['pnpm'] -or
+            [string]$state.node -ne [string]$candidate.dependencies.node.version -or
+            [string]$state.pnpm -ne [string]$candidate.dependencies.pnpm.version -or
+            -not (Test-ImmichDependencyPinEqual $previous $candidate 'node') -or
+            -not (Test-ImmichDependencyPinEqual $previous $candidate 'pnpm') -or
+            -not (Test-Path -LiteralPath (Join-Path $PreviousRelease "$Project/node_modules") -PathType Container)) { return $false }
+        if ($Project -eq 'server' -and -not (Test-ImmichSharpInputsEqual $previous $candidate)) { return $false }
+        if (-not (Test-ImmichNodeProjectComplete $PreviousRelease $Project)) { return $false }
+        $expected=if ($null -ne $Inputs -and $Inputs.Contains($Project)) { [string]$Inputs[$Project] } else { Get-ImmichDependencyInputHash $CandidateRelease $Project }
+        $matches=(Get-ImmichDependencyInputHash $PreviousRelease $Project) -ceq $expected -and
+            (-not $state.PSObject.Properties[$Project] -or [string]$state.$Project -ceq $expected)
+        if ($matches -and $null -ne $Inputs) { $Inputs[$Project]=$expected }
+        return $matches
+    } catch { return $false }
+}
 function Get-ImmichPythonExecutable {
     param([Parameter(Mandatory)][string]$ReleaseRoot,[switch]$AllowMissing)
     $manifest=Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
@@ -772,74 +847,119 @@ function Get-ImmichPythonExecutable {
     return $candidates[0]
 }
 
-function Copy-ImmichDependencyTree {
-    param([string]$Source,[string]$Destination,[string[]]$ExcludeDirectoryNames=@(),[string]$Label='dependencies',[string]$PythonSourceRelease,[string[]]$ExcludeRelativeFiles=@())
-    $sourcePath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Source))
-    $destinationPath = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($Destination))
-    $separator = [IO.Path]::DirectorySeparatorChar
-    if ($sourcePath.Equals($destinationPath,[StringComparison]::OrdinalIgnoreCase) -or
-        $destinationPath.StartsWith($sourcePath+$separator,[StringComparison]::OrdinalIgnoreCase) -or
-        $sourcePath.StartsWith($destinationPath+$separator,[StringComparison]::OrdinalIgnoreCase)) { throw 'Dependency source and destination overlap.' }
-    foreach ($path in @($sourcePath,$destinationPath)) {
-        $cursor=$path
+# Only the controlled updater may defer an unchanged directory until shutdown.
+# The plan stays in memory until Update saves these exact paths in its existing
+# recovery record, before the first rename. No dependency file inventory is built.
+function Get-ImmichDependencyReadPath {
+    param([string]$Path,$DependencyReusePlan)
+    $full=[IO.Path]::GetFullPath($Path)
+    foreach ($entry in $DependencyReusePlan) {
+        $destination=[IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($entry.destination))
+        if ($full.Equals($destination,[StringComparison]::OrdinalIgnoreCase)) { return [string]$entry.source }
+        if ($full.StartsWith($destination+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
+            return Join-Path $entry.source ([IO.Path]::GetRelativePath($destination,$full))
+        }
+    }
+    return $full
+}
+function Assert-ImmichDependencyReuseEntry {
+    param($Entry,[string]$PreviousRelease,[string]$CandidateRelease)
+    $relative=[string]$Entry.relativePath
+    if ($relative -cnotmatch '\A(?:runtime/(?:node|ffmpeg|winsw)|dependencies/valkey|(?:server|cli)/node_modules|machine-learning/python-runtime/cpython-\d+\.\d+\.\d+-windows-x86_64-[A-Za-z0-9_.-]+)\z') {
+        throw "Unexpected reusable dependency directory: $relative"
+    }
+    $previous=[IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($PreviousRelease))
+    $candidate=[IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($CandidateRelease))
+    if ($previous -ieq $candidate -or [IO.Path]::GetDirectoryName($previous) -ine [IO.Path]::GetDirectoryName($candidate)) {
+        throw 'Reusable dependencies require two releases in the same releases directory.'
+    }
+    foreach ($pair in @(@([string]$Entry.source,(Join-Path $previous $relative)),@([string]$Entry.destination,(Join-Path $candidate $relative)))) {
+        if ([IO.Path]::GetFullPath($pair[0]) -ine [IO.Path]::GetFullPath($pair[1])) { throw 'Dependency transfer path does not match its recorded release.' }
+        $cursor=[IO.Path]::GetFullPath($pair[0])
         while ($cursor) {
             $item=Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
-            if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Linked dependency path: $cursor" }
+            if ($item -and ($item -isnot [IO.DirectoryInfo] -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+                throw "Dependency transfer path must be a real directory: $cursor"
+            }
             $cursor=[IO.Path]::GetDirectoryName($cursor)
         }
     }
-    $root=Get-Item -LiteralPath $sourcePath -Force -ErrorAction Stop
-    if ($root -isnot [IO.DirectoryInfo]) { throw 'Dependency source is not a directory.' }
-    if (Test-Path -LiteralPath $destinationPath) { throw 'Dependency destination already exists.' }
-    $scan=Start-ImmichProgress -Key scan -Detail $Label
-    $entries=[Collections.Generic.List[IO.FileSystemInfo]]::new()
-    $pending=[Collections.Generic.Stack[IO.DirectoryInfo]]::new()
-    $excluded=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($relative in $ExcludeRelativeFiles) { [void]$excluded.Add($relative.Replace('\','/')) }
-    $pending.Push($root)
-    while ($pending.Count) {
-        $directory=$pending.Pop()
-        foreach ($entry in (Get-ChildItem -LiteralPath $directory.FullName -Force)) {
-            if ($entry -is [IO.DirectoryInfo] -and $entry.Name -in $ExcludeDirectoryNames) { continue }
-            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked dependency entry: $($entry.FullName)" }
-            if ($entry -is [IO.FileInfo] -and $excluded.Contains([IO.Path]::GetRelativePath($sourcePath,$entry.FullName).Replace('\','/'))) { continue }
-            if ($PythonSourceRelease -and $entry -is [IO.FileInfo]) {
-                if ($entry.Name -eq 'pyvenv.cfg' -or $entry.Extension -eq '.egg-link') { throw 'Path-bound Python environment cannot be reused.' }
-                if ($entry.Extension -eq '.pth') {
-                    foreach ($line in (Get-Content -LiteralPath $entry.FullName)) {
-                        if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($PythonSourceRelease)) { throw 'Path-bound Python .pth cannot be reused.' }
-                    }
-                }
+}
+function Add-ImmichDependencyReuse {
+    param([Collections.Generic.List[object]]$Plan,[string]$PreviousRelease,[string]$CandidateRelease,[string]$RelativePath,[string]$Label)
+    if ($null -eq $Plan) { throw 'Deferred dependency reuse requires a controlled update.' }
+    $relative=$RelativePath.Replace('\','/')
+    $entry=[pscustomobject]@{relativePath=$relative;source=(Join-Path $PreviousRelease $relative);destination=(Join-Path $CandidateRelease $relative);label=$Label}
+    Assert-ImmichDependencyReuseEntry $entry $PreviousRelease $CandidateRelease
+    if (-not (Test-Path -LiteralPath $entry.source -PathType Container) -or (Test-Path -LiteralPath $entry.destination)) {
+        throw 'Reusable dependency source is missing or its destination already exists.'
+    }
+    if (@($Plan | Where-Object { $_.relativePath -ieq $relative }).Count) { throw "Dependency is already planned: $relative" }
+    $Plan.Add($entry)
+    Write-Host "Keeping installed $Label for transfer after shutdown (no scan, copy, or download)."
+}
+function Move-ImmichReusedDependencies {
+    param($DependencyReusePlan,[string]$PreviousRelease,[string]$CandidateRelease,[switch]$Restore)
+    # Check every bounded plan entry before changing any directory. Directory.Move
+    # never silently copies across a volume boundary and never overwrites a tree.
+    foreach ($entry in $DependencyReusePlan) { Assert-ImmichDependencyReuseEntry $entry $PreviousRelease $CandidateRelease }
+    $entries=@($DependencyReusePlan | ForEach-Object { $_ })
+    if ($Restore) { [array]::Reverse($entries) }
+    foreach ($entry in $entries) {
+        $source=if ($Restore) { [string]$entry.destination } else { [string]$entry.source }
+        $destination=if ($Restore) { [string]$entry.source } else { [string]$entry.destination }
+        $sourceExists=Test-Path -LiteralPath $source -PathType Container
+        $destinationExists=Test-Path -LiteralPath $destination -PathType Container
+        if ($Restore -and -not $sourceExists -and $destinationExists) { continue }
+        if (-not $sourceExists -or $destinationExists) { throw "Dependency transfer has ambiguous or missing paths: $($entry.label)" }
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+        [IO.Directory]::Move($source,$destination)
+        Write-Host "$(if ($Restore) {'Restored'} else {'Moved'}) unchanged $($entry.label)."
+    }
+}
+function Test-ImmichPythonDependencyReusable {
+    param([string]$PreviousRelease,[string]$CandidateRelease,[Collections.IDictionary]$Inputs)
+    try {
+        $previous=Get-Content -Raw -LiteralPath (Join-Path $PreviousRelease 'manifest.json') | ConvertFrom-Json
+        $candidate=Get-Content -Raw -LiteralPath (Join-Path $CandidateRelease 'manifest.json') | ConvertFrom-Json
+        if (-not (Test-ImmichDependencyPinEqual $previous $candidate python)) { return $false }
+        $marker=Get-Content -Raw -LiteralPath (Join-Path $PreviousRelease 'machine-learning/.dependencies-installed.json') | ConvertFrom-Json
+        $requirementsHash=(Get-FileHash -LiteralPath (Join-Path $CandidateRelease 'machine-learning/requirements.txt') -Algorithm SHA256).Hash
+        if ([string]$marker.python -cne [string]$candidate.dependencies.python.version -or
+            [string]$marker.requirementsSha256 -ine $requirementsHash) { return $false }
+        # Both CPU and DirectML launch the same exported package set. Device choice
+        # changes execution, not installation. The completion marker describes the
+        # installed requirements; reading the old requirements again adds no proof.
+        $python=Get-ImmichPythonExecutable -ReleaseRoot $PreviousRelease
+        if ($python.Directory.Name -notlike "cpython-$($candidate.dependencies.python.version)-windows-x86_64-*") { return $false }
+        # Python only processes .pth files in the site-packages root. Do not walk
+        # packages or cache files to check relocation; retain unused Scripts as-is
+        # for recovery. Production starts python -m immich_ml, never those launchers.
+        if (Test-Path -LiteralPath (Join-Path $python.Directory.FullName 'pyvenv.cfg')) { return $false }
+        $site=Join-Path $python.Directory.FullName 'Lib/site-packages'
+        if (-not (Test-Path -LiteralPath $site -PathType Container)) { return $false }
+        foreach ($entry in (Get-ChildItem -LiteralPath $site -File -Force | Where-Object { $_.Extension -in @('.pth','.egg-link') })) {
+            if ($entry.Extension -eq '.egg-link' -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+            foreach ($line in (Get-Content -LiteralPath $entry.FullName)) {
+                if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($PreviousRelease)) { return $false }
             }
-            $entries.Add($entry)
-            Update-ImmichProgress -State $scan -Completed $entries.Count
-            if ($entry -is [IO.DirectoryInfo]) { $pending.Push($entry) }
+        }
+        if ($null -ne $Inputs) { $Inputs.requirementsSha256=$requirementsHash.ToLowerInvariant() }
+        return $true
+    } catch { return $false }
+}
+function Assert-ImmichReusedDependencies {
+    param($DependencyReusePlan,[string]$CandidateRelease)
+    foreach ($entry in $DependencyReusePlan) {
+        if ($entry.relativePath -like 'machine-learning/python-runtime/*') {
+            $python=Get-ImmichPythonExecutable -ReleaseRoot $CandidateRelease
+            $probe='import sys,pathlib,numpy,onnxruntime,uvicorn; root=pathlib.Path(sys.argv[1]).resolve(); assert pathlib.Path(sys.prefix).resolve().is_relative_to(root); assert pathlib.Path(sys.executable).resolve().is_relative_to(root); assert pathlib.Path(numpy.__file__).resolve().is_relative_to(root); assert pathlib.Path(onnxruntime.__file__).resolve().is_relative_to(root)'
+            & $python.FullName -B -I -c $probe (Join-Path $CandidateRelease 'machine-learning/python-runtime')
+            if ($LASTEXITCODE -ne 0) { throw 'Transferred Python imports failed validation.' }
+        } elseif ($entry.relativePath -in @('server/node_modules','cli/node_modules')) {
+            if (-not (Test-ImmichNodeProjectComplete -Root $CandidateRelease -Project $entry.relativePath.Split('/')[0])) { throw 'Transferred Node packages failed validation.' }
         }
     }
-    Update-ImmichProgress -State $scan -Completed $entries.Count -Total $entries.Count -Finished
-    $parent=[IO.Path]::GetDirectoryName($destinationPath)
-    [void][IO.Directory]::CreateDirectory($parent)
-    $stage=Join-Path $parent ('.dependency-copy-'+[guid]::NewGuid().ToString('N'))
-    [void][IO.Directory]::CreateDirectory($stage)
-    $copy=Start-ImmichProgress -Key copy -Detail $Label
-    $copied=0
-    try {
-        foreach ($entry in $entries) {
-            $target=Join-Path $stage ([IO.Path]::GetRelativePath($sourcePath,$entry.FullName))
-            if ($entry -is [IO.DirectoryInfo]) { [void][IO.Directory]::CreateDirectory($target) }
-            else {
-                [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-                [IO.File]::Copy($entry.FullName,$target,$false)
-            }
-            $copied++
-            Update-ImmichProgress -State $copy -Completed $copied -Total $entries.Count
-        }
-        [IO.Directory]::Move($stage,$destinationPath)
-        Update-ImmichProgress -State $copy -Completed $copied -Total $entries.Count -Finished
-    } catch {
-        Update-ImmichProgress -State $copy -Failed
-        throw
-    } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force } }
 }
 
 function Expand-ImmichNativePayload {

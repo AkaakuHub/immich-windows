@@ -71,6 +71,10 @@ try {
     $state | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stateFile -Encoding utf8
 
 & (Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1') -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+if ($LASTEXITCODE -ne 0) { throw "Immich shutdown failed with exit code $LASTEXITCODE." }
+if ($state.ContainsKey('dependencyTransfers')) {
+    Move-ImmichReusedDependencies -DependencyReusePlan $state.dependencyTransfers -PreviousRelease $previousRelease -CandidateRelease ([string]$state.candidateRelease) -Restore
+}
 
 # A Windows PostgreSQL extension DLL is global to the PostgreSQL installation,
 # not release-local. Put back the extension binaries paired with the previous

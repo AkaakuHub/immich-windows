@@ -94,3 +94,5 @@ try {
 & (Join-Path $PSScriptRoot 'Runtime-Staging.ps1') -ForceCrossVolumeFallback
 if ($IsWindows) { & (Join-Path $PSScriptRoot 'Runtime-Staging.ps1') -ForceNativeCrossDeviceError }
 & (Join-Path $PSScriptRoot 'Runtime-Staging.ps1') -ForceMovePermissionError
+
+& (Join-Path $PSScriptRoot 'Runtime-Staging.ps1') -ReuseInstalled
