@@ -562,6 +562,15 @@ def plan():
     values['publish'] = release_policy(api, version)
     if os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/main':
         sha = os.environ['GITHUB_SHA']
+        if not values['publish']:
+            from publish_qualified import notes, published_metadata
+            published, record, artifact, assets = published_metadata(api, version)
+            if published['body'] != notes(record, artifact, record['mainCommit']) or any(a.get('label') for a in assets):
+                values.update(publish=True, reuse=True, metadata_only=True, artifact_id=artifact['id'],
+                              artifact_digest=artifact['digest'], run_id=record['runId'], source_commit=record['sourceCommit'])
+                summary(f'Refreshing published {version} metadata through the existing publisher; no repeated build or artifact download.')
+                output(values)
+                return
         selected = select_qualified_pr(api, sha, version)
         if selected:
             pr, run, artifact, record, _ = selected
@@ -768,8 +777,11 @@ if __name__ == '__main__':
     elif args.command == 'prepare-native':
         prepare_native()
     elif args.command == 'publish':
-        from publish_qualified import publish
-        record, artifact = prepare_publish(args.version, args.directory)
-        publish(API(), record, artifact, args.directory, os.environ['GITHUB_SHA'])
+        from publish_qualified import publish, refresh_published_metadata
+        if os.environ.get('METADATA_ONLY') == 'true':
+            refresh_published_metadata(API(), args.version, os.environ['GITHUB_SHA'])
+        else:
+            record, artifact = prepare_publish(args.version, args.directory)
+            publish(API(), record, artifact, args.directory, os.environ['GITHUB_SHA'])
     else:
         prepare_publish(args.version, args.directory)

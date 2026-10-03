@@ -2,6 +2,7 @@
 import copy
 import io
 import json
+import os
 from pathlib import Path
 from unittest import mock
 import urllib.error
@@ -38,7 +39,7 @@ class PublicationTests(OfflineTestCase):
         return value
 
     def asset(self, name):
-        return {'id': len(self.api.collections['releases/77/assets']) + 100, 'name': name, 'state': 'uploaded',
+        return {'id': sorted(self.record['assets']).index(name) + 100, 'name': name, 'state': 'uploaded',
                 'size': (self.directory / name).stat().st_size, 'digest': 'sha256:' + self.record['assets'][name],
                 'label': publisher.asset_label(self.record, self.artifact, name),
                 'uploader': {'login': 'github-actions[bot]'}}
@@ -61,21 +62,91 @@ class PublicationTests(OfflineTestCase):
             return copy.deepcopy(value)
         if path == 'releases/77':
             self.assertEqual(method, 'PATCH')
-            self.assertEqual(data, {'draft': False, 'make_latest': 'true'})
-            self.api.objects[path]['draft'] = False
+            if not self.api.objects[path]['draft']:
+                self.assertEqual(data, {'body': publisher.notes(self.record, self.artifact, MERGED)})
+                self.api.objects[path]['body'] = data['body']
+                return copy.deepcopy(self.api.objects[path])
+            self.assertEqual(data, {'body': publisher.notes(self.record, self.artifact, MERGED), 'draft': False, 'make_latest': 'true'})
+            self.api.objects[path].update(body=data['body'], draft=False)
             self.api.objects[f'git/ref/tags/{self.version}'] = {'object': {'type': 'commit', 'sha': MERGED}}
             return copy.deepcopy(self.api.objects[path])
         if path.startswith('releases/assets/'):
-            self.assertEqual(method, 'DELETE')
-            self.assertIsNone(data)
             asset_id = int(path.rsplit('/', 1)[-1])
             assets = self.api.collections['releases/77/assets']
+            if method == 'PATCH':
+                self.assertEqual(data, {'label': ''})
+                self.assertEqual(len(assets), 4)
+                self.assertTrue(all(a['state'] == 'uploaded' for a in assets))
+                asset = next(a for a in assets if a['id'] == asset_id)
+                asset['label'] = ''
+                return copy.deepcopy(asset)
+            self.assertEqual(method, 'DELETE')
+            self.assertIsNone(data)
             assets[:] = [a for a in assets if a['id'] != asset_id]
             return None
         self.fail(f'Unexpected write {path}')
 
     def publish(self):
         return publisher.publish(self.api, self.record, self.artifact, self.directory, MERGED)
+
+    def metadata_fixture(self):
+        value = self.draft()
+        value.update(draft=False, body=publisher.notes(self.record, self.artifact, MERGED, legacy=True))
+        self.api.objects[f'releases/tags/{self.version}'] = value
+        self.api.objects[f'git/ref/tags/{self.version}'] = {'object': {'type': 'commit', 'sha': MERGED}}
+        _, run, jobs, _, source, _ = provenance()
+        self.api.objects[f"git/commits/{source['sha']}"] = source
+        self.api.objects[f'git/commits/{MERGED}'] = dict(source, sha=MERGED)
+        self.api.objects[f"actions/runs/{run['id']}"] = run
+        self.api.objects[f"actions/artifacts/{self.artifact['id']}"] = self.artifact
+        self.api.collections[f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"] = jobs
+        self.api.collections['releases/77/assets'] = [self.asset(name) for name in self.record['assets']]
+        os.environ.update(QUALIFIED_RUN_ID=str(run['id']), QUALIFIED_ARTIFACT_ID=str(self.artifact['id']),
+                          QUALIFIED_ARTIFACT_DIGEST=self.artifact['digest'])
+        return value
+
+    def test_existing_main_plan_selects_metadata_only_without_artifact_download(self):
+        self.metadata_fixture()
+        with mock.patch.object(release, 'API', return_value=self.api), mock.patch.object(release, 'release_policy', return_value=False), \
+                mock.patch.object(release.Path, 'read_text', return_value=json.dumps({'version': 'v3.2.2', 'windowsRevision': 4})), \
+                mock.patch.object(release, 'output') as output:
+            release.plan()
+        values = output.call_args.args[0]
+        self.assertTrue(values['reuse'] and values['publish'] and values['metadata_only'])
+        self.assertEqual(values['artifact_id'], self.artifact['id'])
+        self.upload.assert_not_called()
+        self.api.write.assert_not_called()
+        self.opener.assert_not_called()
+
+    def test_published_metadata_changes_exactly_labels_and_body_then_is_a_noop(self):
+        value = self.metadata_fixture()
+        original = copy.deepcopy(self.api.collections['releases/77/assets'])
+        old_hidden = value['body'].split('<!--')[1]
+        with mock.patch.object(publisher, 'release_policy', return_value=False):
+            publisher.refresh_published_metadata(self.api, self.version, MERGED)
+            self.assertEqual(self.api.write.call_count, 5)
+            self.assertEqual(value['body'].split('<!--')[1], old_hidden)
+            for before, after in zip(original, self.api.collections['releases/77/assets']):
+                self.assertEqual(after, dict(before, label=''))
+            self.api.write.reset_mock()
+            publisher.refresh_published_metadata(self.api, self.version, MERGED)
+            self.api.write.assert_not_called()
+        self.upload.assert_not_called()
+        self.opener.assert_not_called()
+
+    def test_metadata_repair_refuses_changed_payload_or_selected_evidence_before_write(self):
+        for changed in ('payload', 'artifact', 'tag', 'asset', 'body', 'run'):
+            value = self.metadata_fixture()
+            if changed == 'artifact': os.environ['QUALIFIED_ARTIFACT_ID'] = '999'
+            if changed == 'tag': self.api.objects[f'git/ref/tags/{self.version}']['object']['sha'] = 'f' * 40
+            if changed == 'asset': self.api.collections['releases/77/assets'][0]['digest'] = 'sha256:' + 'f' * 64
+            if changed == 'body': value['body'] += 'changed'
+            if changed == 'run': self.api.objects['actions/runs/100']['conclusion'] = 'failure'
+            with self.subTest(changed=changed), mock.patch.object(publisher, 'release_policy', return_value=changed == 'payload'), self.assertRaises(ValueError):
+                publisher.refresh_published_metadata(self.api, self.version, MERGED)
+            self.api.write.assert_not_called()
+        self.upload.assert_not_called()
+        self.opener.assert_not_called()
 
     def test_upload_streams_exact_bytes_to_fixed_host_with_length_and_owned_label(self):
         name = sorted(self.record['assets'])[0]
@@ -103,7 +174,8 @@ class PublicationTests(OfflineTestCase):
         self.publish()
         self.assertEqual(self.upload.call_count, 4)
         self.assertFalse(self.api.objects['releases/77']['draft'])
-        self.assertEqual(self.api.write.call_args_list[-1], mock.call('releases/77', {'draft': False, 'make_latest': 'true'}, method='PATCH'))
+        self.assertEqual(self.api.write.call_args_list[-1], mock.call('releases/77', {'body': publisher.notes(self.record, self.artifact, MERGED), 'draft': False, 'make_latest': 'true'}, method='PATCH'))
+        self.assertTrue(all(a['label'] == '' for a in self.api.collections['releases/77/assets']))
 
     def test_owned_partial_draft_uploads_only_missing_assets(self):
         self.draft()
@@ -111,7 +183,75 @@ class PublicationTests(OfflineTestCase):
         self.api.collections['releases/77/assets'] = [self.asset(n) for n in existing]
         self.publish()
         self.assertEqual({c.args[2].name for c in self.upload.call_args_list}, set(self.record['assets']) - set(existing))
-        self.assertEqual(self.api.write.call_count, 1)
+        self.assertEqual(self.api.write.call_count, 5)
+
+    def test_japanese_notes_preserve_the_exact_hidden_provenance(self):
+        body = publisher.notes(self.record, self.artifact, MERGED)
+        legacy = publisher.notes(self.record, self.artifact, MERGED, legacy=True)
+        self.assertEqual(body[body.index('<!--'):], legacy[legacy.index('<!--'):])
+        visible = body[:body.index('<!--')]
+        self.assertIn('通常の導入・更新', visible)
+        self.assertIn('`Install.cmd`', visible)
+        self.assertIn(f'/blob/{MERGED}/docs/install.md', visible)
+        for name in self.record['assets']:
+            self.assertIn(name, visible)
+        self.assertNotIn('Artifact:', visible)
+        self.assertNotIn('Actual build commit:', visible)
+        for version in ('v3.2.4.0', 'v3.2.5.0'):
+            version_body = publisher.notes(dict(self.record, version=version), self.artifact, MERGED)
+            self.assertEqual('保存済みの古いものではなく' in version_body, version == 'v3.2.4.0')
+
+    def test_legacy_owned_draft_resumes_with_new_notes_and_normal_filenames(self):
+        self.draft()['body'] = publisher.notes(self.record, self.artifact, MERGED, legacy=True)
+        self.assertTrue(release.release_policy(self.api, self.version, resume=(self.record, self.artifact, MERGED)))
+        self.publish()
+        self.assertEqual(self.api.objects['releases/77']['body'], publisher.notes(self.record, self.artifact, MERGED))
+        self.assertTrue(all(a['label'] == '' for a in self.api.collections['releases/77/assets']))
+
+    def test_changed_hidden_provenance_is_not_accepted_in_either_notes_format(self):
+        for legacy in (False, True):
+            body = publisher.notes(self.record, self.artifact, MERGED, legacy=legacy)
+            visible, marker = body.split('<!--', 1)
+            self.draft()['body'] = visible + '<!--' + marker.replace('"runId":100', '"runId":999')
+            with self.subTest(legacy=legacy), self.assertRaises(ValueError):
+                self.publish()
+        self.upload.assert_not_called()
+        self.api.write.assert_not_called()
+
+    def test_partial_label_update_resumes_without_reuploading_or_repeating_cleared_labels(self):
+        self.draft()
+        first = True
+        def uncertain(path, data, method='POST'):
+            nonlocal first
+            result = self.write_api(path, data, method)
+            if path.startswith('releases/assets/') and method == 'PATCH' and first:
+                first = False
+                raise urllib.error.URLError('response lost after label update')
+            return result
+        self.api.write.side_effect = uncertain
+        with self.assertRaises(urllib.error.URLError):
+            self.publish()
+        self.assertTrue(self.api.objects['releases/77']['draft'])
+        self.upload.reset_mock()
+        self.api.write.reset_mock(side_effect=True)
+        self.api.write.side_effect = self.write_api
+        self.publish()
+        self.upload.assert_not_called()
+        self.assertEqual(self.api.write.call_count, 4)  # Three remaining labels and publication.
+
+    def test_label_update_must_preserve_asset_identity_before_publication(self):
+        for key, value in [('name', 'renamed.zip'), ('size', 0), ('digest', 'sha256:' + 'f' * 64),
+                           ('state', 'starter'), ('id', 999), ('label', 'still visible')]:
+            self.draft()
+            self.api.collections['releases/77/assets'] = [self.asset(n) for n in self.record['assets']]
+            def changed(path, data, method='POST'):
+                result = self.write_api(path, data, method)
+                result[key] = value
+                return result
+            self.api.write.side_effect = changed
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'qualified identity'):
+                self.publish()
+            self.assertTrue(self.api.objects['releases/77']['draft'])
 
     def test_unowned_or_mismatched_draft_fails_before_any_upload_or_write(self):
         for field, value in [('body', 'foreign'), ('target_commitish', 'f' * 40), ('name', 'other'),
@@ -199,7 +339,11 @@ class PublicationTests(OfflineTestCase):
 
     def test_failed_final_publish_resumes_without_reuploading_assets(self):
         self.draft()
-        self.api.write.side_effect = urllib.error.HTTPError('fixture', 500, 'Transient publish failure', {}, None)
+        def failed_publish(path, data, method='POST'):
+            if path == 'releases/77':
+                raise urllib.error.HTTPError('fixture', 500, 'Transient publish failure', {}, None)
+            return self.write_api(path, data, method)
+        self.api.write.side_effect = failed_publish
         with self.assertRaises(urllib.error.HTTPError):
             self.publish()
         self.assertEqual(self.upload.call_count, 4)

@@ -59,6 +59,7 @@ jobs:
       checkout: ${{ steps.plan.outputs.checkout }}
       publish: ${{ steps.plan.outputs.publish }}
       reuse: ${{ steps.plan.outputs.reuse }}
+      metadata_only: ${{ steps.plan.outputs.metadata_only }}
       run_id: ${{ steps.plan.outputs.run_id }}
       artifact_id: ${{ steps.plan.outputs.artifact_id }}
       artifact_digest: ${{ steps.plan.outputs.artifact_digest }}
@@ -144,7 +145,7 @@ jobs:
           if-no-files-found: error
   seed-codec-cache:
     needs: plan
-    if: (github.event_name == 'push' || inputs.qualified_run_id != '') && github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true'
+    if: (github.event_name == 'push' || inputs.qualified_run_id != '') && github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true' && needs.plan.outputs.metadata_only != 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -515,6 +516,7 @@ jobs:
       - name: Verify and publish or resume the exact qualified release
         env:
           GH_TOKEN: ${{ github.token }}
+          METADATA_ONLY: ${{ needs.plan.outputs.metadata_only }}
           QUALIFIED_RUN_ID: ${{ needs.plan.outputs.run_id }}
           QUALIFIED_ARTIFACT_ID: ${{ needs.plan.outputs.artifact_id }}
           QUALIFIED_ARTIFACT_DIGEST: ${{ needs.plan.outputs.artifact_digest }}
