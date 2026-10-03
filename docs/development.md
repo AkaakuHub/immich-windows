@@ -42,7 +42,7 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 | --- | --- |
 | `build-windows-native` | PRで静的監査・パッチ適用・ビルド・両スコープの導入と更新を一度検証します。mainでは同じ内容の検証済み成果物を再利用し、そのままReleaseへ公開します。再利用の証拠がない場合は通常の検証を実行します。手動`all`は明示的な再検証、`codec`・`postgres`・`migration`は個別成果物のみです |
 | `keep-native-build-cache` | 定期的に現在の設定に一致するキャッシュを参照します |
-| `check-upstream-immich-release` | 毎日03:17 UTCに上流stable版を確認し、新しい版だけ固定コミット・依存版・パッチを準備してPRを作成し、既存の検証workflowを一度起動します |
+| `check-upstream-immich-release` | 毎日19:43 UTC（翌04:43 JST）に上流stable版を確認し、新しい版だけ固定コミット・依存版・パッチを準備してPRを作成し、既存の検証workflowを一度起動します |
 | `complete-qualified-upstream` | 成功した自動更新のrun・artifact・PRのhead/base/treeを照合し、自動マージ後に同じ成果物の公開を起動します |
 
 Windows runnerの使い捨てDBで起動・更新・設定保持・同一版拒否を検証します。トレイは組み込みの.NET Frameworkコンパイラでビルドし、Windows PowerShell 5.1上で日英ラベル、引数の引用、UAC分離、NotifyIconの生成、両スコープのスタートアップ登録、旧メニュー削除を検証します。CurrentUserの起動判定には保持したProcessオブジェクトを使い、ロード直後にPathがまだ取得できない状態を終了扱いしません。GPUがないCIではCPUで小さいONNXモデルの推論を検証し、GPUフォールバック制御はモックテストします。RX 550での実モデル推論・PC再起動は実機検証が必要です。

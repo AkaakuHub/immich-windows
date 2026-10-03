@@ -2,7 +2,7 @@ name: check-upstream-immich-release
 
 on:
   schedule:
-    - cron: '17 3 * * *'
+    - cron: '43 19 * * *'
   workflow_dispatch:
 
 permissions:
