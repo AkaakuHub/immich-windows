@@ -187,32 +187,109 @@ function Test-ImmichElevated {
     return ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Initialize-ImmichDesktopShell {
+    if (-not ('Immich.Windows.DesktopShell' -as [type])) {
+        Add-Type -Path (Join-Path $PSScriptRoot 'tray\DesktopShell.cs')
+    }
+}
+
+function Get-ImmichTrayProcesses {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$ReleasePath)
+    Initialize-ImmichDesktopShell
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+    try { $sid=$identity.User.Value } finally { $identity.Dispose() }
+    $caller=[Diagnostics.Process]::GetCurrentProcess()
+    try { $session=$caller.SessionId } finally { $caller.Dispose() }
+    $paths=@((Join-Path $ReleasePath 'runtime\tray\ImmichTray.exe'),(Join-Path $InstallRoot 'current\runtime\tray\ImmichTray.exe')) | ForEach-Object { [IO.Path]::GetFullPath($_) }
+    # Take one bounded snapshot before signalling. Never kill a process or scan releases.
+    # Both spellings are exact: Windows can report the original current-junction path.
+    $captured=[Collections.Generic.List[Diagnostics.Process]]::new()
+    try {
+        foreach ($process in @(Get-Process -Name ImmichTray -ErrorAction SilentlyContinue)) {
+            $retain=$false
+            $matchedPath=$false
+            try {
+                # Pin before any identity reads; an exiting process cannot be replaced by PID reuse.
+                $null=$process.Handle
+                if ($process.SessionId -ne $session) { continue }
+                $matchedPath=[IO.Path]::GetFullPath($process.MainModule.FileName) -iin $paths
+                if ($matchedPath -and [Immich.Windows.DesktopShell]::ProcessUser($process) -eq $sid) {
+                    $captured.Add($process)
+                    $retain=$true
+                }
+            } catch [ComponentModel.Win32Exception] {
+                # An inaccessible unrelated process with the same basename is not our tray.
+                # Once the exact image matched, inability to verify its SID fails closed.
+                if ($matchedPath -or $_.Exception.NativeErrorCode -ne 5) { throw }
+            } catch [InvalidOperationException] { if (-not $process.HasExited) { throw } }
+            finally { if (-not $retain) { $process.Dispose() } }
+        }
+        return $captured.ToArray()
+    } catch {
+        foreach ($process in $captured) { $process.Dispose() }
+        throw
+    }
+}
+
 function Stop-ImmichTray {
-    param([Parameter(Mandatory)][string]$InstallRoot)
+    param([Parameter(Mandatory)][string]$InstallRoot,[string]$ReleasePath=(Get-CurrentReleaseTarget -InstallRoot $InstallRoot))
     $executable=Join-Path $InstallRoot 'current\runtime\tray\ImmichTray.exe'
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { return }
-    $arguments=(@('--install-root',$InstallRoot,'--exit-existing') | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
-    $process=Start-Process -FilePath $executable -ArgumentList $arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "Could not close this session's Immich tray (exit $($process.ExitCode))." }
+    Initialize-ImmichDesktopShell
+    $desktop=[Immich.Windows.DesktopShell]::GetDesktopProcess()
+    try {
+        $desktopSid=if ($desktop) { [Immich.Windows.DesktopShell]::ProcessUser($desktop) } else { $null }
+        if ($desktopSid) {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            try { $sameUser=$desktopSid -eq $identity.User.Value } finally { $identity.Dispose() }
+            if (-not $sameUser) { throw 'The desktop belongs to a different user from this updater. Its tray was left running; close that tray before removing the previous release.' }
+        }
+    } finally { if ($desktop) { $desktop.Dispose() } }
+    $processes=@(Get-ImmichTrayProcesses -InstallRoot $InstallRoot -ReleasePath $ReleasePath)
+    try {
+        $arguments=(@('--install-root',$InstallRoot,'--exit-existing') | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+        $control=Start-Process -FilePath $executable -ArgumentList $arguments -Wait -PassThru
+        try { if ($control.ExitCode -ne 0) { throw "Could not close this session's Immich tray (exit $($control.ExitCode))." } }
+        finally { $control.Dispose() }
+        # v8 signals completion when its mutex is released, just before the EXE unloads.
+        # Wait for the captured process itself, with no retry loop or file-open polling.
+        foreach ($process in $processes) {
+            if (-not $process.WaitForExit(10000)) { throw "Immich tray process $($process.Id) did not exit within 10 seconds." }
+        }
+    } finally { foreach ($process in $processes) { $process.Dispose() } }
 }
 
 function Start-ImmichTray {
     param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot,
           [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope)
-    if (Test-ImmichElevated) {
-        Write-Host 'Immich tray is registered for sign-in. Launch its Startup shortcut from your normal desktop session.'
+    $entry=Get-ImmichTrayEntry -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+    Initialize-ImmichDesktopShell
+    $desktop=[Immich.Windows.DesktopShell]::GetDesktopProcess()
+    if (-not $desktop) {
+        Write-Host 'No desktop shell is available in this session. Immich tray will start at the next desktop sign-in.'
         return
     }
-    Stop-ImmichTray -InstallRoot $InstallRoot
-    $entry=Get-ImmichTrayEntry -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
-    Start-Process -FilePath $entry.TargetPath -ArgumentList $entry.Arguments -WorkingDirectory $InstallRoot | Out-Null
+    try {
+        $elevated=Test-ImmichElevated
+        if ($elevated -and [Immich.Windows.DesktopShell]::IsElevated($desktop)) {
+            Write-Warning (Get-ImmichProgressText trayDeferred)
+            return
+        }
+    } finally { $desktop.Dispose() }
+    if ($elevated) {
+        [Immich.Windows.DesktopShell]::Execute($entry.TargetPath,$entry.Arguments,$InstallRoot)
+    } else {
+        # Start is idempotent via the tray's SID/session/install mutex. Replacement
+        # requires an explicit Stop before cleanup; starting never hides another stop.
+        Start-Process -FilePath $entry.TargetPath -ArgumentList $entry.Arguments -WorkingDirectory $InstallRoot | Out-Null
+    }
 }
 
 function Get-WindowsReleaseVersion {
     param([Parameter(Mandatory)]$Upstream)
-    if ([string]$Upstream.version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or
-        [string]$Upstream.windowsRevision -notmatch '^[1-9][0-9]*$') {
-        throw 'upstream.json must contain a stable upstream version and a positive windowsRevision.'
+    if ([string]$Upstream.version -cnotmatch '\Av(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z' -or
+        [string]$Upstream.windowsRevision -cnotmatch '\A(0|[1-9][0-9]*)\z') {
+        throw 'upstream.json must contain a stable upstream version and a nonnegative windowsRevision.'
     }
     return 'v' + ([version]("$($Upstream.version.TrimStart('v')).$($Upstream.windowsRevision)")).ToString(4)
 }
@@ -221,10 +298,10 @@ function Get-WindowsReleaseVersion {
 function Get-WindowsPackageVersion {
     param([Parameter(Mandatory)]$Manifest)
     $upstream = [string]$Manifest.immichVersion
-    if ($upstream -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    if ($upstream -cnotmatch '\Av(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z') {
         throw "Invalid upstream version: $upstream"
     }
-    # Legacy packages had no Windows revision. Treat only that documented schema as revision zero.
+    # Schema 1 packages omitted the Windows revision; preserve their documented revision-zero identity.
     if (-not $Manifest.PSObject.Properties['windowsRevision']) {
         if ($Manifest.schemaVersion -ne 1 -or $Manifest.PSObject.Properties['packageVersion']) {
             throw 'Missing Windows package revision.'
@@ -232,7 +309,7 @@ function Get-WindowsPackageVersion {
         return [version]($upstream.TrimStart('v') + '.0')
     }
     $revision = [string]$Manifest.windowsRevision
-    if ($revision -notmatch '^[1-9][0-9]*$') { throw "Invalid Windows revision: $revision" }
+    if ($revision -cnotmatch '\A(0|[1-9][0-9]*)\z') { throw "Invalid Windows revision: $revision" }
     $version = [version]($upstream.TrimStart('v') + '.' + $revision)
     if ([string]$Manifest.packageVersion -cne "v$version") { throw 'Package version does not match upstream and Windows revision.' }
     return $version
@@ -572,6 +649,7 @@ function Get-ImmichProgressText {
         verify=@('Checking the updated installation','更新後の動作を確認中')
         complete=@('Completed','完了');failed=@('Failed','失敗');elapsed=@('elapsed','経過');items=@('items','件')
         selection=@('If the console title says Select, press Esc to leave selection mode.','タイトルに「選択」と表示された場合はEscで選択を解除してください。')
+        trayDeferred=@('The desktop shell is elevated, so Immich tray was not started. This does not block server installation. Start the tray from a non-elevated desktop.','デスクトップシェルが管理者権限で動作しているため、Immichトレイは起動していません。サーバーのインストールは続行できます。管理者権限ではないデスクトップからトレイを起動してください。')
     }
     if (-not $messages.ContainsKey($Key)) { throw "Unknown progress message: $Key" }
     return $messages[$Key][[int]$ja]

@@ -28,6 +28,8 @@ param(
     [switch]$PrepareOnly,
     [switch]$ApplicationOnly,
     [switch]$DoNotStart,
+    # Same-process Update.ps1 continuation, never serialized or used as a validation bypass.
+    [Parameter(DontShow)][scriptblock]$UpdateController,
     [string]$ElevationFailureReport
 )
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
@@ -88,6 +90,9 @@ function Start-ElevatedInstaller {
 }
 
 try {
+if ($UpdateController -and (-not $ReuseServices -or $PrepareOnly -or $ApplicationOnly -or -not $DoNotStart)) {
+    throw 'The update continuation requires a complete controlled installation.'
+}
 if (-not $PackageRoot) { $PackageRoot = Split-Path -Parent $PSScriptRoot }
 if (-not $Scope) {
     $detected = @()
@@ -108,6 +113,7 @@ if (-not $Scope) {
     $Scope = switch ($scopeChoice) { '1' { 'AllUsers' } '2' { 'CurrentUser' } default { throw 'Choose 1 or 2 for the install scope.' } }
 }
 if ($Scope -eq 'AllUsers') {
+    if ($UpdateController) { Assert-Administrator }
     Start-ElevatedInstaller -InstallerParameters $PSBoundParameters
 }
 $paths=Resolve-ImmichInstallPaths -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot
@@ -174,7 +180,6 @@ if([string]$packageManifest.target -ne 'windows-x64-native'){throw "Unsupported 
 if(-not $AllowUnqualifiedMediaStack -and -not [bool]$packageManifest.mediaStack.productionQualified){
     throw 'Package media stack is not production-qualified. Use -AllowUnqualifiedMediaStack only for isolated bring-up testing.'
 }
-if (-not $AllowUnqualifiedMediaStack) { & (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackageRoot $PackageRoot }
 $packageVersion = 'v' + (Get-WindowsPackageVersion $packageManifest).ToString(4)
 $existingRelease = Get-CurrentReleaseTarget -InstallRoot $InstallRoot
 if ($existingRelease) {
@@ -188,6 +193,12 @@ if ($existingRelease) {
         & (Join-Path $PSScriptRoot 'Update.ps1') -PackageRoot $PackageRoot -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService
         return
     }
+}
+if ($UpdateController -and (-not $existingRelease -or $AllowUnqualifiedMediaStack)) { throw 'A controlled update requires an existing qualified release.' }
+if (-not $AllowUnqualifiedMediaStack) {
+    $global:LASTEXITCODE=0
+    & (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackageRoot $PackageRoot
+    if ($LASTEXITCODE -ne 0) { throw "Package validation failed with exit code $LASTEXITCODE." }
 }
 $postgresExe=Join-Path $PostgresRoot 'bin\postgres.exe'
 $psqlExe=Join-Path $PostgresRoot 'bin\psql.exe'
@@ -205,7 +216,7 @@ if(-not $postgresServiceObject){throw "PostgreSQL Windows service was not found:
 if($postgresServiceObject.Status -ne 'Running'){throw "PostgreSQL Windows service must be Running before installation: $PostgresService (current: $($postgresServiceObject.Status))"}
 if (-not (Test-WindowsAbsolutePath $MediaRoot)) { throw 'MediaRoot must be an absolute Windows drive or UNC path.' }
 if (-not (Test-Path -LiteralPath $MediaRoot)) { throw "MediaRoot does not exist: $MediaRoot" }
-if (-not $PrepareOnly -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'current'))) {
+if (-not $PrepareOnly -and -not $UpdateController -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'current'))) {
     $stopScript = Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
     if (-not (Test-Path -LiteralPath $stopScript -PathType Leaf)) {
         throw "Cannot safely replace the existing Immich installation because its stop script is missing: $stopScript"
@@ -228,12 +239,27 @@ if ($ResumeExistingRelease) {
 } else {
     $release = Install-ReleaseDirectory -PackageRoot $PackageRoot -InstallRoot $InstallRoot
 }
-& (Join-Path $release 'installer\Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
-& (Join-Path $PackageRoot 'runtime\launchers\Install-NodeDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
-& (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1') -ReleaseRoot $release -InstallRoot $InstallRoot
+foreach ($dependencyInstaller in @(
+    (Join-Path $release 'installer\Install-RuntimeDependencies.ps1'),
+    (Join-Path $PackageRoot 'runtime\launchers\Install-NodeDependencies.ps1'),
+    (Join-Path $release 'installer\Install-MachineLearningDependencies.ps1')
+)) {
+    $global:LASTEXITCODE=0
+    & $dependencyInstaller -ReleaseRoot $release -InstallRoot $InstallRoot
+    if ($LASTEXITCODE -ne 0) { throw "Dependency preparation failed: $dependencyInstaller (exit $LASTEXITCODE)." }
+}
 if ($PrepareOnly) { Write-Host "Candidate dependencies prepared: $release"; return }
+if ($UpdateController) {
+    # Keep preparation and activation in one invocation. The controller stops
+    # the old release, then this installer classifies the actual prepared bytes.
+    # No dependency installer or payload writer runs between that proof and activation.
+    $context = [pscustomobject]@{PackageRoot=$PackageRoot;Release=$release;PreviousRelease=$existingRelease;InstallRoot=$InstallRoot;DataRoot=$DataRoot;Scope=$Scope}
+    & $UpdateController 'Prepared' $context | Out-Null
+    $ApplicationOnly = Test-ImmichDatabasePayloadEqual -PreviousRelease $existingRelease -CandidateRelease $release
+    & $UpdateController 'DatabaseCompared' $context ([bool]$ApplicationOnly) | Out-Null
+}
 $current = Join-Path $InstallRoot 'current'
-if ($ApplicationOnly -and (-not $existingRelease -or -not (Test-ImmichDatabasePayloadEqual -PreviousRelease $existingRelease -CandidateRelease $release))) {
+if ($ApplicationOnly -and -not $UpdateController -and (-not $existingRelease -or -not (Test-ImmichDatabasePayloadEqual -PreviousRelease $existingRelease -CandidateRelease $release))) {
     throw 'Application-only update requires identical database-facing payloads.'
 }
 if (-not $ApplicationOnly) {

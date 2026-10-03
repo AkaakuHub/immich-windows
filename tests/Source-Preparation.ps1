@@ -66,6 +66,7 @@ pnpm = "10.0.0"
 version = "7.0.0"
 '@
     Write-File (Join-Path $origin 'server/package.json') '{"version":"1.0.0","dependencies":{"sharp":"^1.0.0"}}'
+    Write-File (Join-Path $origin 'server/Dockerfile') ("FROM ghcr.io/immich-app/base-server-dev:202609281550@sha256:" + ('1' * 64) + " AS builder`nFROM ghcr.io/immich-app/base-server-prod:202609281550@sha256:" + ('2' * 64) + "`n")
     Write-File (Join-Path $origin 'value.txt') "original`n"
     Invoke-Git @('init', '--quiet', $origin) | Out-Null
     Invoke-Git @('-C', $origin, 'add', '.') | Out-Null
@@ -141,6 +142,39 @@ version = "7.0.0"
     Remove-Item -LiteralPath $badPatch
     Write-File (Join-Path $root 'patches/series') "change.patch`n"
     Prepare 'Prepared Immich'
+    Prepare 'Reusing prepared Immich'
+
+    # Production runtime pins deliberately differ from stale mise development pins.
+    $depsPath = Join-Path $root 'dependencies/versions.json'
+    $deps = Get-Content -Raw $depsPath | ConvertFrom-Json -AsHashtable
+    $deps.node.version = '24.21.0'
+    $deps.ffmpeg.version = '7.1.4-3'
+    $deps.upstreamRuntime = @{
+        schemaVersion = 1; immichCommit = $commit; nodeVersion = '24.21.0'; ffmpegVersion = '7.1.4-3'
+        developmentTools = @{node='24.0.0';ffmpeg='7.0.0'}
+        baseImages = @{commit=('b' * 40);tag='202609281550';images=@{
+            dev=@{tag='202609281550';digest=('1' * 64)};prod=@{tag='202609281550';digest=('2' * 64)}
+        }}
+        sourceSha256 = @{}
+    }
+    foreach ($name in @('mise.toml','server/package.json','server/Dockerfile')) {
+        $deps.upstreamRuntime.sourceSha256[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $source $name)).Hash.ToLowerInvariant()
+    }
+    Write-File $depsPath ($deps | ConvertTo-Json -Depth 10)
+    Prepare 'Reusing prepared Immich'
+    $deps.upstreamRuntime.nodeVersion = '24.15.0'
+    Write-File $depsPath ($deps | ConvertTo-Json -Depth 10)
+    Prepare 'Production runtime pins do not match' -Reject
+    $deps.upstreamRuntime.nodeVersion = '24.21.0'
+    $deps.upstreamRuntime.baseImages.images.prod.digest = '3' * 64
+    Write-File $depsPath ($deps | ConvertTo-Json -Depth 10)
+    Prepare 'base image pin differs' -Reject
+    $deps.upstreamRuntime.baseImages.images.prod.digest = '2' * 64
+    $deps.upstreamRuntime.sourceSha256['mise.toml'] = '0' * 64
+    Write-File $depsPath ($deps | ConvertTo-Json -Depth 10)
+    Prepare 'Upstream runtime source changed' -Reject
+    $deps.upstreamRuntime.sourceSha256['mise.toml'] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $source 'mise.toml')).Hash.ToLowerInvariant()
+    Write-File $depsPath ($deps | ConvertTo-Json -Depth 10)
     Prepare 'Reusing prepared Immich'
 
     $source = Join-Path $base 'not-a-checkout'

@@ -1,9 +1,9 @@
 {
   "repository": "https://github.com/immich-app/immich.git",
-  "version": "v3.2.2",
-  "commit": "60b51cb3bc909e72fe963f4dfb1947515cb9ab3b",
+  "version": "v3.2.4",
+  "commit": "db355f79d910bbfc6378117ed10868493c97b922",
   "channel": "stable",
   "buildArchitecture": "win-x64",
-  "notes": "v3.2.2 is the stable Immich release pinned for the Windows native baseline as of 2026-09-24.",
-  "windowsRevision": 8
+  "notes": "v3.2.4 stable source and upstream production runtime pins; initial Windows revision 0. Native compatibility requires the release qualification gates.",
+  "windowsRevision": 0
 }

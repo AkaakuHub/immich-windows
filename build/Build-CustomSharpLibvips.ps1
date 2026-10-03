@@ -2,6 +2,26 @@
 [CmdletBinding()]
 param([string]$Destination)
 
+
+function Update-PinnedLibheifRecipe {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Pin)
+    if ($Pin.version -notmatch '^\d+\.\d+\.\d+$' -or $Pin.sha256 -notmatch '^[0-9a-f]{64}$' -or
+        $Pin.recipeSha256 -notmatch '^[0-9a-f]{64}$' -or $Pin.revision -notmatch '^[0-9a-f]{40}$') {
+        throw 'Invalid immutable libheif source pin.'
+    }
+    $text = (Get-Content -Raw -LiteralPath $Path).Replace("`r`n","`n")
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant()
+    if ($hash -cne $Pin.recipeSha256) { throw 'The pinned MXE libheif recipe changed; refusing a blind version replacement.' }
+    $versionPattern = '(?m)^\$\(PKG\)_VERSION\s*:=\s*' + [regex]::Escape($Pin.recipeVersion) + '\r?$'
+    $checksumPattern = '(?m)^\$\(PKG\)_CHECKSUM\s*:=\s*[0-9a-f]{64}\r?$'
+    if ([regex]::Matches($text,$versionPattern).Count -ne 1 -or [regex]::Matches($text,$checksumPattern).Count -ne 1) {
+        throw 'The pinned MXE libheif recipe no longer has unique version/checksum fields.'
+    }
+    $text = [regex]::Replace($text,$versionPattern,('$(PKG)_VERSION  := ' + $Pin.version))
+    $text = [regex]::Replace($text,$checksumPattern,('$(PKG)_CHECKSUM := ' + $Pin.sha256))
+    [IO.File]::WriteAllText($Path,$text,[Text.UTF8Encoding]::new($false))
+}
+
 Import-Module (Join-Path $PSScriptRoot 'Common.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1') -Force
 if(-not [Environment]::Is64BitOperatingSystem -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64'){
@@ -31,6 +51,10 @@ if(Test-Path $source){Remove-Item $source -Recurse -Force}
 Invoke-Native $git @('clone','--depth','1','--branch',$v.tag,$v.repository,$source)
 $actual=(& $git -C $source rev-parse HEAD).Trim()
 if($actual -ne $v.commit){throw "build-win64-mxe commit mismatch. Expected $($v.commit), got $actual"}
+
+# Update only the audited libheif source/checksum in the immutable Windows recipe.
+# Its HEVC and platform configuration remain unchanged.
+Update-PinnedLibheifRecipe -Path (Join-Path $source 'build/libheif.mk') -Pin $v.libheif
 
 $dockerfile=Join-Path $source 'container/Dockerfile'
 $dockerfileText=Get-Content -Raw -LiteralPath $dockerfile
@@ -161,8 +185,10 @@ $versionsFile=Join-Path $Destination 'versions.json'
 if(Test-Path -LiteralPath $versionsFile -PathType Leaf){
     $builtVersions=Read-JsonFile $versionsFile
     if([string]$builtVersions.vips -ne [string]$v.version){throw "Built libvips version mismatch. Expected $($v.version), got $($builtVersions.vips)"}
+    if([string]$builtVersions.heif -ne [string]$v.libheif.version){throw "Built libheif version mismatch. Expected $($v.libheif.version), got $($builtVersions.heif)"}
     if($v.jpeg -eq 'jpegli' -and -not $builtVersions.jpegli){throw 'Codec bundle was expected to use jpegli but versions.json has no jpegli entry.'}
 }
+else { throw 'Built codec bundle is missing versions.json; libheif cannot be verified.' }
 $metadata=[ordered]@{
     schemaVersion=1
     libvips=$v.version
@@ -174,6 +200,9 @@ $metadata=[ordered]@{
     hevc=$true
     jpeg=$v.jpeg
     libvipsRevision=$v.libvipsRevision
+    libheif=$v.libheif.version
+    libheifRevision=$v.libheif.revision
+    libheifSourceSha256=$v.libheif.sha256
     immichBaseImagesCommit=$v.immichBaseImagesCommit
     immichLoaderPatch=$v.immichLoaderPatch
     mediaPatchesSha256=$nativeIdentity.mediaPatchesSha256

@@ -1,4 +1,6 @@
 name: build-windows-native
+run-name: >-
+  ${{ inputs.upstream_pr && format('Qualify upstream PR #{0} head={1} base={2}', inputs.upstream_pr, inputs.expected_head, inputs.expected_base) || inputs.qualified_run_id && format('Promote qualified run {0} at {1}', inputs.qualified_run_id, inputs.expected_merge) || github.event.pull_request.title || github.event.head_commit.message || 'Windows qualification' }}
 
 on:
   pull_request:
@@ -13,6 +15,27 @@ on:
         type: choice
         options: [all, codec, postgres, migration]
         default: all
+      upstream_pr:
+        description: Automatic upstream PR number (trusted main dispatch only)
+        type: string
+      expected_head:
+        description: Exact automatic PR head SHA
+        type: string
+      expected_base:
+        description: Exact main base SHA for qualification
+        type: string
+      qualified_run_id:
+        description: Successful automatic qualification to promote without rebuilding
+        type: string
+      qualified_artifact_id:
+        description: Exact qualified artifact ID
+        type: string
+      qualified_artifact_digest:
+        description: Exact qualified artifact SHA-256 digest
+        type: string
+      expected_merge:
+        description: Exact merged main SHA to publish
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +46,9 @@ concurrency:
 
 jobs:
   plan:
+    # Bot-created update PRs are qualified only by their explicit trusted-main
+    # dispatch, even if GitHub also queues an approval-pending PR event.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.user.login != 'github-actions[bot]' || !startsWith(github.event.pull_request.head.ref, 'automation/upstream-') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -30,6 +56,7 @@ jobs:
       pull-requests: read
     outputs:
       version: ${{ steps.plan.outputs.version }}
+      checkout: ${{ steps.plan.outputs.checkout }}
       publish: ${{ steps.plan.outputs.publish }}
       reuse: ${{ steps.plan.outputs.reuse }}
       run_id: ${{ steps.plan.outputs.run_id }}
@@ -52,6 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
           persist-credentials: false
       - name: Test artifact promotion and rejection policies
         run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
@@ -64,7 +92,7 @@ jobs:
           # must fail this gate, but should not hide failures in later checks.
           $PSNativeCommandUseErrorActionPreference = $false
           $failed = [Collections.Generic.List[string]]::new()
-          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Update-FromRelease','Dependency-Reuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
+          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Release-Cleanup','Tray-Lifecycle','Update-FromRelease','Install-Bootstrap','Upgrade-Baseline','Dependency-Reuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
             $arguments = @('-NoLogo','-NoProfile','-File',"./tests/$name.ps1")
             if ($name -eq 'Static-RepositoryAudit') { $arguments += @('-SourceRoot',$source) }
             & "$PSHOME/pwsh.exe" @arguments
@@ -86,6 +114,9 @@ jobs:
       pull-requests: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
+          persist-credentials: false
       - name: Select libvips cache key
         id: codec-key
         shell: pwsh
@@ -96,7 +127,7 @@ jobs:
           path: artifacts/native/sharp-libvips-custom
           key: libvips-${{ runner.os }}-${{ steps.codec-key.outputs.codec }}-${{ hashFiles('build/Build-CustomSharpLibvips.ps1', 'build/NativeMediaValidation.psm1', 'build/Common.psm1', 'media-patches/**') }}
       - name: Reuse qualified raw libvips from the merged PR base
-        if: steps.codec-cache.outputs.cache-hit != 'true' && github.event_name == 'pull_request'
+        if: steps.codec-cache.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || inputs.upstream_pr != '')
         id: native-reuse
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,7 +144,7 @@ jobs:
           if-no-files-found: error
   seed-codec-cache:
     needs: plan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true'
+    if: (github.event_name == 'push' || inputs.qualified_run_id != '') && github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -121,6 +152,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
           persist-credentials: false
       - name: Select libvips cache key
         id: codec-key
@@ -152,6 +184,9 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
+          persist-credentials: false
       - name: Select PostgreSQL extension cache key
         id: postgres-key
         shell: pwsh
@@ -185,6 +220,9 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
+          persist-credentials: false
       - name: Build migration tools archive
         shell: pwsh
         run: ./packaging/New-MigrationToolsArchive.ps1
@@ -203,6 +241,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: libvips
@@ -306,6 +347,8 @@ jobs:
           key: runtime-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'artifacts/machine-learning/requirements.txt', 'dist/**/pnpm-lock.yaml') }}
       - name: Install, upgrade and test both Windows scopes
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = '${{ needs.plan.outputs.version }}'
           $folder = "immich-windows-$version-win-x64"
@@ -323,17 +366,21 @@ jobs:
             Copy-Item (Join-Path '.cache' $archive) $downloadCache -Force
           }
           Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
+          $baseline = ./tests/actions/Get-UpgradeBaseline.ps1 -CandidatePackageRoot $packageRoot `
+            -Destination (Join-Path $env:RUNNER_TEMP 'immich-upgrade-baseline') -DownloadCache $downloadCache
+          $baselineRoot = $baseline.PackageRoot
+          Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
           $password = Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$PSHOME"
           $scopeTimer = [Diagnostics.Stopwatch]::StartNew()
-          Write-Host 'Qualifying AllUsers: fresh install, smoke, legacy upgrade and ML lifecycle'
-          & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope AllUsers `
+          Write-Host "Qualifying AllUsers: released $($baseline.Version) install, actual upgrade to $version, smoke and ML lifecycle"
+          & "$baselineRoot/installer/Install.ps1" -PackageRoot $baselineRoot -Scope AllUsers `
             -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `
-            -DatabasePassword $password -PostgresRoot 'C:\Program Files\PostgreSQL\18'
+            -DatabasePassword $password -DatabaseName 'immich_ci_allusers' -PostgresRoot 'C:\Program Files\PostgreSQL\18'
           $fixtures = @(Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures') -File -Recurse | Select-Object -ExpandProperty FullName)
+          ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -BaselinePackageRoot $baselineRoot -InstallRoot $installRoot -DataRoot $dataRoot -Scope AllUsers
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
             -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
-          ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $installRoot -DataRoot $dataRoot -Scope AllUsers
           ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $installRoot -DataRoot $dataRoot -LeaveStopped
           Write-Host ('AllUsers qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
 
@@ -370,24 +417,52 @@ jobs:
             if ([IO.Path]::GetPathRoot($userRoot) -ine [IO.Path]::GetPathRoot($installRoot)) {
               throw 'Disposable CurrentUser installation and dependency cache must share a volume.'
             }
-            Write-Host 'Qualifying CurrentUser: fresh install, smoke, legacy upgrade and ML lifecycle'
+            Write-Host "Qualifying CurrentUser: released $($baseline.Version) install, actual upgrade to $version, smoke and ML lifecycle"
             New-Item -ItemType Directory -Path $userRoot -Force | Out-Null
             New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
-            & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope CurrentUser `
-              -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env"
+            & "$baselineRoot/installer/Install.ps1" -PackageRoot $baselineRoot -Scope CurrentUser `
+              -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env" -DatabaseName 'immich_ci_currentuser'
+            ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -BaselinePackageRoot $baselineRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser
             & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
-            ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -UseLegacyMachineLearning
             ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $userRoot -DataRoot $userData -LeaveStopped
             Write-Host ('CurrentUser qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
           } finally {
             $env:LOCALAPPDATA = $originalLocalAppData
           }
+
+          # One separate fresh-candidate case proves service/database creation,
+          # which upgrading an existing baseline cannot exercise. Retain the same
+          # downloaded cache; never rebuild or reacquire the released baseline.
+          $scopeTimer.Restart()
+          Write-Host "Qualifying fresh AllUsers candidate ${version}: new services and empty database"
+          $retainedCache = Join-Path $env:RUNNER_TEMP 'immich-retained-cache'
+          Move-Item -LiteralPath (Join-Path $installRoot 'cache') -Destination $retainedCache
+          try {
+            & "$packageRoot/installer/Uninstall.ps1" -Scope AllUsers -InstallRoot $installRoot -DataRoot $dataRoot -Confirm:$false
+          } finally {
+            New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+            Move-Item -LiteralPath $retainedCache -Destination (Join-Path $installRoot 'cache')
+          }
+          foreach ($name in @('ImmichServer','ImmichMachineLearning','ImmichValkey')) {
+            if (Get-Service -Name $name -ErrorAction SilentlyContinue) { throw "Fresh-install fixture still has service $name" }
+          }
+          $freshData = Join-Path $env:RUNNER_TEMP 'immich-fresh-data'
+          $freshMedia = Join-Path $env:RUNNER_TEMP 'immich-fresh-media'
+          New-Item -ItemType Directory -Path $freshMedia -Force | Out-Null
+          & "$packageRoot/installer/Install.ps1" -PackageRoot $packageRoot -Scope AllUsers `
+            -InstallRoot $installRoot -DataRoot $freshData -MediaRoot $freshMedia `
+            -DatabasePassword $password -DatabaseName 'immich_ci_fresh' -PostgresRoot 'C:\Program Files\PostgreSQL\18'
+          & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $freshData `
+            -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
+          & "$packageRoot/runtime/launchers/Stop-Immich.ps1" -InstallRoot $installRoot -DataRoot $freshData -EnvFile "$freshData/immich.env"
+          Write-Host ('Fresh AllUsers candidate qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
       - name: Collect sanitized ML failure diagnostics
         if: failure()
         shell: pwsh
         run: |
           $scopes = @(
             @{ Name = 'AllUsers'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-install'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-data') },
+            @{ Name = 'AllUsersFresh'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-install'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-fresh-data') },
             @{ Name = 'CurrentUser'; InstallRoot = (Join-Path $env:RUNNER_TEMP 'immich-user-profile\Programs\Immich'); DataRoot = (Join-Path $env:RUNNER_TEMP 'immich-user-profile\Immich') }
           )
           foreach ($scope in $scopes) {
@@ -410,6 +485,7 @@ jobs:
           key: ${{ steps.runtime-downloads.outputs.cache-primary-key }}
       - name: Record the actual tested checkout and asset hashes
         env:
+          QUALIFICATION_SOURCE: ${{ needs.plan.outputs.checkout || github.sha }}
           VERSION: ${{ needs.plan.outputs.version }}
         run: python .github/scripts/qualified_release.py record --version "$env:VERSION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -434,34 +510,13 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
           persist-credentials: false
-      - name: Verify the exact qualified artifact before publication
-        id: qualified
+      - name: Verify and publish or resume the exact qualified release
         env:
           GH_TOKEN: ${{ github.token }}
           QUALIFIED_RUN_ID: ${{ needs.plan.outputs.run_id }}
           QUALIFIED_ARTIFACT_ID: ${{ needs.plan.outputs.artifact_id }}
           QUALIFIED_ARTIFACT_DIGEST: ${{ needs.plan.outputs.artifact_digest }}
           VERSION: ${{ needs.plan.outputs.version }}
-        run: python .github/scripts/qualified_release.py prepare-publish --version "$VERSION"
-      - name: Publish qualified release without rebuilding or repacking
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.plan.outputs.version }}
-          BUILD_COMMIT: ${{ steps.qualified.outputs.source_commit }}
-          SOURCE_TREE: ${{ steps.qualified.outputs.source_tree }}
-          BUILD_RUN: ${{ steps.qualified.outputs.run_id }}
-          ARTIFACT_ID: ${{ steps.qualified.outputs.artifact_id }}
-          ARTIFACT_DIGEST: ${{ steps.qualified.outputs.artifact_digest }}
-        run: |
-          $version = $env:VERSION
-          $folder = "immich-windows-$version-win-x64"
-          $native = "dist/immich-windows-$version-native-dependencies.zip"
-          $migration = "dist/immich-windows-$version-migration-tools.zip"
-          $launcher = "dist/Install.cmd"
-          $notes = "Immich Windows $version. Release commit: $env:GITHUB_SHA. Actual build commit: $env:BUILD_COMMIT. Source tree: $env:SOURCE_TREE. Qualified run: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:BUILD_RUN. Artifact: $env:ARTIFACT_ID ($env:ARTIFACT_DIGEST). The tested assets are published byte-for-byte."
-          & gh release create $version --repo $env:GITHUB_REPOSITORY "dist/$folder.zip" $native $migration $launcher --draft --target $env:GITHUB_SHA --title $version --notes $notes
-          if ($LASTEXITCODE -ne 0) { throw "Could not publish immutable release $version. Never overwrite a published revision." }
-          & gh release edit $version --repo $env:GITHUB_REPOSITORY --draft=false --latest
-          if ($LASTEXITCODE -ne 0) { throw "Validated assets remain in draft release $version; publication failed." }
+        run: python .github/scripts/qualified_release.py publish --version "$VERSION"

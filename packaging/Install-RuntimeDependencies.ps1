@@ -54,8 +54,8 @@ function Get-CachedArchive([string]$Name,[string]$Uri,[string]$Sha256) {
     return $path
 }
 
-function Expand-CachedZip([string]$Name,[string]$Uri) {
-    $archive = Get-CachedArchive $Name $Uri
+function Expand-CachedZip([string]$Name,[string]$Uri,[string]$Sha256) {
+    $archive = Get-CachedArchive $Name $Uri $Sha256
     $destination = Join-Path $stageRoot ([IO.Path]::GetFileNameWithoutExtension($Name))
     if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
@@ -70,6 +70,21 @@ function Copy-DirectoryContents([string]$Source,[string]$Destination) {
     Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $Destination -Recurse -Force
 }
 
+function Move-ExtractedDirectory([string]$Source,[string]$Destination) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
+    try { Move-Item -LiteralPath $Source -Destination $Destination }
+    catch {
+        $cause=$_.Exception
+        while ($cause.InnerException) { $cause=$cause.InnerException }
+        # A junction can hide a volume boundary from Move-Item's root check.
+        # Only ERROR_NOT_SAME_DEVICE gets an explicit copy fallback; permission,
+        # sharing, missing-file and other errors remain failures.
+        if (-not $IsWindows -or $cause -isnot [IO.IOException] -or ($cause.HResult -band 0xffff) -ne 17) { throw }
+        Copy-DirectoryContents $Source $Destination
+        Remove-Item -LiteralPath $Source -Recurse -Force
+    }
+}
+
 Reuse-Runtime 'node' 'runtime\node' @('node.exe','npm.cmd','node_modules\npm\bin\npm-cli.js')
 Reuse-Runtime 'ffmpeg' 'runtime\ffmpeg' @('ffmpeg.exe','ffprobe.exe')
 Reuse-Runtime 'valkey' 'dependencies\valkey' @('ValkeyService.exe','valkey-server.exe','valkey-cli.exe')
@@ -82,17 +97,20 @@ if (-not (Test-Path -LiteralPath $nodeExe -PathType Leaf) -or -not (Test-Path -L
     $nodeStage = Expand-CachedZip $versions.node.asset "https://nodejs.org/dist/v$($versions.node.version)/$($versions.node.asset)"
     $nodeFolder = Get-ChildItem -LiteralPath $nodeStage -Directory | Select-Object -First 1
     if (-not $nodeFolder) { throw 'Node archive has an unexpected layout.' }
-    Copy-DirectoryContents $nodeFolder.FullName $nodeRoot
+    # Promote disposable extraction instead of copying it before cleanup.
+    # Move-Item provides its own cross-volume fallback for redirected caches.
+    Move-ExtractedDirectory $nodeFolder.FullName $nodeRoot
 }
 if (((& $nodeExe --version).Trim().TrimStart('v')) -ne $versions.node.version) { throw 'Installed Node version does not match manifest.' }
 
 $ffmpegRoot = Join-Path $ReleaseRoot 'runtime\ffmpeg'
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffmpeg.exe') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffprobe.exe') -PathType Leaf)) {
     if (Test-Path -LiteralPath $ffmpegRoot) { Remove-Item -LiteralPath $ffmpegRoot -Recurse -Force }
-    $ffmpegStage = Expand-CachedZip $versions.ffmpeg.asset "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v$($versions.ffmpeg.version)/$($versions.ffmpeg.asset)"
+    $ffmpegChecksum = if ($versions.ffmpeg.PSObject.Properties['sha256']) { [string]$versions.ffmpeg.sha256 } else { $null }
+    $ffmpegStage = Expand-CachedZip $versions.ffmpeg.asset "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v$($versions.ffmpeg.version)/$($versions.ffmpeg.asset)" $ffmpegChecksum
     $ffmpegExe = Get-ChildItem -LiteralPath $ffmpegStage -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
     if (-not $ffmpegExe) { throw 'FFmpeg archive does not contain ffmpeg.exe.' }
-    Copy-DirectoryContents $ffmpegExe.Directory.FullName $ffmpegRoot
+    Move-ExtractedDirectory $ffmpegExe.Directory.FullName $ffmpegRoot
 }
 if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'ffprobe.exe') -PathType Leaf)) { throw 'FFmpeg runtime is missing ffprobe.exe.' }
 
@@ -121,7 +139,7 @@ if (-not (Test-Path -LiteralPath $uvExe -PathType Leaf)) {
     $uvFile = Get-ChildItem -LiteralPath $uvStage -Filter uv.exe -File -Recurse | Select-Object -First 1
     if (-not $uvFile) { throw 'uv archive does not contain uv.exe.' }
     New-Item -ItemType Directory -Path $uvRoot -Force | Out-Null
-    Copy-Item -LiteralPath $uvFile.FullName -Destination $uvExe -Force
+    [IO.File]::Move($uvFile.FullName,$uvExe,$true)
 }
 $pythonRoot = Join-Path $ReleaseRoot 'machine-learning\python-runtime'
 # This private interpreter is launched via python -m; never copy path-bound console launchers.
@@ -235,7 +253,8 @@ if ($missing.Count) {
         if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ine $expected) { throw "Native payload content mismatch: $relative" }
         $target = Join-Path $ReleaseRoot $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-        Copy-Item -LiteralPath $source -Destination $target -Force
+        # Only the verified disposable extraction is consumed; the archive stays cached.
+        [IO.File]::Move($source,$target,$true)
     }
 }
 

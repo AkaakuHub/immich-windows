@@ -36,10 +36,10 @@
     "source": "https://pypi.org/project/onnxruntime-directml/1.24.4/"
   },
   "node": {
-    "version": "24.15.0",
+    "version": "24.21.0",
     "architecture": "win-x64",
-    "source": "Immich v3.2.2 mise.toml",
-    "asset": "node-v24.15.0-win-x64.zip"
+    "source": "https://github.com/immich-app/base-images/blob/71fbae519f9a62bfd13977f6d3f3d046c89bfe11/server/Dockerfile",
+    "asset": "node-v24.21.0-win-x64.zip"
   },
   "uv": {
     "version": "0.12.18",
@@ -47,11 +47,12 @@
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
-    "version": "7.1.3-6",
+    "version": "7.1.4-3",
     "distribution": "jellyfin-ffmpeg",
     "repository": "https://github.com/jellyfin/jellyfin-ffmpeg",
-    "source": "Immich v3.2.2 mise.toml",
-    "asset": "jellyfin-ffmpeg_7.1.3-6_portable_win64-clang-gpl.zip"
+    "source": "https://github.com/immich-app/base-images/blob/71fbae519f9a62bfd13977f6d3f3d046c89bfe11/server/packages/ffmpeg.json",
+    "asset": "jellyfin-ffmpeg_7.1.4-3_portable_win64-clang-gpl.zip",
+    "sha256": "113adeb702683c38be40a65d859f8ef7ffb07bae9df16dfb6c3df5ac3d95ef3c"
   },
   "winsw": {
     "version": "2.12.0",
@@ -60,23 +61,23 @@
   },
   "pnpm": {
     "version": "11.22.0",
-    "source": "Immich v3.2.2 mise.toml"
+    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/mise.toml"
   },
   "extismJs": {
     "version": "1.7.0",
     "repository": "https://github.com/extism/js-pdk",
-    "source": "Immich v3.2.2 mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/mise.toml",
     "asset": "extism-js-x86_64-windows-v1.7.0.gz"
   },
   "binaryen": {
     "version": "124",
     "repository": "https://github.com/WebAssembly/binaryen",
-    "source": "Immich v3.2.2 mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/mise.toml",
     "asset": "binaryen-version_124-x86_64-windows.tar.gz"
   },
   "sharp": {
     "version": "0.35.3",
-    "source": "Immich v3.2.2 server/package.json"
+    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/server/package.json"
   },
   "sharpLibvips": {
     "version": "8.18.5",
@@ -86,10 +87,97 @@
     "target": "x86_64-w64-mingw32.shared",
     "variant": "vips-all",
     "hevc": true,
-    "notes": "Build-only containerized cross compilation. Output is native Windows x64 DLLs. Mirrors the Immich v3.2.2-era base-server media stack: libvips 8.18.5, jpegli, HEVC, JXL and RAW support. HEVC build includes patent-encumbered/GPL components; keep license notices with the private package.",
+    "notes": "Native Windows MXE media build with upstream libvips/libheif and loader patch. Windows platform recipes and HEVC/jpegli/JXL/RAW feature flags are preserved. Keep HEVC/GPL license notices with the package.",
     "libvipsRevision": "7c28da9c2b8b5b8defe54f2ae92ee474c0e2d6e4",
     "jpeg": "jpegli",
-    "immichBaseImagesCommit": "2aeccec80155b63d8768c320758ea1189c2e49c9",
-    "immichLoaderPatch": "media-patches/libvips/0001-put-other-loaders-ahead-of-dcrawload.patch"
+    "immichBaseImagesCommit": "71fbae519f9a62bfd13977f6d3f3d046c89bfe11",
+    "immichLoaderPatch": "media-patches/libvips/0001-put-other-loaders-ahead-of-dcrawload.patch",
+    "libheif": {
+      "version": "1.23.3",
+      "revision": "78c9746aea226b22885e8d35241353ce669c4ea5",
+      "sha256": "11c1179e0e4bec33624b87f22ec42c1e993a40d946d44d26f9c431cf1456a863",
+      "recipeVersion": "1.23.1",
+      "recipeSha256": "386ded3ff188354157fda97389905c58e299a57b3372fe40ea585e13b13ef79d",
+      "source": "https://github.com/immich-app/base-images/blob/71fbae519f9a62bfd13977f6d3f3d046c89bfe11/server/sources/libheif.json"
+    }
+  },
+  "upstreamRuntime": {
+    "schemaVersion": 1,
+    "immichCommit": "db355f79d910bbfc6378117ed10868493c97b922",
+    "baseImages": {
+      "repository": "immich-app/base-images",
+      "tag": "202609281550",
+      "commit": "71fbae519f9a62bfd13977f6d3f3d046c89bfe11",
+      "images": {
+        "dev": {
+          "tag": "202609281550",
+          "digest": "ec2b9196bb2da497a495ded539528778c45487817eb8605cdbb3b765d727aeaa"
+        },
+        "prod": {
+          "tag": "202609281550",
+          "digest": "a97e8c52bb10c25b0bf2d7eb4c26da7e70088471886820f160e3f5f6f3c6c556"
+        }
+      }
+    },
+    "nodeVersion": "24.21.0",
+    "ffmpegVersion": "7.1.4-3",
+    "developmentTools": {
+      "node": "24.15.0",
+      "ffmpeg": "7.1.3-6"
+    },
+    "sourceSha256": {
+      "mise.toml": "26293a04de0cb9a418b9720c076d93d6685a9cb0284d924b0739c7c79665da29",
+      "server/package.json": "02e3406bbfb6edeef3e1b11e7e8940689f8c0cacc0755215b80c541fb97164cf",
+      "server/Dockerfile": "21d74db5e3e8886ceb7a38e6eba98fa10367e93e257eeab756806867c7d08693",
+      "machine-learning/pyproject.toml": "6d969046a1035ad475346644341c42d5f4960270780d4a4529eab5f8c1878e6d",
+      "machine-learning/uv.lock": "47fcede8b3ebbaa2dcf04ca69d84959244b307cfd07388fd46c28b8f231f2df6"
+    },
+    "mediaSources": {
+      "libvips": {
+        "name": "libvips",
+        "repository": "libvips/libvips",
+        "version": "8.18.5",
+        "revision": "7c28da9c2b8b5b8defe54f2ae92ee474c0e2d6e4"
+      },
+      "libheif": {
+        "name": "libheif",
+        "repository": "strukturag/libheif",
+        "version": "1.23.3",
+        "revision": "78c9746aea226b22885e8d35241353ce669c4ea5"
+      },
+      "libjxl": {
+        "name": "libjxl",
+        "repository": "libjxl/libjxl",
+        "version": "0.12.0",
+        "revision": "a7a9c787341cf703dede03c2009fa460cae5e5df"
+      },
+      "libraw": {
+        "name": "libraw",
+        "repository": "LibRaw/LibRaw",
+        "version": "0.22.2-1",
+        "revision": "e419de08001de28ae6988ecb22df47e52b9c5eaa"
+      },
+      "jpegli": {
+        "name": "jpegli",
+        "repository": "google/jpegli",
+        "branch": "main",
+        "revision": "031a0077f5799a6041004267fc12b956c1f52a20"
+      }
+    },
+    "windowsOverrides": {
+      "preservedComponents": [
+        "postgresql",
+        "pgvector",
+        "vectorchord",
+        "valkey",
+        "python",
+        "onnxruntimeDirectml",
+        "uv",
+        "winsw"
+      ],
+      "machineLearning": "Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the independently pinned Windows DirectML package. Keep Windows Python/uv pins and reject incompatible Python bounds.",
+      "media": "Keep the MXE Windows platform recipes, GLib TLS fix and codec feature flags. LibRaw 0.22.2 is a reviewed Windows override for upstream 0.22.2-1; other unmapped source drift fails closed.",
+      "database": "Windows PostgreSQL, pgvector and VectorChord are independently pinned and validated by the native build/upgrade gates."
+    }
   }
 }

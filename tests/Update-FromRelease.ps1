@@ -28,7 +28,7 @@ function Invoke-RestMethod {
     param($Uri,$Headers,$TimeoutSec)
     Add-Content $env:IMMICH_TEST_EVENTS check
     if ($env:IMMICH_TEST_MODE -eq 'check-fail') {throw [System.Net.Http.HttpRequestException]::new('DB_PASSWORD=fixture-secret-must-not-leak')}
-    $tag=switch($env:IMMICH_TEST_MODE) {'latest' {'v3.2.2.5'} 'latest-incomplete' {'v3.2.2.5'} 'refresh-fail' {'v3.2.2.5'} 'invalid' {'invalid-secret-must-not-leak'} 'downgrade' {'v3.2.2.4'} default {'v3.2.2.6'}}
+    $tag=switch($env:IMMICH_TEST_MODE) {'latest' {'v3.2.2.5'} 'latest-incomplete' {'v3.2.2.5'} 'refresh-fail' {'v3.2.2.5'} 'invalid' {'invalid-secret-must-not-leak'} 'downgrade' {'v3.2.2.4'} 'revision-zero' {'v3.2.4.0'} 'revision-zero-requested' {'v3.2.4.0'} 'invalid-zero-padding' {'v3.2.4.00'} 'invalid-negative' {'v3.2.4.-1'} 'invalid-upstream-padding' {'v03.2.4.0'} default {'v3.2.2.6'}}
     $assets=if ($env:IMMICH_TEST_MODE -eq 'missing') {@()} else {@(@{name="immich-windows-$tag-win-x64.zip";browser_download_url='https://example.invalid/inert'})}
     return @{tag_name=$tag;assets=$assets}
 }
@@ -70,12 +70,13 @@ public sealed class ImmichUpdateTestLock : IDisposable {
 '@
 try {
     foreach ($language in @('en','ja')) {
-        foreach ($mode in @('latest','latest-incomplete','success','check-fail','invalid','downgrade','missing','download-fail','validate-fail','validate-exit','update-throw','update-native-throw','update-exit','noop-installer','busy')) {
+        foreach ($mode in @('latest','latest-incomplete','success','revision-zero','revision-zero-requested','invalid-zero-padding','invalid-negative','invalid-upstream-padding','invalid-requested','check-fail','invalid','downgrade','missing','download-fail','validate-fail','validate-exit','update-throw','update-native-throw','update-exit','noop-installer','busy')) {
             $case=Join-Path $base "$language-$mode"
             $root=Join-Path $case install
             $data=Join-Path $case data
             $package=Join-Path $case runner
-            $candidate=Join-Path $data 'staging/v3.2.2.6/immich-windows-v3.2.2.6-win-x64'
+            $candidateTag=if ($mode -like 'revision-zero*') { 'v3.2.4.0' } else { 'v3.2.2.6' }
+            $candidate=Join-Path $data "staging/$candidateTag/immich-windows-$candidateTag-win-x64"
             foreach ($dir in @("$root/current","$package/installer","$package/runtime","$candidate/installer")) {New-Item -ItemType Directory -Path $dir -Force|Out-Null}
             $env:IMMICH_TEST_MODE=$mode
             $env:IMMICH_TEST_REAL_INPUT='0'
@@ -87,12 +88,15 @@ try {
             Set-Content "$candidate/installer/Update.ps1" $update
             Set-Content "$data/immich.env" 'DB_PASSWORD=fixture-secret-must-not-leak'
             Set-Content "$root/current/manifest.json" '{"schemaVersion":2,"immichVersion":"v3.2.2","windowsRevision":5,"packageVersion":"v3.2.2.5"}'
-            Set-Content "$candidate/manifest.json" '{"schemaVersion":2,"immichVersion":"v3.2.2","windowsRevision":6,"packageVersion":"v3.2.2.6"}'
+            if ($mode -like 'revision-zero*') {
+                Set-Content "$root/current/manifest.json" '{"schemaVersion":2,"immichVersion":"v3.2.2","windowsRevision":8,"packageVersion":"v3.2.2.8"}'
+                Set-Content "$candidate/manifest.json" '{"schemaVersion":2,"immichVersion":"v3.2.4","windowsRevision":0,"packageVersion":"v3.2.4.0"}'
+            } else { Set-Content "$candidate/manifest.json" '{"schemaVersion":2,"immichVersion":"v3.2.2","windowsRevision":6,"packageVersion":"v3.2.2.6"}' }
             if ($mode -eq 'latest-incomplete') {
                 New-Item -ItemType Directory -Path (Join-Path $data state) -Force|Out-Null
                 Set-Content (Join-Path $data 'state/upgrade-recovery.json') '{"status":"failed"}'
             }
-            if ($mode -ne 'download-fail') {Set-Content (Join-Path $data 'staging/v3.2.2.6/.ready') ready}
+            if ($mode -ne 'download-fail') {Set-Content (Join-Path $data "staging/$candidateTag/.ready") ready}
             # Real common target resolver expects a current junction; use a minimal local override
             # because replacing a current link is outside this result-delivery contract.
             Add-Content "$package/runtime/Common.psm1" 'function Get-CurrentReleaseTarget {param($InstallRoot) Join-Path $InstallRoot current}; Export-ModuleMember -Function *'
@@ -133,11 +137,14 @@ try {
                         $exitCode=$process.ExitCode
                     } finally {if(-not $process.HasExited){$process.Kill()}; $process.Dispose()}
                 } else {
-                    $output=@(& "$package/installer/Update-FromRelease.ps1" -InstallRoot $root -DataRoot $data -Scope CurrentUser -Interactive -Language $language 6>&1)
+                    $request=@{}
+                    if ($mode -eq 'revision-zero-requested') { $request.Version='v3.2.4.0' }
+                    if ($mode -eq 'invalid-requested') { $request.Version='v3.2.4.00' }
+                    $output=@(& "$package/installer/Update-FromRelease.ps1" -InstallRoot $root -DataRoot $data -Scope CurrentUser -Interactive -Language $language @request 6>&1)
                     $exitCode=$LASTEXITCODE
                 }
             } finally {if($held){$held.Dispose()}}
-            $expected=switch($mode){latest {10} success {0} default {20}}
+            $expected=switch($mode){latest {10} success {0} 'revision-zero' {0} 'revision-zero-requested' {0} default {20}}
             if ($exitCode -ne $expected) {throw "$language/$mode exit $exitCode; expected $expected"}
             $message=($output|ForEach-Object {$_.ToString()}) -join "`n"
             $events=@(Get-Content $env:IMMICH_TEST_EVENTS)
@@ -160,9 +167,11 @@ try {
                     $units=($message.ToCharArray()|ForEach-Object {'U+{0:X4}' -f [int]$_}) -join ' '
                     throw "$language/$mode latest result is missing or performed extra work; captured output='$message'; code units=$units; events=$($events -join ',')"
                 }
-            } elseif ($mode -eq 'success') {
-                if ($events -notcontains 'nested-lock' -or $events -notcontains 'tray-replaced' -or (Test-Path "$data/staging/v3.2.2.6")) {throw 'Applied update did not survive tray restart / clean staging / recurse mutex'}
+            } elseif ($mode -in @('success','revision-zero','revision-zero-requested')) {
+                if ($events -notcontains 'nested-lock' -or $events -notcontains 'tray-replaced' -or (Test-Path "$data/staging/$candidateTag")) {throw 'Applied update did not survive tray restart / clean staging / recurse mutex'}
             } elseif ($message -match 'You have the latest version|最新版です|updated successfully|更新が完了しました') {throw "$mode must never claim latest or success"}
+            if ($mode -eq 'invalid-requested' -and $events -contains 'check') {throw 'Invalid requested version reached the release API'}
+            if ($mode -like 'invalid-*' -and $events -contains 'apply') {throw 'Malformed version was applied'}
             if ($mode -eq 'busy' -and $events -contains 'check') {throw 'Concurrent update must stop before querying/downloading'}
             if ($mode -eq 'latest-incomplete' -and $log -notmatch 'reason=recovery') {throw 'Incomplete current release was not identified as requiring recovery'}
             if ($mode -eq 'update-throw' -and $message -notmatch 'GLib worker initialization failed') {throw 'Meaningful native error text was lost'}

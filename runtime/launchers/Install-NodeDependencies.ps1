@@ -117,7 +117,7 @@ function Install-ProjectDependencies([string]$Project) {
     $progress=Start-ImmichProgress -Key node -Detail (Split-Path -Leaf $Project)
     try {
         $output = [Collections.Generic.Queue[string]]::new()
-        & $node $pnpmCli @('install','--prod','--frozen-lockfile','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--reporter=append-only','--store-dir',$store) 2>&1 | ForEach-Object {
+        & $node $pnpmCli @('install','--prod','--frozen-lockfile','--prefer-offline','--config.node-linker=hoisted','--os=win32','--cpu=x64','--network-concurrency=1','--reporter=append-only','--store-dir',$store) 2>&1 | ForEach-Object {
             $line=[string]$_
             Write-Host $line
             $output.Enqueue($line)
@@ -133,6 +133,17 @@ function Install-ProjectDependencies([string]$Project) {
         Update-ImmichProgress -State $progress -Failed
         throw
     } finally { Pop-Location }
+}
+function Copy-IndependentSharpFile([string]$Source,[string]$Destination) {
+    # pnpm can hardlink package files to its shared store. Never overwrite an
+    # existing file record, and retain staging until the whole injection succeeds.
+    $temporary = Join-Path (Split-Path -Parent $Destination) ('.sharp-replacement-'+[guid]::NewGuid().ToString('N'))
+    try {
+        Copy-Item -LiteralPath $Source -Destination $temporary
+        [IO.File]::Move($temporary,$Destination,$true)
+    } finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
 }
 try {
     foreach ($projectName in @('server','cli')) {
@@ -156,9 +167,9 @@ try {
             $expected=$manifest.nativeDependencyFiles.PSObject.Properties['dependencies/sharp/lib/'+$relative.Replace('\','/')].Value
             if ((Test-Path -LiteralPath $target -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash -ieq $expected) { continue }
             New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-            Copy-Item -LiteralPath $dll.FullName -Destination $target -Force
+            Copy-IndependentSharpFile -Source $dll.FullName -Destination $target
         }
-        Copy-Item -LiteralPath $customVersions -Destination (Join-Path (Split-Path -Parent $sharpLib) 'versions.json') -Force
+        Copy-IndependentSharpFile -Source $customVersions -Destination (Join-Path (Split-Path -Parent $sharpLib) 'versions.json')
         Remove-Item -LiteralPath $customSharp -Recurse -Force
         Remove-Item -LiteralPath $customVersions -Force
     }

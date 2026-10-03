@@ -1045,7 +1045,7 @@ class NativeWorkflowTests(unittest.TestCase):
         codec = text.split('  codec:\n', 1)[1].split('  seed-codec-cache:\n', 1)[0]
         seed = text.split('  seed-codec-cache:\n', 1)[1].split('  postgres:\n', 1)[0]
         publish = text.split('  publish:\n', 1)[1]
-        self.assertIn("if: steps.codec-cache.outputs.cache-hit != 'true' && github.event_name == 'pull_request'", codec)
+        self.assertIn("if: steps.codec-cache.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || inputs.upstream_pr != '')", codec)
         self.assertIn("if: steps.codec-cache.outputs.cache-hit != 'true' && steps.native-reuse.outputs.reused != 'true'", codec)
         self.assertIn('retention-days: 14', codec)
         self.assertIn("github.ref == 'refs/heads/main' && needs.plan.outputs.reuse == 'true'", seed)

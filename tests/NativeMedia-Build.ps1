@@ -66,6 +66,26 @@ try{
     Write-File (Join-Path $root 'dependencies/versions.json') '{"sharpLibvips":{"version":"8.18.5","target":"x64"},"sharp":{"version":"0.35.3"},"postgresql":{"version":"different"}}'
     Check ($builderChanged.nativeBuildInputsSha256 -ceq (Get-NativeMediaBuildIdentity $root).nativeBuildInputsSha256) 'Unrelated PostgreSQL version invalidated the codec cache.'
 
+    $dependencyPath=Join-Path $root 'dependencies/versions.json'
+    $pins=Get-Content -Raw $dependencyPath|ConvertFrom-Json -AsHashtable
+    $pins.sharp.source='https://github.com/immich-app/immich/blob/newcommit/server/package.json'
+    $pins.sharpLibvips.notes='Updated descriptive notes'
+    $pins.sharpLibvips.immichBaseImagesCommit='new provenance only'
+    Write-File $dependencyPath ($pins|ConvertTo-Json -Depth 10)
+    Check ($builderChanged.nativeBuildInputsSha256 -ceq (Get-NativeMediaBuildIdentity $root).nativeBuildInputsSha256) 'Provenance-only metadata invalidated the codec cache.'
+    $pins.sharpLibvips.libheif=@{version='1.23.3';sha256=('1' * 64);recipeSha256=('2' * 64);revision=('3' * 40);source='description'}
+    Write-File $dependencyPath ($pins|ConvertTo-Json -Depth 10)
+    $heifIdentity=Get-NativeMediaBuildIdentity $root
+    Check ($builderChanged.nativeBuildInputsSha256 -cne $heifIdentity.nativeBuildInputsSha256) 'libheif source pin did not invalidate codec cache.'
+    $pins.sharpLibvips.libheif.source='another description'
+    Write-File $dependencyPath ($pins|ConvertTo-Json -Depth 10)
+    Check ($heifIdentity.nativeBuildInputsSha256 -ceq (Get-NativeMediaBuildIdentity $root).nativeBuildInputsSha256) 'libheif provenance URL invalidated codec cache.'
+    [void]$pins.sharpLibvips.Remove('libheif')
+    Write-File $dependencyPath ($pins|ConvertTo-Json -Depth 10)
+    $keyOutput=Join-Path $base 'cache-keys'
+    & (Join-Path $repo 'build/Write-NativeBuildCacheKeys.ps1') -OutputPath $keyOutput
+    Check ((Get-Content $keyOutput | Where-Object {$_ -like 'codec=*'}) -ceq ('codec=' + (Get-NativeMediaBuildIdentity $repo).nativeBuildInputsSha256)) 'Codec cache key and artifact identity disagree.'
+
     $bundle=Join-Path $base 'bundle';[void][IO.Directory]::CreateDirectory((Join-Path $bundle 'lib'))
     Copy-Item -LiteralPath $dll -Destination (Join-Path $bundle 'lib/libglib-2.0-0.dll')
     $metadata=Join-Path $bundle 'immich-windows-libvips.json'
@@ -81,6 +101,22 @@ try{
     Reject {Assert-NativeMediaBundleIdentity $bundle $root} 'Accepted missing TLS with otherwise matching metadata.'
 
     $builder=Get-Content -Raw -LiteralPath (Join-Path $repo 'build/Build-CustomSharpLibvips.ps1')
+    # Exercise the narrow, checksum-bound libheif recipe change without a native build.
+    $tokens=$null;$parseErrors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput($builder,[ref]$tokens,[ref]$parseErrors)
+    $recipeFunction=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Update-PinnedLibheifRecipe'},$true)
+    Invoke-Expression $recipeFunction.Extent.Text
+    $recipePath=Join-Path $base 'libheif.mk'
+    $recipe='$(PKG)_VERSION := 1.23.1' + "`n" + '$(PKG)_CHECKSUM := ' + ('0' * 64) + "`n" + '-DENABLE_PLUGIN_LOADING=0 -DWITH_LIBDE265=0 -DWITH_X265=0' + "`n"
+    Write-File $recipePath $recipe
+    $pin=[pscustomobject]@{version='1.23.3';revision=('1' * 40);sha256=('2' * 64);recipeVersion='1.23.1';recipeSha256=(Get-FileHash -Algorithm SHA256 $recipePath).Hash.ToLowerInvariant()}
+    Update-PinnedLibheifRecipe -Path $recipePath -Pin $pin
+    $expectedRecipe=$recipe.Replace('$(PKG)_VERSION := 1.23.1','$(PKG)_VERSION  := 1.23.3').Replace(('$(PKG)_CHECKSUM := ' + ('0' * 64)),('$(PKG)_CHECKSUM := ' + ('2' * 64)))
+    Check ((Get-Content -Raw $recipePath) -ceq $expectedRecipe) 'libheif recipe changed more than pinned version/checksum.'
+    Reject {Update-PinnedLibheifRecipe -Path $recipePath -Pin $pin} 'Changed MXE recipe accepted a blind replacement.'
+    $pin.version='1.23.3; injected'
+    Reject {Update-PinnedLibheifRecipe -Path $recipePath -Pin $pin} 'Invalid libheif version accepted.'
+
     Check ($builder.Contains('build/patches/glib-3-win32-tls-directory.patch')) 'TLS patch does not use the MXE glib-[0-9]* discovery naming.'
     Check ($builder.Contains('$targetCacheId="immich-mxe-$($v.target)-$($nativeIdentity.nativeBuildInputsSha256)"')) 'BuildKit installed-library cache lacks the content digest.'
     Check ($builder.Contains('Assert-WindowsPeTlsDirectory -Path')) 'Native output is not checked for a TLS directory.'
