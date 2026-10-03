@@ -98,12 +98,12 @@ try {
     try { $locked=$mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked=$true }
     if (-not $locked) { $reason='locked'; throw [InvalidOperationException]::new('Update already running.') }
 
-    if ($Version -and $Version -notmatch '^v\d+\.\d+\.\d+\.[1-9]\d*$') { $reason='invalid'; throw 'Invalid requested release version.' }
+    if ($Version -and $Version -cnotmatch '\Av(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z') { $reason='invalid'; throw 'Invalid requested release version.' }
     Set-UpdatePhase check checking
     $releaseUri=if($Version){"https://api.github.com/repos/AkaakuHub/immich-windows/releases/tags/$Version"}else{'https://api.github.com/repos/AkaakuHub/immich-windows/releases/latest'}
     $release=Invoke-RestMethod -Uri $releaseUri -Headers @{'User-Agent'='immich-windows'} -TimeoutSec 60
     $releaseVersion=[string]$release.tag_name
-    if ($releaseVersion -notmatch '^v\d+\.\d+\.\d+\.[1-9]\d*$') { $reason='invalid'; throw 'Invalid returned release version.' }
+    if ($releaseVersion -cnotmatch '\Av(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z') { $reason='invalid'; throw 'Invalid returned release version.' }
     if ($Version -and $releaseVersion -ne $Version) { $reason='invalid'; throw 'Requested and returned versions differ.' }
 
     Set-UpdatePhase inspect ''

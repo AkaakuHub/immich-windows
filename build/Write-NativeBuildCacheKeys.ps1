@@ -7,19 +7,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $versions = Get-Content -Raw (Join-Path $root 'dependencies/versions.json') | ConvertFrom-Json
-$media = $versions.sharpLibvips
-$codecValue = @(
-    $media.version,
-    $media.commit,
-    $media.libvipsRevision,
-    $media.target,
-    $media.variant,
-    $media.jpeg,
-    $media.hevc,
-    $media.immichBaseImagesCommit,
-    $media.immichLoaderPatch,
-    $versions.sharp.version
-) -join '-'
+Import-Module (Join-Path $PSScriptRoot 'NativeMediaValidation.psm1') -Force
+# The cache selector and bundle verification share exactly one input identity.
+$codecValue = (Get-NativeMediaBuildIdentity -RepositoryRoot $root).nativeBuildInputsSha256
 $postgresValue = @(
     $versions.postgresql.major,
     $versions.postgresql.version,

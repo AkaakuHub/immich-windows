@@ -1,6 +1,6 @@
 """Promote an immutable, qualified Actions artifact; never execute its contents.
 
-Only merged same-repository PRs are eligible. GitHub's run/artifact/job records,
+Only verified same-repository PRs and trusted main dispatches are eligible. GitHub's run/artifact/job records,
 actual Git objects, and the now-reviewed main tree are the trust boundary.
 No cache entry or artifact's self-reported success is accepted as test evidence.
 """
@@ -8,6 +8,7 @@ import argparse
 import base64
 from datetime import datetime
 import hashlib
+from itertools import islice
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +28,14 @@ REQUIRED_JOBS = {'validate', 'codec', 'postgres', 'assemble'}
 MAX_BYTES = 1024 * 1024 * 1024
 SHA = re.compile(r'^[0-9a-f]{40}$')
 DIGEST = re.compile(r'^sha256:[0-9a-f]{64}$')
+NUMBER = r'(?:0|[1-9][0-9]*)'
+STABLE_VERSION = re.compile(rf'v{NUMBER}\.{NUMBER}\.{NUMBER}')
+WINDOWS_VERSION = re.compile(rf'v{NUMBER}\.{NUMBER}\.{NUMBER}\.{NUMBER}')
+AUTOMATION_MARKER = '<!-- immich-windows:automatic-upstream:v1 -->'
+AUTOMATION_OWNERSHIP = re.compile(r'<!-- immich-windows:automatic-head ([0-9a-f]{40}) base ([0-9a-f]{40}) -->')
+AUTOMATION_TITLE = re.compile(r'Qualify upstream PR #([1-9][0-9]*) head=([0-9a-f]{40}) base=([0-9a-f]{40})')
+AUTOMATION_JOBS = REQUIRED_JOBS | {'plan'}
+
 
 
 class NotReusable(ValueError):
@@ -47,7 +57,7 @@ def sha256(path):
 
 
 def filenames(version):
-    require(re.fullmatch(r'v\d+\.\d+\.\d+\.\d+', version), 'Invalid Windows version')
+    require(WINDOWS_VERSION.fullmatch(version), 'Invalid Windows version')
     return {f'immich-windows-{version}-{suffix}.zip'
             for suffix in ('win-x64', 'native-dependencies', 'migration-tools')} | {'Install.cmd'}
 
@@ -75,6 +85,32 @@ class API:
     def get(self, path):
         with urllib.request.urlopen(self.request(path), timeout=60) as response:
             return json.load(response)
+
+    def write(self, path, data, method='POST'):
+        request = self.request(path)
+        request.method = method
+        request.add_header('Content-Type', 'application/json')
+        request.data = json.dumps(data).encode() if data is not None else None
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = response.read()
+            return json.loads(body) if body else None
+
+    def ready_for_review(self, node_id):
+        # GitHub has no REST mutation for draft -> ready. The ID comes from the
+        # already verified PR response, never interpolated into GraphQL source.
+        request = self.request('')
+        request.full_url = 'https://api.github.com/graphql'
+        request.method = 'POST'
+        request.add_header('Content-Type', 'application/json')
+        request.data = json.dumps({
+            'query': 'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id isDraft}}}',
+            'variables': {'id': node_id},
+        }).encode()
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.load(response)
+        require(not result.get('errors'), 'Could not mark the verified PR ready for review')
+        pull = result['data']['markPullRequestReadyForReview']['pullRequest']
+        require(pull['id'] == node_id and pull['isDraft'] is False, 'Draft transition was not confirmed')
 
     def pages(self, path, key=None):
         page = 1
@@ -111,6 +147,170 @@ class API:
         require('sha256:' + sha256(destination) == artifact['digest'], 'Artifact digest mismatch; refusing promotion')
 
 
+
+def positive_id(value, label):
+    require(isinstance(value, str) and re.fullmatch(r'[1-9][0-9]*', value), f'Invalid {label}')
+    return int(value)
+
+
+def pin_version(pin):
+    require(STABLE_VERSION.fullmatch(pin.get('version', '')), 'Invalid stable upstream version')
+    revision = pin.get('windowsRevision')
+    require(type(revision) is int and revision >= 0, 'Invalid Windows revision')
+    return f"{pin['version']}.{revision}"
+
+
+def remote_pin(api, commit):
+    require(SHA.fullmatch(commit), 'Invalid pin commit')
+    data = api.get(f'contents/upstream.json?ref={commit}')
+    require(data['encoding'] == 'base64' and data.get('size', 0) < 65536, 'Invalid upstream pin response')
+    return json.loads(base64.b64decode(data['content'], validate=False))
+
+
+def automated_run(run):
+    match = AUTOMATION_TITLE.fullmatch(run.get('display_title', ''))
+    if not match:
+        return None
+    number, head, base = match.groups()
+    require(run['event'] == 'workflow_dispatch' and run['head_branch'] == 'main'
+            and run['head_sha'] == base, 'Automation must dispatch the exact trusted main base')
+    return int(number), head, base
+
+
+def validate_automation_pr(pr, repo, number, head, base, *, merged=False):
+    require(type(number) is int and number > 0 and SHA.fullmatch(head) and SHA.fullmatch(base),
+            'Invalid automatic PR identity')
+    require(pr['number'] == number and pr['base']['ref'] == 'main'
+            and pr['base']['repo']['full_name'] == repo
+            and (pr['head'].get('repo') or {}).get('full_name') == repo,
+            'Automation requires a same-repository PR into main')
+    allowed_bases = {base}
+    if merged and SHA.fullmatch(pr.get('merge_commit_sha') or ''):
+        # Indirect merge metadata may already expose the promoted base. The
+        # immutable qualification's ordered Git parents prove the original base.
+        allowed_bases.add(pr['merge_commit_sha'])
+    require(pr['head']['sha'] == head and pr['base']['sha'] in allowed_bases,
+            'Automatic PR head or base changed')
+    require(AUTOMATION_OWNERSHIP.findall(pr.get('body') or '') == [(head, base)],
+            'Automatic branch ownership changed or is ambiguous')
+    require(pr['user']['login'] == 'github-actions[bot]' and pr['user']['type'] == 'Bot'
+            and AUTOMATION_MARKER in (pr.get('body') or ''), 'PR was not created by the upstream updater')
+    branch = pr['head']['ref']
+    require(branch.startswith('automation/upstream-') and STABLE_VERSION.fullmatch(branch.removeprefix('automation/upstream-')),
+            'Unapproved automatic branch')
+    require(pr['merged'] is merged and pr['state'] == ('closed' if merged else 'open'),
+            'Automatic PR is not in the required open/merged state')
+    return branch.removeprefix('automation/upstream-')
+
+
+
+def automated_pr_identity(pr):
+    ownership = AUTOMATION_OWNERSHIP.findall(pr.get('body') or '')
+    if len(ownership) != 1 or ownership[0][0] != pr['head']['sha']:
+        return None
+    return pr['number'], ownership[0][0], ownership[0][1]
+
+def automation_changes(api, head, base):
+    # Compare complete Git trees rather than the compare API's 300-file limit.
+    trees = []
+    for commit in (base, head):
+        tree = api.get(f'git/trees/{commit}?recursive=1')
+        require(not tree.get('truncated', True), 'Cannot verify a truncated automation tree')
+        entries = {entry['path']: (entry['mode'], entry['type'], entry['sha'])
+                   for entry in tree['tree'] if entry['type'] != 'tree'}
+        trees.append(entries)
+    before, after = trees
+    changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+    require('upstream.json' in changed, 'Automatic update did not change its upstream pin')
+    for path in changed:
+        allowed = path in ('upstream.json', 'dependencies/versions.json', 'patches/series') or (
+            path.startswith(('patches/server/', 'patches/machine-learning/')) and path.endswith('.patch'))
+        require(allowed and all(part not in ('', '.', '..') for part in path.split('/')),
+                f'Automatic update changed a disallowed path: {path}')
+        for tree in trees:
+            require(path not in tree or tree[path][:2] == ('100644', 'blob'),
+                    'Automatic updates may change only regular, non-executable files')
+
+
+def automatic_candidate(api, number, head, base, *, merged=False):
+    pr = api.get(f'pulls/{number}')
+    version = validate_automation_pr(pr, api.repo, number, head, base, merged=merged)
+    # GitHub computes mergeability asynchronously on PR creation/readiness.
+    # Only refresh API metadata, never rebuild or retry qualification tests.
+    for _ in range(12):
+        if merged or pr.get('mergeable') is not None:
+            break
+        merge_sha = pr.get('merge_commit_sha') or ''
+        if SHA.fullmatch(merge_sha):
+            try:
+                source = api.get(f'git/commits/{merge_sha}')
+            except urllib.error.HTTPError as error:
+                if error.code != 404:
+                    raise
+            else:
+                # An exact existing synthetic merge proves the fresh checkout
+                # even while GitHub is recomputing its optional boolean cache.
+                if source['sha'] == merge_sha and [p['sha'] for p in source['parents']] == [base, head]:
+                    break
+        time.sleep(5)
+        pr = api.get(f'pulls/{number}')
+        validate_automation_pr(pr, api.repo, number, head, base, merged=merged)
+    automation_changes(api, head, base)
+    pin = remote_pin(api, head)
+    require(pin_version(pin) == version + '.0', 'Automatic upstream releases must start at revision zero')
+    require(pin.get('repository') == 'https://github.com/immich-app/immich.git'
+            and pin.get('channel') == 'stable' and SHA.fullmatch(pin.get('commit', '')),
+            'Automatic update has an invalid official upstream pin')
+    return pr, pin
+
+
+def dispatch_inputs():
+    path = os.environ.get('GITHUB_EVENT_PATH')
+    return json.loads(Path(path).read_text()).get('inputs', {}) if path else {}
+
+
+def plan_automatic(api, inputs, values):
+    require(os.environ['GITHUB_REF'] == 'refs/heads/main' and inputs.get('component') == 'all',
+            'Automatic qualification requires a complete build dispatched on main')
+    number = positive_id(inputs.get('upstream_pr'), 'upstream PR')
+    head, base = inputs.get('expected_head', ''), inputs.get('expected_base', '')
+    require(SHA.fullmatch(head) and SHA.fullmatch(base) and os.environ['GITHUB_SHA'] == base,
+            'Automatic dispatch does not match its trusted main base')
+    pr, pin = automatic_candidate(api, number, head, base)
+    require(api.get('git/ref/heads/main')['object']['sha'] == base, 'Main advanced before qualification')
+    require(pr.get('mergeable') is not False and SHA.fullmatch(pr.get('merge_commit_sha') or ''),
+            'Automatic PR is conflicting or GitHub has not prepared its merge checkout')
+    source = api.get(f"git/commits/{pr['merge_commit_sha']}")
+    require(source['sha'] == pr['merge_commit_sha'] and [p['sha'] for p in source['parents']] == [base, head],
+            'Automatic PR merge checkout does not match its exact base/head')
+    version = pin_version(pin)
+    require(release_policy(api, version), 'Automatic revision is already published')
+    values.update(version=version, publish=False, checkout=source['sha'])
+    summary(f"Qualifying automatic PR #{number} head {head} against main {base}; no publication before merge.")
+    output(values)
+
+
+def selected_promotion(api, inputs, version):
+    require(os.environ['GITHUB_REF'] == 'refs/heads/main' and inputs.get('component') == 'all'
+            and inputs.get('expected_merge') == os.environ['GITHUB_SHA'], 'Promotion must target its exact merged main commit')
+    require(api.get('git/ref/heads/main')['object']['sha'] == os.environ['GITHUB_SHA'], 'Main advanced before promotion')
+    run_id = positive_id(inputs.get('qualified_run_id'), 'qualification run')
+    artifact_id = positive_id(inputs.get('qualified_artifact_id'), 'qualification artifact')
+    digest = inputs.get('qualified_artifact_digest', '')
+    require(DIGEST.fullmatch(digest), 'Invalid promotion artifact digest')
+    run = api.get(f'actions/runs/{run_id}')
+    identity = automated_run(run)
+    require(identity is not None, 'Explicit promotion requires an automatic qualification')
+    number, head, base = identity
+    pr, _ = automatic_candidate(api, number, head, base, merged=True)
+    require(pr['merge_commit_sha'] == os.environ['GITHUB_SHA'], 'Promotion is not the automatic PR merge')
+    artifacts = artifacts_for(api, run_id)
+    require(len(artifacts) == 1 and artifacts[0]['id'] == artifact_id and artifacts[0]['digest'] == digest,
+            'Exact qualification artifact is missing or changed; refusing to rebuild')
+    with tempfile.TemporaryDirectory() as temporary:
+        record = verify(api, run, artifacts[0], version, Path(temporary), pr)
+    return pr, run, artifacts[0], record
+
 def validate_bundle(archive, destination, version):
     with zipfile.ZipFile(archive) as bundle:
         require(bundle.getinfo('qualification.json').file_size < 64 * 1024, 'Oversized qualification record')
@@ -144,7 +344,7 @@ def validate_bundle(archive, destination, version):
     return record
 
 
-def validate_provenance(record, run, jobs, artifact, source, target_tree, repo, pr=None):
+def validate_provenance(record, run, jobs, artifact, source, target_tree, repo, pr=None, *, allow_open_automation=False):
     require(record.get('repository') == repo == run['repository']['full_name'] == run['head_repository']['full_name'],
             'Repository provenance mismatch')
     require(run['path'] == WORKFLOW and run['conclusion'] == 'success' and run['status'] == 'completed',
@@ -164,14 +364,33 @@ def validate_provenance(record, run, jobs, artifact, source, target_tree, repo, 
     if record['sourceTree'] != target_tree:
         raise NotReusable('Tested source differs from the merged tree')
     if pr is not None:
-        require(run['event'] == record['event'] == 'pull_request', 'Not a PR qualification')
-        require(pr['merged'] and pr['base']['ref'] == 'main' and pr['head']['repo']['full_name'] == repo,
+        require((pr['merged'] or (allow_open_automation and record['event'] == 'workflow_dispatch')) and pr['base']['ref'] == 'main' and pr['head']['repo']['full_name'] == repo,
                 'PR is not a merged same-repository main PR')
-        require(record['pullRequest'] == pr['number'] and record['headCommit'] == run['head_sha'] == pr['head']['sha'],
+        require(record['pullRequest'] == pr['number'] and record['headCommit'] == pr['head']['sha'],
                 'Qualified PR head differs from the merged PR')
+        if record['event'] == 'workflow_dispatch':
+            identity = automated_run(run)
+            require(identity == (pr['number'], record['headCommit'], record['baseCommit']),
+                    'Automatic dispatch provenance mismatch')
+            validate_automation_pr(pr, repo, *identity, merged=not allow_open_automation)
+            if not allow_open_automation:
+                require(pr['merge_commit_sha'] == record['sourceCommit'],
+                        'Automatic main is not the exact already-qualified merge commit')
+            require(record.get('automation') == 'upstream-v1' and AUTOMATION_JOBS <= successes,
+                    'Automatic qualification did not pass its trusted plan')
+            for name in AUTOMATION_JOBS:
+                matches = [j for j in jobs if j['name'] == name and j['run_attempt'] == run['run_attempt']]
+                require(len(matches) == 1 and matches[0].get('status') == 'completed'
+                        and matches[0]['conclusion'] == 'success', 'Automatic gate is not uniquely terminal and successful')
+        else:
+            require(run['event'] == record['event'] == 'pull_request' and record['headCommit'] == run['head_sha'],
+                    'Not a PR qualification')
         parents = [p['sha'] for p in source['parents']]
         require(parents == [record['baseCommit'], record['headCommit']], 'Not the recorded PR merge checkout')
-        if record['baseCommit'] != pr['base']['sha']:
+        allowed_bases = {record['baseCommit']}
+        if record['event'] == 'workflow_dispatch' and not allow_open_automation:
+            allowed_bases.add(record['sourceCommit'])
+        if pr['base']['sha'] not in allowed_bases:
             raise NotReusable('PR base changed since qualification')
     else:
         require(run['event'] == record['event'] and run['event'] in ('push', 'workflow_dispatch'), 'Wrong main build event')
@@ -188,20 +407,38 @@ def record_bundle(version, directory):
                   sourceTree=git('rev-parse', 'HEAD^{tree}'), pullRequest=pr.get('number'),
                   headCommit=pr.get('head', {}).get('sha'), baseCommit=pr.get('base', {}).get('sha'),
                   assets={name: sha256(directory / name) for name in sorted(filenames(version))})
-    require(record['sourceCommit'] == os.environ['GITHUB_SHA'], 'Checkout is not the workflow-triggering source')
+    inputs = event.get('inputs', {})
+    if record['event'] == 'workflow_dispatch' and inputs.get('upstream_pr'):
+        record.update(automation='upstream-v1', pullRequest=positive_id(inputs['upstream_pr'], 'upstream PR'),
+                      headCommit=inputs['expected_head'], baseCommit=inputs['expected_base'])
+        require(os.environ['GITHUB_REF'] == 'refs/heads/main' and record['baseCommit'] == os.environ['GITHUB_SHA']
+                and record['sourceCommit'] == os.environ.get('QUALIFICATION_SOURCE'), 'Wrong automatic source checkout')
+        parents = [line.removeprefix('parent ') for line in git('cat-file', '-p', 'HEAD').splitlines()
+                   if line.startswith('parent ')]
+        require(parents == [record['baseCommit'], record['headCommit']], 'Wrong automatic checkout parents')
+    else:
+        require(record['sourceCommit'] == os.environ['GITHUB_SHA'], 'Checkout is not the workflow-triggering source')
     (directory / 'qualification.json').write_text(json.dumps(record, indent=2) + '\n')
 
 
-def release_policy(api, version):
-    releases = list(api.pages('releases'))
-    published = [r for r in releases if not r['draft'] and re.fullmatch(r'v\d+\.\d+\.\d+(\.\d+)?', r['tag_name'])]
+def release_policy(api, version, resume=None):
+    releases = list(islice(api.pages('releases'), 100)) if resume is not None else list(api.pages('releases'))
+    published = [r for r in releases if not r['draft'] and (STABLE_VERSION.fullmatch(r['tag_name']) or WINDOWS_VERSION.fullmatch(r['tag_name']))]
     def number(v):
         result = tuple(map(int, v[1:].split('.')))
         return result + (0,) * (4 - len(result))
     newer = [r for r in published if number(r['tag_name']) > number(version)]
     require(not newer, f'{version} is older than a published release; increment windowsRevision')
     same = [r for r in published if r['tag_name'] == version]
-    require(not any(r['draft'] and r['tag_name'] == version for r in releases), 'A draft for this revision already exists; inspect it before retrying')
+    drafts = [r for r in releases if r['draft'] and r['tag_name'] == version]
+    if drafts and resume is not None:
+        from publish_qualified import validate_release, validate_tag
+        require(len(drafts) == 1, 'Ambiguous draft releases')
+        record, artifact, commit = resume
+        validate_release(drafts[0], record, artifact, commit)
+        validate_tag(api, version, commit, missing_allowed=True)
+    else:
+        require(not drafts, 'A draft for this revision already exists; inspect it before retrying')
     if not same:
         return True
     # Compare Git trees, not three-dot compare API (which can omit divergent changes).
@@ -231,7 +468,7 @@ def artifacts_for(api, run_id):
             if a['name'] == ARTIFACT and not a['expired']]
 
 
-def verify(api, run, artifact, version, destination, pr=None, allow_original_attempt=False, target_tree=None):
+def verify(api, run, artifact, version, destination, pr=None, allow_original_attempt=False, target_tree=None, allow_open_automation=False):
     with tempfile.TemporaryDirectory() as temporary:
         archive = Path(temporary) / 'bundle.zip'
         try:
@@ -260,7 +497,7 @@ def verify(api, run, artifact, version, destination, pr=None, allow_original_att
             raise NotReusable('Historical tested Git object is no longer available') from error
         raise
     jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
-    validate_provenance(record, run, jobs, artifact, source, target_tree or git('rev-parse', 'HEAD^{tree}'), api.repo, pr)
+    validate_provenance(record, run, jobs, artifact, source, target_tree or git('rev-parse', 'HEAD^{tree}'), api.repo, pr, allow_open_automation=allow_open_automation)
     return record
 
 
@@ -271,7 +508,13 @@ def select_qualified_pr(api, sha, version, target_tree=None, native_directory=No
         if not (pr['merged'] and pr['merge_commit_sha'] == sha and pr['base']['ref'] == 'main'
                 and pr['head'].get('repo') and pr['head']['repo']['full_name'] == api.repo):
             continue
-        runs = api.pages(f"actions/workflows/build-windows.yml/runs?event=pull_request&head_sha={pr['head']['sha']}", 'workflow_runs')
+        if pr['head'].get('ref', '').startswith('automation/upstream-'):
+            identity = automated_pr_identity(pr)
+            require(identity is not None, 'Merged automatic PR ownership is ambiguous')
+            runs = (r for r in api.pages('actions/workflows/build-windows.yml/runs?event=workflow_dispatch&branch=main', 'workflow_runs')
+                    if automated_run(r) == identity)
+        else:
+            runs = api.pages(f"actions/workflows/build-windows.yml/runs?event=pull_request&head_sha={pr['head']['sha']}", 'workflow_runs')
         for run in runs:
             # Do not bypass a newer failed/pending qualification with an older green run.
             if run['status'] != 'completed' or run['conclusion'] != 'success' or run['head_repository']['full_name'] != api.repo:
@@ -296,8 +539,22 @@ def select_qualified_pr(api, sha, version, target_tree=None, native_directory=No
 def plan():
     api = API()
     pin = json.loads(Path('upstream.json').read_text())
-    version = f"{pin['version']}.{pin['windowsRevision']}"
+    version = pin_version(pin)
     values = dict(version=version, publish=False, reuse=False, artifact_id='', artifact_digest='', run_id='', source_commit='')
+    inputs = dispatch_inputs() if os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch' else {}
+    automatic = any(inputs.get(key) for key in ('upstream_pr', 'expected_head', 'expected_base'))
+    promotion = any(inputs.get(key) for key in ('qualified_run_id', 'qualified_artifact_id', 'qualified_artifact_digest', 'expected_merge'))
+    require(not (automatic and promotion), 'Qualification and promotion inputs cannot be combined')
+    if automatic:
+        plan_automatic(api, inputs, values)
+        return
+    if promotion:
+        pr, run, artifact, record = selected_promotion(api, inputs, version)
+        values.update(publish=release_policy(api, version, resume=(record, artifact, os.environ['GITHUB_SHA'])), reuse=True, artifact_id=artifact['id'],
+                      artifact_digest=artifact['digest'], run_id=run['id'], source_commit=record['sourceCommit'])
+        summary(f"Promoting exact qualified run {run['id']} for merged PR #{pr['number']}; no repeated build or tests.")
+        output(values)
+        return
     component = os.environ.get('COMPONENT', '')
     if os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and component not in ('', 'all'):
         output(values)
@@ -327,7 +584,7 @@ def native_artifact_for(api, run_id):
 def validate_native_provenance(api, run, artifact):
     require(run['repository']['full_name'] == run['head_repository']['full_name'] == api.repo
             and run['status'] == 'completed' and run['conclusion'] == 'success'
-            and run['event'] == 'pull_request' and run['path'] == WORKFLOW,
+            and (run['event'] == 'pull_request' or automated_run(run) is not None) and run['path'] == WORKFLOW,
             'Raw libvips source is not a successful same-repository PR qualification')
     provenance = artifact['workflow_run']
     require(provenance['id'] == run['id'] and provenance['head_sha'] == run['head_sha']
@@ -423,8 +680,8 @@ def prepare_native():
             if selected_run:
                 # These immutable identities come only from this workflow's plan job,
                 # which already verified the complete merged tree and qualification.
-                require(os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/main',
-                        'Selected qualification may seed only the main push cache')
+                require(os.environ['GITHUB_EVENT_NAME'] in ('push', 'workflow_dispatch') and os.environ['GITHUB_REF'] == 'refs/heads/main',
+                        'Selected qualification may seed only the main cache')
                 run = api.get(f'actions/runs/{int(selected_run)}')
                 qualified = artifacts_for(api, run['id'])
                 require(len(qualified) == 1 and str(qualified[0]['id']) == os.environ['QUALIFIED_ARTIFACT_ID']
@@ -432,16 +689,24 @@ def prepare_native():
                         'Selected qualification artifact changed before cache seeding')
                 artifact = download_native(api, run, bundle)
             else:
-                require(os.environ['GITHUB_EVENT_NAME'] == 'pull_request', 'Native bootstrap requires a PR base')
                 event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-                base = event['pull_request']['base']
+                if os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch':
+                    inputs = event.get('inputs', {})
+                    number = positive_id(inputs.get('upstream_pr'), 'upstream PR')
+                    pr, _ = automatic_candidate(api, number, inputs.get('expected_head', ''), inputs.get('expected_base', ''))
+                    require(os.environ['GITHUB_REF'] == 'refs/heads/main' and os.environ['GITHUB_SHA'] == pr['base']['sha'],
+                            'Native bootstrap dispatch has the wrong base')
+                    base = pr['base']
+                else:
+                    require(os.environ['GITHUB_EVENT_NAME'] == 'pull_request', 'Native bootstrap requires a PR base')
+                    base = event['pull_request']['base']
                 require(base['ref'] == 'main' and SHA.fullmatch(base['sha']), 'Invalid native bootstrap base')
                 source = api.get(f"git/commits/{base['sha']}")
                 require(source['sha'] == base['sha'], 'Native bootstrap base identity mismatch')
                 pin_file = api.get(f"contents/upstream.json?ref={base['sha']}")
                 require(pin_file['encoding'] == 'base64', 'Invalid base version response')
                 pin = json.loads(base64.b64decode(pin_file['content']))
-                version = f"{pin['version']}.{pin['windowsRevision']}"
+                version = pin_version(pin)
                 selected = select_qualified_pr(api, base['sha'], version, source['tree']['sha'], native_directory=bundle)
                 if selected is None:
                     raise NotReusable('No qualified raw libvips artifact for this merged base')
@@ -474,19 +739,25 @@ def prepare_publish(version, directory):
                 'Selected artifact identity changed')
         for candidate in api.pages(f"commits/{os.environ['GITHUB_SHA']}/pulls"):
             current = api.get(f"pulls/{candidate['number']}")
-            if current['merge_commit_sha'] == os.environ['GITHUB_SHA'] and current['head']['sha'] == run['head_sha']:
+            if current['merge_commit_sha'] == os.environ['GITHUB_SHA'] and (current['head']['sha'] == run['head_sha'] or automated_run(run) is not None and automated_run(run) == automated_pr_identity(current)):
                 pr = current
                 break
         require(pr is not None, 'Merged PR association disappeared')
     require(not same_run or run['head_sha'] == os.environ['GITHUB_SHA'], 'Publisher run is not the current main commit')
     record = verify(api, run, artifact, version, directory, pr, allow_original_attempt=same_run)
+    if not same_run and (identity := automated_run(run)) is not None:
+        latest, _ = automatic_candidate(api, *identity, merged=True)
+        require(latest['merge_commit_sha'] == os.environ['GITHUB_SHA']
+                and api.get('git/ref/heads/main')['object']['sha'] == os.environ['GITHUB_SHA'],
+                'Automatic main changed before publication')
     output({'source_commit': record['sourceCommit'], 'source_tree': record['sourceTree'], 'run_id': source_run,
             'artifact_id': artifact['id'], 'artifact_digest': artifact['digest']})
+    return record, artifact
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['plan', 'record', 'prepare-publish', 'prepare-native'])
+    parser.add_argument('command', choices=['plan', 'record', 'prepare-publish', 'prepare-native', 'publish'])
     parser.add_argument('--version')
     parser.add_argument('--directory', type=Path, default=Path('dist'))
     args = parser.parse_args()
@@ -496,5 +767,9 @@ if __name__ == '__main__':
         record_bundle(args.version, args.directory)
     elif args.command == 'prepare-native':
         prepare_native()
+    elif args.command == 'publish':
+        from publish_qualified import publish
+        record, artifact = prepare_publish(args.version, args.directory)
+        publish(API(), record, artifact, args.directory, os.environ['GITHUB_SHA'])
     else:
         prepare_publish(args.version, args.directory)

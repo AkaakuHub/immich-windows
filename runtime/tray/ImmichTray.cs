@@ -189,7 +189,6 @@ namespace Immich.Windows {
                     return 0;
                 }
                 if (elevated) { throw new InvalidOperationException(text.NotElevated); }
-                bool restart = false;
                 using (var mutex = new Mutex(false, instance + "-instance")) {
                     bool owns;
                     try { owns = mutex.WaitOne(0); } catch (AbandonedMutexException) { owns = true; }
@@ -201,22 +200,8 @@ namespace Immich.Windows {
                         };
                         using (var context = new TrayContext(options, text, instance, true)) {
                             Application.Run(context);
-                            restart = context.RestartRequested;
                         }
                     } finally { mutex.ReleaseMutex(); }
-                }
-                // Dispose the old icon/event and release the mutex before starting the updated EXE.
-                // This process is still unelevated even when the update child required UAC.
-                if (restart) {
-                    ProcessStartInfo next = new ProcessStartInfo(Path.Combine(options.CurrentRoot, @"runtime\tray\ImmichTray.exe"));
-                    next.UseShellExecute = false;
-                    next.WorkingDirectory = options.InstallRoot;
-                    next.Arguments = "--install-root " + QuoteArgument(options.InstallRoot) +
-                        " --data-root " + QuoteArgument(options.DataRoot) + " --scope " + options.Scope +
-                        " --powershell-path " + QuoteArgument(options.PowerShellPath);
-                    using (Process replacement = Process.Start(next)) {
-                        if (replacement == null) { throw new InvalidOperationException("Could not restart the Immich tray."); }
-                    }
                 }
                 return 0;
             } catch (Exception error) {
@@ -285,7 +270,6 @@ namespace Immich.Windows {
         private readonly RegisteredWaitHandle exitWait;
         private bool busy;
         private bool disposed;
-        public bool RestartRequested { get; private set; }
 
         public TrayContext(TrayOptions options, TrayText text, string instance, bool visible) {
             this.options = options;
@@ -327,7 +311,6 @@ namespace Immich.Windows {
             ThreadPool.QueueUserWorkItem(delegate {
                 string failure = null;
                 bool cancelled = false;
-                bool updateApplied = false;
                 try {
                     var errors = new StringBuilder();
                     using (var process = new Process()) {
@@ -344,9 +327,8 @@ namespace Immich.Windows {
                         if (!process.Start()) { throw new InvalidOperationException(text.Failed); }
                         if (action == "open") { process.BeginOutputReadLine(); process.BeginErrorReadLine(); }
                         process.WaitForExit();
-                        updateApplied = action == "update" && process.ExitCode == 0;
                         // 10 = already current; 20 = failure acknowledged in the update shell.
-                        // Neither is a completed update and neither should restart this tray.
+                        // The unified updater owns tray replacement after qualification.
                         bool acknowledged = action == "update" && (process.ExitCode == 10 || process.ExitCode == 20);
                         if (process.ExitCode != 0 && !acknowledged) {
                             lock (errors) { failure = errors.Length > 0 ? errors.ToString() : text.Failed + " (" + process.ExitCode.ToString(CultureInfo.InvariantCulture) + ")"; }
@@ -362,9 +344,6 @@ namespace Immich.Windows {
                     tray.Text = "Immich";
                     if (failure != null) {
                         MessageBox.Show(failure, "Immich", MessageBoxButtons.OK, cancelled ? MessageBoxIcon.Information : MessageBoxIcon.Error);
-                    } else if (updateApplied) {
-                        RestartRequested = true;
-                        ExitThread();
                     } else if (action == "start" || action == "stop") {
                         string completed = action == "start" ? text.Started : action == "stop" ? text.Stopped : text.Updated;
                         tray.ShowBalloonTip(4000, "Immich", completed, ToolTipIcon.Info);

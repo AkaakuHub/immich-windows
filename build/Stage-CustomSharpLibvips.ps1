@@ -24,7 +24,6 @@ $fields = @{
     variant = $expected.variant
     jpeg = $expected.jpeg
     libvipsRevision = $expected.libvipsRevision
-    immichBaseImagesCommit = $expected.immichBaseImagesCommit
     immichLoaderPatch = $expected.immichLoaderPatch
     hevc = $expected.hevc
 }

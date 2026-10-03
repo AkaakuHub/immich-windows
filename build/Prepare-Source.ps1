@@ -77,9 +77,36 @@ function Assert-UpstreamVersions {
     $server = Read-JsonFile (Join-Path $Destination 'server\package.json')
     $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
     if ("v$($server.version)" -ne $upstream.version) { throw "Server package version differs from $($upstream.version)." }
+    # mise pins development tools; the released server uses the separately pinned
+    # production base image. Keep that distinction explicit when runtime metadata exists.
+    $productionPins = $versions.PSObject.Properties['upstreamRuntime']
+    if ($productionPins) {
+        $runtime = $versions.upstreamRuntime
+        if ($runtime.schemaVersion -ne 1 -or $runtime.immichCommit -ne $upstream.commit -or
+            $runtime.baseImages.commit -notmatch '^[0-9a-f]{40}$' -or
+            $runtime.nodeVersion -ne $versions.node.version -or $runtime.ffmpegVersion -ne $versions.ffmpeg.version) {
+            throw 'Production runtime pins do not match the immutable upstream source.'
+        }
+        $dockerfile = Get-Content -Raw -LiteralPath (Join-Path $Destination 'server/Dockerfile')
+        foreach ($kind in @('dev','prod')) {
+            $image = $runtime.baseImages.images.$kind
+            $reference = "ghcr.io/immich-app/base-server-${kind}:$($image.tag)@sha256:$($image.digest)"
+            if ($image.tag -ne $runtime.baseImages.tag -or $image.digest -notmatch '^[0-9a-f]{64}$' -or
+                -not $dockerfile.Contains($reference)) { throw 'Production base image pin differs from the upstream Dockerfile.' }
+        }
+        foreach ($property in $runtime.sourceSha256.PSObject.Properties) {
+            if ($property.Name -notin @('mise.toml','server/package.json','server/Dockerfile','machine-learning/pyproject.toml','machine-learning/uv.lock')) {
+                throw 'Unexpected upstream runtime source path.'
+            }
+            $text = (Get-Content -Raw -LiteralPath (Join-Path $Destination $property.Name)).Replace("`r`n","`n")
+            $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant()
+            if ($hash -cne $property.Value) { throw "Upstream runtime source changed: $($property.Name)" }
+        }
+    }
     foreach ($name in @('node','pnpm')) {
         $match = [regex]::Match($mise, "(?m)^$name = `"([^`"]+)`"\r?$")
-        if (-not $match.Success -or $match.Groups[1].Value -ne $versions.$name.version) {
+        $expected = if ($productionPins -and $name -eq 'node') { $runtime.developmentTools.node } else { $versions.$name.version }
+        if (-not $match.Success -or $match.Groups[1].Value -ne $expected) {
             throw "Update dependencies/versions.json: $name differs from the pinned upstream mise.toml."
         }
     }
@@ -94,7 +121,8 @@ function Assert-UpstreamVersions {
         }
     }
     $ffmpeg = [regex]::Match($mise, '(?m)^\[tools\."github:jellyfin/jellyfin-ffmpeg"\]\r?\nversion = "([^"]+)"\r?$')
-    if (-not $ffmpeg.Success -or $ffmpeg.Groups[1].Value -ne $versions.ffmpeg.version) {
+    $expectedFfmpeg = if ($productionPins) { $runtime.developmentTools.ffmpeg } else { $versions.ffmpeg.version }
+    if (-not $ffmpeg.Success -or $ffmpeg.Groups[1].Value -ne $expectedFfmpeg) {
         throw 'Update dependencies/versions.json: FFmpeg differs from the pinned upstream mise.toml.'
     }
     if ($server.dependencies.sharp.TrimStart('^','~') -ne $versions.sharp.version) {

@@ -35,7 +35,6 @@ if(-not $CustomSharpLibvipsBundle){
             $metadata.sourceCommit -eq $v.commit -and $metadata.target -eq $v.target -and
             $metadata.variant -eq $v.variant -and $metadata.jpeg -eq $v.jpeg -and
             $metadata.libvipsRevision -eq $v.libvipsRevision -and
-            $metadata.immichBaseImagesCommit -eq $v.immichBaseImagesCommit -and
             $metadata.immichLoaderPatch -eq $v.immichLoaderPatch -and
             [bool]$metadata.hevc -eq [bool]$v.hevc -and
             $nativeIdentityMatches

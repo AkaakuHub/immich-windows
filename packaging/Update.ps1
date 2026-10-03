@@ -29,8 +29,8 @@ $envFile=Join-Path $DataRoot 'immich.env'
 $installedEnv=Read-EnvFile $envFile
 if ($installedEnv.IMMICH_WINDOWS_INSTALL_SCOPE -ne $Scope) { throw 'The selected scope does not match the installed environment.' }
 $previousManifest=Get-Content -Raw -LiteralPath (Join-Path $previousRelease 'manifest.json')|ConvertFrom-Json
-$candidateManifest=Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'manifest.json')|ConvertFrom-Json
-& (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackageRoot $PackageRoot
+$candidateManifestText=Get-Content -Raw -LiteralPath (Join-Path $PackageRoot 'manifest.json')
+$candidateManifest=$candidateManifestText|ConvertFrom-Json
 $previousVersion = Get-WindowsPackageVersion $previousManifest
 $candidateVersion = Get-WindowsPackageVersion $candidateManifest
 if ($candidateVersion -le $previousVersion) { throw "Candidate $candidateVersion must be newer than installed $previousVersion." }
@@ -94,40 +94,53 @@ Save-UpgradeState
 
 Write-Host (Get-ImmichProgressText selection)
 $stopScript=Join-Path $PSScriptRoot '..\runtime\launchers\Stop-Immich.ps1'
-$backup=$null
+$updateProgress=@{}
 try {
-    $prepareProgress=Start-ImmichProgress -Key prepare
+    $updateProgress.prepare=Start-ImmichProgress -Key prepare
     $candidateRelease = Join-Path $InstallRoot "releases\v$candidateVersion"
-    $global:LASTEXITCODE=0
-    & (Join-Path $PSScriptRoot 'Install.ps1') -PackageRoot $PackageRoot -Scope $Scope -EnvFile $envFile -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService -ReuseServices -PrepareOnly -ResumeExistingRelease:(Test-Path -LiteralPath $candidateRelease)
-    if ($LASTEXITCODE -ne 0) { throw "Candidate preparation failed with exit code $LASTEXITCODE." }
-    Update-ImmichProgress -State $prepareProgress -Finished
-    $state.databaseUnchanged = Test-ImmichDatabasePayloadEqual -PreviousRelease $previousRelease -CandidateRelease $candidateRelease
-    $state.candidateRelease = $candidateRelease
-    $state.status = 'stopping'
-    Save-UpgradeState
-$stopProgress=Start-ImmichProgress -Key stop
-$global:LASTEXITCODE=0
-& $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
-if ($LASTEXITCODE -ne 0) { throw "Immich shutdown failed with exit code $LASTEXITCODE." }
-Update-ImmichProgress -State $stopProgress -Finished
-if (-not $state.databaseUnchanged) {
-    $backupProgress=Start-ImmichProgress -Key backup
-    $global:LASTEXITCODE=0
-    $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot
-    if ($LASTEXITCODE -ne 0) { throw "Database backup failed with exit code $LASTEXITCODE." }
-    $backup=@($backup)[-1]
-    if(-not(Test-Path -LiteralPath $backup -PathType Leaf)){throw "Pre-upgrade database backup was not created: $backup"}
-    Update-ImmichProgress -State $backupProgress -Finished
-    $state.databaseBackup=$backup
-    Write-Host "Pre-upgrade database backup: $backup"
-} else {
-    Write-Host 'Database-facing payloads are identical. Skipping upgrade-only DB backup and all installer DB changes.'
-}
-$switchProgress=Start-ImmichProgress -Key switch
-$state.status='installing'
-Save-UpgradeState
-
+    $updateIdentity=@{PackageRoot=$PackageRoot;Release=$candidateRelease;PreviousRelease=$previousRelease;InstallRoot=$InstallRoot;DataRoot=$DataRoot;Scope=$Scope;Manifest=$candidateManifestText;EnvFile=$envFile}
+    $controller = {
+        param([string]$Phase,$Context,[bool]$DatabaseUnchanged)
+        # This continuation is private to this invocation, with no saved receipt
+        # or generic skip flag. Reject a foreign/changed/replayed preparation.
+        foreach ($name in @('PackageRoot','Release','PreviousRelease','InstallRoot','DataRoot')) {
+            if ([IO.Path]::GetFullPath($Context.$name) -ine [IO.Path]::GetFullPath($updateIdentity[$name])) { throw 'Prepared update paths do not match this transaction.' }
+        }
+        if ($Context.Scope -ne $updateIdentity.Scope -or (Get-CurrentReleaseTarget -InstallRoot $updateIdentity.InstallRoot) -ne $updateIdentity.PreviousRelease -or
+            (Get-Content -Raw -LiteralPath (Join-Path $updateIdentity.PackageRoot 'manifest.json')) -cne $updateIdentity.Manifest -or
+            (Get-Content -Raw -LiteralPath (Join-Path $updateIdentity.Release 'manifest.json')) -cne $updateIdentity.Manifest -or
+            (Get-Content -Raw -LiteralPath $updateIdentity.EnvFile) -cne $state.previousEnv) { throw 'Prepared update identity or configuration changed.' }
+        if ($Phase -eq 'Prepared' -and $state.status -eq 'preparing') {
+            Update-ImmichProgress -State $updateProgress.prepare -Finished
+            $state.candidateRelease=$candidateRelease
+            $state.status='stopping'
+            Save-UpgradeState
+            $stopProgress=Start-ImmichProgress -Key stop
+            $global:LASTEXITCODE=0
+            & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot
+            if ($LASTEXITCODE -ne 0) { throw "Immich shutdown failed with exit code $LASTEXITCODE." }
+            Update-ImmichProgress -State $stopProgress -Finished
+            return
+        }
+        if ($Phase -ne 'DatabaseCompared' -or $state.status -ne 'stopping') { throw 'Unexpected update continuation phase.' }
+        $state.databaseUnchanged=$DatabaseUnchanged
+        if (-not $DatabaseUnchanged) {
+            $backupProgress=Start-ImmichProgress -Key backup
+            $global:LASTEXITCODE=0
+            $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot
+            if ($LASTEXITCODE -ne 0) { throw "Database backup failed with exit code $LASTEXITCODE." }
+            $backup=@($backup)[-1]
+            if (-not $backup -or -not (Test-Path -LiteralPath $backup -PathType Leaf)) { throw "Pre-upgrade database backup was not created: $backup" }
+            Update-ImmichProgress -State $backupProgress -Finished
+            $state.databaseBackup=$backup
+            Write-Host "Pre-upgrade database backup: $backup"
+        } else {
+            Write-Host 'Database-facing payloads are identical. Skipping upgrade-only DB backup and all installer DB changes.'
+        }
+        $updateProgress.switch=Start-ImmichProgress -Key switch
+        $state.status='installing'
+        Save-UpgradeState
+    }
     $global:LASTEXITCODE=0
     & (Join-Path $PSScriptRoot 'Install.ps1') `
         -PackageRoot $PackageRoot `
@@ -138,12 +151,13 @@ Save-UpgradeState
         -PostgresRoot $PostgresRoot `
         -PostgresService $PostgresService `
         -ReuseServices `
-        -ApplicationOnly:$state.databaseUnchanged `
-        -ResumeExistingRelease `
+        -UpdateController $controller `
+        -ResumeExistingRelease:(Test-Path -LiteralPath $candidateRelease) `
         -DoNotStart
     if ($LASTEXITCODE -ne 0) { throw "Candidate installation failed with exit code $LASTEXITCODE." }
+    if ($state.status -ne 'installing' -or (Get-CurrentReleaseTarget -InstallRoot $InstallRoot) -ne $candidateRelease) { throw 'The installer did not complete its controlled preparation and activation.' }
 
-    Update-ImmichProgress -State $switchProgress -Finished
+    Update-ImmichProgress -State $updateProgress.switch -Finished
     $state.candidateRelease=Get-CurrentReleaseTarget -InstallRoot $InstallRoot
     $state.status='candidate-installed'
     Save-UpgradeState
@@ -163,7 +177,7 @@ Save-UpgradeState
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')
     Save-UpgradeState
     Write-Host "Upgrade qualified: $($state.previousVersion) -> $($state.candidateVersion)"
-    if ($backup) { Write-Host "Paired rollback backup retained at: $backup" }
+    if ($state.databaseBackup) { Write-Host "Database backup retained at: $($state.databaseBackup)" }
 } catch {
     $failure=$_
     $preparationFailed = $state.status -eq 'preparing'
@@ -173,11 +187,25 @@ Save-UpgradeState
     Save-UpgradeState
     try { if (-not $preparationFailed) { & $stopScript -EnvFile $envFile -DataRoot $DataRoot -InstallRoot $InstallRoot } }
     catch { Write-Warning "Immich shutdown also failed: $($_.Exception.Message)" }
-    throw "Upgrade failed. Recovery state: $stateFile. Database backup: $backup. $($failure.Exception.Message)"
+    throw "Upgrade failed. Recovery state: $stateFile. Database backup: $($state.databaseBackup). $($failure.Exception.Message)"
 }
 
-# Keep a healthy qualified server running if desktop UI startup itself fails.
-Start-ImmichTray -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope
+# All entrypoints share this post-qualification lifecycle. Keep the v8 tray
+# alive on update failure; after success, await its actual exit before deleting.
+$trayStopped=$false
+try {
+    Stop-ImmichTray -InstallRoot $InstallRoot -ReleasePath $state.previousRelease
+    $trayStopped=$true
+    . (Join-Path $PSScriptRoot 'Remove-ObsoleteReleases.ps1')
+    Remove-ImmichObsoleteReleases -InstallRoot $InstallRoot -DataRoot $DataRoot -CurrentReleasePath $state.candidateRelease -PreviousReleasePath $state.previousRelease -EnvFile $envFile | Out-Null
+} catch { Write-Warning "The update is healthy, but previous release cleanup could not finish: $($_.Exception.Message)" }
+finally {
+    # Cleanup errors must not strand the desktop without its newly installed tray.
+    if ($trayStopped) {
+        try { Start-ImmichTray -InstallRoot $InstallRoot -DataRoot $DataRoot -Scope $Scope }
+        catch { Write-Warning "The update is healthy, but the new tray could not start: $($_.Exception.Message)" }
+    }
+}
 
 } finally {
     if ($startupLocked) { $startupMutex.ReleaseMutex() }

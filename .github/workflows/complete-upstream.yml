@@ -1,0 +1,39 @@
+name: complete-qualified-upstream
+run-name: Complete qualified run ${{ github.event.workflow_run.id }}
+
+on:
+  workflow_run:
+    workflows: [build-windows-native]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: complete-qualified-upstream
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.display_title, 'Qualify upstream PR #')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      # workflow_run is privileged. Only default-branch code runs here. Never
+      # use the triggering run's head SHA or extract/execute candidate files.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the immutable qualification, merge and dispatch promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/complete_upstream.py

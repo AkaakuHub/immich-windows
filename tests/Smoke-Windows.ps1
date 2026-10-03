@@ -102,7 +102,7 @@ try {
 }
 
 $ffmpeg=Join-Path $current 'runtime\ffmpeg\ffmpeg.exe'
-$python=Get-ChildItem (Join-Path $current 'machine-learning\python-runtime') -Filter python.exe -File -Recurse|Where-Object{$_.FullName -notmatch '\\Scripts\\'}|Select-Object -First 1
+$python=Get-ImmichPythonExecutable -ReleaseRoot $current
 $nodeVersion=& $node --version; if($LASTEXITCODE -ne 0){throw 'Node runtime failed.'}; Write-Host "Node $nodeVersion"
 $ffmpegVersion=& $ffmpeg -version; if($LASTEXITCODE -ne 0){throw 'FFmpeg runtime failed.'}; Write-Host ($ffmpegVersion|Select-Object -First 1)
 $pythonVersion=& $python.FullName --version; if($LASTEXITCODE -ne 0){throw 'Python runtime failed.'}; Write-Host $pythonVersion

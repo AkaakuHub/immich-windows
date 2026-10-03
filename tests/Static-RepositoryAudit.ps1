@@ -133,22 +133,48 @@ Assert-True ($upstream.commit -match '^[0-9a-f]{40}$') 'upstream.json must pin a
 
 $packageTag = Get-WindowsReleaseVersion $upstream
 $legacy = [pscustomobject]@{ schemaVersion=1; immichVersion='v3.2.2' }
+$revision0 = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=0; packageVersion='v3.2.2.0' }
 $revision1 = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=1; packageVersion='v3.2.2.1' }
 $revision2 = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=2; packageVersion='v3.2.2.2' }
+$revision8 = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=8; packageVersion='v3.2.2.8' }
 $revision10 = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=10; packageVersion='v3.2.2.10' }
-$nextUpstream = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.3'; windowsRevision=1; packageVersion='v3.2.3.1' }
+$nextUpstream = [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.4'; windowsRevision=0; packageVersion='v3.2.4.0' }
+Assert-True ((Get-WindowsReleaseVersion ([pscustomobject]@{ version='v3.2.4'; windowsRevision=0 })) -ceq 'v3.2.4.0') 'A new upstream release must support initial revision zero.'
+Assert-True ((Get-WindowsPackageVersion $legacy) -eq (Get-WindowsPackageVersion $revision0)) 'Three-component schema 1 installs must retain their revision-zero identity.'
 Assert-True ((Get-WindowsPackageVersion $legacy) -lt (Get-WindowsPackageVersion $revision1)) 'Legacy installs must update to revision 1.'
 Assert-True ((Get-WindowsPackageVersion $revision1) -lt (Get-WindowsPackageVersion $revision2)) 'Same-upstream revisions must compare numerically.'
 Assert-True ((Get-WindowsPackageVersion $revision2) -lt (Get-WindowsPackageVersion $revision10)) 'Revision 10 must follow revision 2.'
-Assert-True ((Get-WindowsPackageVersion $revision10) -lt (Get-WindowsPackageVersion $nextUpstream)) 'A newer upstream version must follow any previous revision.'
+Assert-True ((Get-WindowsPackageVersion $revision8) -lt (Get-WindowsPackageVersion $nextUpstream)) 'v3.2.2.8 must update to v3.2.4.0.'
+Assert-True ((Get-WindowsPackageVersion $revision10) -lt (Get-WindowsPackageVersion $nextUpstream)) 'A newer upstream revision zero must follow earlier upstream revisions.'
 foreach ($invalid in @(
     [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2' },
-    [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=0; packageVersion='v3.2.2.0' },
+    [pscustomobject]@{ schemaVersion=1; immichVersion='v3.2.2'; packageVersion='v3.2.2.0' },
+    [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=0; packageVersion='v3.2.2.1' },
     [pscustomobject]@{ schemaVersion=2; immichVersion='v3.2.2'; windowsRevision=1; packageVersion='v3.2.2.2' }
 )) {
     $rejected=$false
     try { Get-WindowsPackageVersion $invalid | Out-Null } catch { $rejected=$true }
     Assert-True $rejected 'Invalid or conflicting revision metadata must be rejected.'
+}
+foreach ($revision in @('-1','00','01','+1','1.0',' 0',"0`n",'')) {
+    foreach ($kind in @('pin','manifest')) {
+        $rejected=$false
+        try {
+            if ($kind -eq 'pin') { Get-WindowsReleaseVersion ([pscustomobject]@{version='v3.2.4';windowsRevision=$revision}) | Out-Null }
+            else { Get-WindowsPackageVersion ([pscustomobject]@{schemaVersion=2;immichVersion='v3.2.4';windowsRevision=$revision;packageVersion="v3.2.4.$revision"}) | Out-Null }
+        } catch { $rejected=$true }
+        Assert-True $rejected "Invalid revision in $kind must be rejected: [$revision]"
+    }
+}
+foreach ($version in @('v03.2.4','v3.02.4','v3.2.04','v3.2.-1','V3.2.4',"v3.2.4`n")) {
+    foreach ($kind in @('pin','manifest')) {
+        $rejected=$false
+        try {
+            if ($kind -eq 'pin') { Get-WindowsReleaseVersion ([pscustomobject]@{version=$version;windowsRevision=0}) | Out-Null }
+            else { Get-WindowsPackageVersion ([pscustomobject]@{schemaVersion=2;immichVersion=$version;windowsRevision=0;packageVersion="$version.0"}) | Out-Null }
+        } catch { $rejected=$true }
+        Assert-True $rejected "Invalid upstream version in $kind must be rejected: [$version]"
+    }
 }
 
 # Cheap content-comparison regression: no extra dump for ML-only changes; DB-facing changes require it.

@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 
 function Get-NativeMediaBuildIdentity {
     param([Parameter(Mandatory)][string]$RepositoryRoot)
-    $versions=Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'dependencies/versions.json')|ConvertFrom-Json
+    $versions=Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot 'dependencies/versions.json')|ConvertFrom-Json -AsHashtable
     $patches=@(Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'media-patches/libvips') -Filter '*.patch' -File|Sort-Object Name)
     if(-not $patches.Count){throw 'Native media patches are missing.'}
     $patchInputs=@($patches|ForEach-Object{"$($_.Name):$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant())"}) -join "`n"
@@ -12,7 +12,21 @@ function Get-NativeMediaBuildIdentity {
     $builderInputs=@('build/Build-CustomSharpLibvips.ps1','build/Common.psm1','build/NativeMediaValidation.psm1')|ForEach-Object {
         "${_}:$((Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepositoryRoot $_)).Hash.ToLowerInvariant())"
     }
-    $inputs=[ordered]@{schemaVersion=1;media=$versions.sharpLibvips;sharp=$versions.sharp;patches=$patchDigest;builders=@($builderInputs)}|ConvertTo-Json -Depth 10 -Compress
+    # Provenance descriptions do not affect the DLL build. The selected source
+    # revisions/checksums, Windows flags, patches and builder bytes do.
+    $media=$versions.sharpLibvips
+    foreach($field in @('notes','immichBaseImagesCommit')){[void]$media.Remove($field)}
+    if($media.Contains('libheif')){[void]$media.libheif.Remove('source')}
+    function ConvertTo-CanonicalNativeValue($Value) {
+        if($Value -is [Collections.IDictionary]) {
+            $ordered=[ordered]@{}
+            foreach($key in @($Value.Keys|Sort-Object -CaseSensitive)) {$ordered[$key]=ConvertTo-CanonicalNativeValue $Value[$key]}
+            return $ordered
+        }
+        if($Value -is [array]) {return ,@($Value|ForEach-Object {ConvertTo-CanonicalNativeValue $_})}
+        return $Value
+    }
+    $inputs=[ordered]@{schemaVersion=2;media=(ConvertTo-CanonicalNativeValue $media);sharpVersion=$versions.sharp.version;patches=$patchDigest;builders=@($builderInputs)}|ConvertTo-Json -Depth 10 -Compress
     [pscustomobject]@{
         mediaPatchesSha256=$patchDigest
         nativeBuildInputsSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($inputs))).ToLowerInvariant()

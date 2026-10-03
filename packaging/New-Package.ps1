@@ -73,7 +73,7 @@ $installerDestination = Join-Path $Destination 'installer'
 New-Item -ItemType Directory -Path $installerDestination -Force | Out-Null
 foreach ($name in @(
     'Install-MachineLearningDependencies.ps1','Install-PostgresExtensions.ps1',
-    'Install-RuntimeDependencies.ps1','Install.ps1','Recover-Upgrade.ps1','Test-ReleasePackage.ps1',
+    'Install-RuntimeDependencies.ps1','Install.ps1','Recover-Upgrade.ps1','Remove-ObsoleteReleases.ps1','Test-ReleasePackage.ps1',
     'Uninstall.ps1','Update-FromRelease.ps1','Update.ps1'
 )) {
     Copy-Item (Join-Path $root "packaging\$name") (Join-Path $installerDestination $name) -Force

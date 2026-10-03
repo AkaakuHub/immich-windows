@@ -42,11 +42,12 @@ $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtu
 | --- | --- |
 | `build-windows-native` | PRで静的監査・パッチ適用・ビルド・両スコープの導入と更新を一度検証します。mainでは同じ内容の検証済み成果物を再利用し、そのままReleaseへ公開します。再利用の証拠がない場合は通常の検証を実行します。手動`all`は明示的な再検証、`codec`・`postgres`・`migration`は個別成果物のみです |
 | `keep-native-build-cache` | 定期的に現在の設定に一致するキャッシュを参照します |
-| `check-upstream-immich-release` | 上流の新しいstable版をIssueで通知します。自動で版を変更しません |
+| `check-upstream-immich-release` | 毎日03:17 UTCに上流stable版を確認し、新しい版だけ固定コミット・依存版・パッチを準備してPRを作成し、既存の検証workflowを一度起動します |
+| `complete-qualified-upstream` | 成功した自動更新のrun・artifact・PRのhead/base/treeを照合し、自動マージ後に同じ成果物の公開を起動します |
 
 Windows runnerの使い捨てDBで起動・更新・設定保持・同一版拒否を検証します。トレイは組み込みの.NET Frameworkコンパイラでビルドし、Windows PowerShell 5.1上で日英ラベル、引数の引用、UAC分離、NotifyIconの生成、両スコープのスタートアップ登録、旧メニュー削除を検証します。CurrentUserの起動判定には保持したProcessオブジェクトを使い、ロード直後にPathがまだ取得できない状態を終了扱いしません。GPUがないCIではCPUで小さいONNXモデルの推論を検証し、GPUフォールバック制御はモックテストします。RX 550での実モデル推論・PC再起動は実機検証が必要です。
 
-本体版とWindows改訂は既存`upstream.json`の`version`と`windowsRevision`で管理します。例：`v3.2.2`と`1`から`v3.2.2.1`。配布に影響する変更は改訂番号を増やし、本体変更時は改訂を1へ戻します。公開済みタグより古い版、または公開済み版の配布入力を変えたまま改訂していない場合はビルド前に失敗させます。`.github/`と配布されない`docs/development.md`だけの変更は、同じ版のままCIを検証でき、新しいReleaseは作りません。Releaseは全テスト成功後にdraftを作り、全ファイルのアップロード成功後に公開します。既存assetsは上書きしません。
+本体版とWindows改訂は既存`upstream.json`の`version`と`windowsRevision`で管理します。例：`v3.2.4`と`0`から`v3.2.4.0`。新しい上流stable版では改訂を自動で0へ戻します。同じ本体版でWindows側の配布内容を修正するときは、改訂を1、2、…と増やします。公開済みタグより古い版、または公開済み版の配布入力を変えたまま改訂していない場合はビルド前に失敗させます。`.github/`と配布されない`docs/development.md`だけの変更は、同じ版のままCIを検証でき、新しいReleaseは作りません。Releaseは全テスト成功後にdraftを作り、全ファイルのアップロード成功後に公開します。既存assetsは上書きしません。
 
 ドキュメントのみの変更では自動ビルドしません。native依存は内容ベースの既存キャッシュを再利用し、改訂番号だけでは再ビルドしません。アプリ側も復元したキャッシュの入力署名を確認して必要な段階だけ再ビルドします。
 
@@ -64,8 +65,8 @@ GLib 2.89.3には、Windows用TLS（thread-local storage）コールバックの
 
 ### PRからmainへの成果物の再利用
 
-- PRの実際のcheckout（GitHubが作るmerge commit）と、4つの配布ファイルのSHA-256を全テスト成功後に記録します。成果物は14日保持します
-- mainの対象コミットにマージされた同一リポジトリのPR、正しいworkflow/run/attempt、必須ジョブの成功、GitHubが返すartifact IDとSHA-256を確認します。スキップされたテストを成功扱いしません
+- PRの実際のcheckout（GitHubが作るmerge commit）と、4つの配布ファイルのSHA-256を全テスト成功後に記録します。自動更新はmain上の信頼済みスクリプトでPR番号とhead/baseを確認してから、その固定merge commitを検証します。成果物は14日保持します
+- mainの対象コミットにマージされた同一リポジトリのPR、正しいworkflow/run/attempt、必須ジョブの成功、GitHubが返すartifact IDとSHA-256を確認します。自動更新の完了処理は、マージ前にも同じ証拠を検査します。スキップされたテストを成功扱いしません
 - 記録されたcommitをGitHubのGitオブジェクトで検証し、PRのbase/headを親に持つことと、実際にテストされたGit treeがmainと完全一致することを確認します。squashでcommit SHAが変わっても、treeが同じなら再実行しません
 - fork、期限切れ・欠落した成果物、変更されたソースや実行attemptなど、再利用の証拠が揃わない場合は通常の検証へ戻します。ハッシュ不一致など不正・破損の疑いは自動で無視せず失敗させます
 - キャッシュはビルドを速めるためだけに使い、合格の証拠として使いません。信頼の前提は、同一リポジトリ内でレビューされmainにマージされたコードと、GitHubに結び付いた不変のrun/artifactです。forkの成果物を特権付きジョブに持ち込みません
@@ -74,11 +75,23 @@ GLib 2.89.3には、Windows用TLS（thread-local storage）コールバックの
 
 参考: [GitHubのPR実行コミット](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request)、[成果物の共有](https://docs.github.com/en/actions/tutorials/store-and-share-data)、[特権workflowの安全性](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
 
-## 上流版を更新する
+## 上流版の自動更新
 
-1. `upstream.json`のtag/commitと`dependencies/versions.json`の版を更新します。
-2. `Prepare-Source.ps1`でパッチを確認します。上流で不要になったパッチを削除し、必要な差分だけを修正します。
-3. 静的監査、ビルド、薄型パッケージからの両モード導入、画像・動画・顔認識・検索・バックアップ・復元を確認します。
-4. Windows改訂番号を更新してPRの検証を通します。mainへマージすると検証済み成果物を照合し、同一内容なら再ビルドせず公開します。検証結果を再利用できない場合はビルド・検証を通してから公開します。
+通常の上流更新は手作業で版を書き換えず、次のフローで進みます。
+
+1. GitHubの公式latest stableとmainの固定版を比較します。同じ版や古い版なら、PR作成・版の書き換え・ビルドを行いません。
+2. 新しい版のtagを不変のcommitへ解決し、Windows改訂を0にします。上流の本番base-imageからNode・FFmpeg・メディア依存を、miseとpackage情報からビルドツール・Sharpを同期します。Windows専用のDB・DirectMLなどは既存の明示的な互換性方針を維持します。
+3. 固定された旧版・新版のソースだけを使ってパッチを確認します。通常適用（行位置の移動を含む）、既に上流へ入った差分の除去、競合のないGit three-way適用を自動処理します。内容を推測してコードを書き換えることはありません。競合や未対応の依存関係・構造変更では、対象を示して停止します。
+4. 版ごとの専用branchとdraft PRをGit Data APIで作成し、main上の既存workflowへPR番号・固定head/baseを明示して検証を依頼します。同じhead/baseに実行中・成功・失敗のrunがあれば重複ビルドしません。別の自動更新がまだ検証中なら新しい版は次の毎日確認まで待ち、既存ビルドをキャンセルしません。
+5. 静的監査、パッチ適用、ネイティブビルド、新しいDBへの導入、実際の前のReleaseからの両スコープ更新など、必要なゲートを通します。mainが進んだ場合は、自動生成したことを確認できるheadだけを最新mainへ作り直して再検証します。人が変更したheadを自動で上書きしません。
+6. 成功後、mainのスクリプトがrun・attempt・artifact digest・PRのhead/base・Git treeを再確認し、Git Data APIの`force:false`更新でmainを検証済みのmerge commitそのものへ進めます。mainのSHA・tree・親commitとPRのマージ結果が検証内容に一致することを確認してから、検証済みZIPを再ビルド・再圧縮せず公開します。
+
+GitHub Actions標準の`GITHUB_TOKEN`だけを使います。botが作るPRやmergeからの通常イベントに頼らず、検証と公開を明示的にdispatchします。新しいPATやGitHub App秘密鍵は不要です。リポジトリではActionsによるPR作成を許可してください。権限が足りない場合はエラーを表示し、別のtokenを作ったり設定を変更したりはしません。
+
+失敗した同一候補を毎日繰り返しビルドしません。検証自体は成功していて、完了処理だけが一時的に失敗した場合は、毎日の確認で同じ検証結果に限定して完了処理を再開します。進行中の完了処理と重複実行しません。競合・テスト失敗などの原因を修正した場合や一時的な障害の場合は、対象runを確認して再実行できます。新しい上流版の検出は継続し、過去の失敗だけで新しい版を永久に止めません。閉じた更新PRも勝手に作り直しません。
+
+自動更新がmainへ入った後、配布ファイルのアップロードや公開だけが一時的に失敗した場合は、毎日の確認が同じmainと検証済み成果物に限定して公開を再開します。再ビルドはしません。既にアップロードしたファイルは検証済みSHA-256と一致するときだけ保持し、不足分だけ追加します。出所が異なるdraftや内容が違う既存assetは上書きせず、具体的な不整合をエラーにします。
+
+手動で調査する場合は`Prepare-Source.ps1`、静的監査、Windowsの全検証ゲートを使います。実際の写真や稼働中DBを使って移行を試さないでください。
 
 [構成](architecture.md)と[参照元](upstream-sources.md)も参照してください。
