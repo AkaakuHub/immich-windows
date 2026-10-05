@@ -172,11 +172,11 @@ try {
 
     $english = [Immich.Windows.TrayText]::ForCulture('en-US')
     $japanese = [Immich.Windows.TrayText]::ForCulture('ja-JP')
-    $expectedEnglish = @{ Open = 'Open Immich'; Start = 'Start Immich'; Stop = 'Stop Immich'; Update = 'Update Immich'; Exit = 'Exit tray (keep server running)'; Continue = 'Press Enter to close' }
-    $expectedJapanese = @{ Open = 'Immichを開く'; Start = 'Immichを起動'; Stop = 'Immichを停止'; Update = 'Immichを更新'; Exit = 'トレイを終了（サーバーは停止しません）'; Continue = 'Enterキーを押して閉じます' }
+    $expectedEnglish = @{ Open = 'Open Immich'; OpenConfigFolder = 'Open configuration folder'; Start = 'Start Immich'; Stop = 'Stop Immich'; Update = 'Update Immich'; Exit = 'Exit tray (keep server running)'; Continue = 'Press Enter to close' }
+    $expectedJapanese = @{ Open = 'Immichを開く'; OpenConfigFolder = '設定フォルダーを開く'; Start = 'Immichを起動'; Stop = 'Immichを停止'; Update = 'Immichを更新'; Exit = 'トレイを終了（サーバーは停止しません）'; Continue = 'Enterキーを押して閉じます' }
     foreach ($field in $expectedEnglish.Keys) { Assert-Equal $english.$field $expectedEnglish[$field] ("English $field") }
     foreach ($field in $expectedJapanese.Keys) { Assert-Equal $japanese.$field $expectedJapanese[$field] ("Japanese $field") }
-    $textFields = @('Open', 'Start', 'Stop', 'Update', 'Exit', 'Busy', 'Failed', 'Cancelled', 'Continue', 'NotElevated', 'Started', 'Stopped', 'Updated', 'Language')
+    $textFields = @('Open', 'OpenConfigFolder', 'Start', 'Stop', 'Update', 'Exit', 'Busy', 'Failed', 'Cancelled', 'Continue', 'NotElevated', 'Started', 'Stopped', 'Updated', 'Language')
     foreach ($culture in @('ja_JP', 'JA-jp', 'ja')) {
         $text = [Immich.Windows.TrayText]::ForCulture($culture)
         foreach ($field in $textFields) { Assert-Equal $text.$field $japanese.$field ("Japanese culture $culture / $field") }
@@ -193,6 +193,20 @@ try {
     foreach ($scope in @('CurrentUser', 'AllUsers')) {
         $options.Scope = $scope
         foreach ($text in @($english, $japanese)) {
+            # Resolve only the active env's parent. The second installation has no env to read.
+            foreach ($folderRoot in @($dataRoot, (Join-Path $base "Other 設定's `$dollar; [custom]"))) {
+                $folderArguments = [string[]]$validArguments.Clone()
+                $folderArguments[3] = $folderRoot; $folderArguments[5] = $scope
+                $folderOptions = [Immich.Windows.TrayOptions]::Parse($folderArguments)
+                $folderInfo = [Immich.Windows.TrayCommands]::BuildStartInfo($folderOptions, 'open-config-folder', $text)
+                $label = "$scope / open-config-folder / $($text.OpenConfigFolder)"
+                Assert-Equal $folderInfo.FileName ([IO.Path]::GetDirectoryName($folderOptions.EnvFile)) ($label + ': active env parent')
+                Assert-Equal $folderInfo.FileName $folderRoot ($label + ': installation-specific data directory')
+                Assert-True $folderInfo.UseShellExecute ($label + ': direct Windows shell open')
+                Assert-Equal $folderInfo.Verb 'open' ($label + ': folder action must never request elevation')
+                Assert-Equal $folderInfo.Arguments '' ($label + ': path stays literal, without a command interpreter')
+                Assert-True (-not $folderInfo.RedirectStandardOutput -and -not $folderInfo.RedirectStandardError) ($label + ': no redirected process to drain')
+            }
             foreach ($action in @('open', 'start', 'stop', 'update')) {
                 $label = "$scope / $action / $($text.Open)"
                 $command = [Immich.Windows.TrayCommands]::BuildCommand($options, $action, $text)

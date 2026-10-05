@@ -76,7 +76,7 @@ namespace Immich.Windows {
     }
 
     public sealed class TrayText {
-        public string Open, Start, Stop, Update, Exit, Busy, Failed, Cancelled, Continue, NotElevated;
+        public string Open, OpenConfigFolder, Start, Stop, Update, Exit, Busy, Failed, Cancelled, Continue, NotElevated;
         public string Started, Stopped, Updated, Language;
 
         public static TrayText ForCulture(string culture) {
@@ -84,6 +84,7 @@ namespace Immich.Windows {
             if (japanese) {
                 return new TrayText {
                     Open = "Immichを開く", Start = "Immichを起動", Stop = "Immichを停止", Update = "Immichを更新",
+                    OpenConfigFolder = "設定フォルダーを開く",
                     Exit = "トレイを終了（サーバーは停止しません）", Busy = "処理中…", Failed = "操作に失敗しました。",
                     Cancelled = "操作はキャンセルされました。", Continue = "Enterキーを押して閉じます",
                     NotElevated = "トレイは管理者として実行できません。スタートアップのImmich Trayショートカットを通常の方法で開くか、サインインし直してください。",
@@ -93,6 +94,7 @@ namespace Immich.Windows {
             }
             return new TrayText {
                 Open = "Open Immich", Start = "Start Immich", Stop = "Stop Immich", Update = "Update Immich",
+                OpenConfigFolder = "Open configuration folder",
                 Exit = "Exit tray (keep server running)", Busy = "Working…", Failed = "The action failed.",
                 Cancelled = "The action was cancelled.", Continue = "Press Enter to close",
                 NotElevated = "The tray cannot run as administrator. Open the Immich Tray Startup shortcut normally, or sign out and sign in again.",
@@ -134,6 +136,10 @@ namespace Immich.Windows {
         }
 
         public static ProcessStartInfo BuildStartInfo(TrayOptions options, string action, TrayText text) {
+            if (action == "open-config-folder") {
+                // Use this installation's active env path, without reading its secrets or launching PowerShell.
+                return new ProcessStartInfo(Path.GetDirectoryName(options.EnvFile)) { UseShellExecute = true, Verb = "open" };
+            }
             string command = BuildCommand(options, action, text);
             var info = new ProcessStartInfo(options.PowerShellPath,
                 "-NoLogo -NoProfile -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(command)));
@@ -182,7 +188,7 @@ namespace Immich.Windows {
                     // Exercise the actual menu/icon and all commands without publishing a tray icon,
                     // taking the resident mutex, launching a process, or entering a message loop.
                     using (var context = new TrayContext(options, text, null, false)) {
-                        foreach (string action in new string[] { "open", "start", "stop", "update" }) {
+                        foreach (string action in new string[] { "open", "open-config-folder", "start", "stop", "update" }) {
                             TrayCommands.BuildStartInfo(options, action, text);
                         }
                     }
@@ -279,6 +285,7 @@ namespace Immich.Windows {
             icon = new Icon(iconBytes);
             menu = new ContextMenuStrip();
             AddAction(text.Open, "open");
+            AddAction(text.OpenConfigFolder, "open-config-folder");
             AddAction(text.Start, "start");
             AddAction(text.Stop, "stop");
             AddAction(text.Update, "update");
@@ -305,6 +312,15 @@ namespace Immich.Windows {
 
         private void RunAction(string action) {
             if (busy || disposed) { return; }
+            if (action == "open-config-folder") {
+                try {
+                    // Explorer may reuse a window and return no process. Never wait for it to close.
+                    using (Process.Start(TrayCommands.BuildStartInfo(options, action, text))) { }
+                } catch (Exception error) {
+                    MessageBox.Show(error.Message, "Immich", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                return;
+            }
             busy = true;
             foreach (ToolStripMenuItem item in actions) { item.Enabled = false; }
             tray.Text = "Immich: " + text.Busy;
