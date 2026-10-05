@@ -93,7 +93,7 @@ jobs:
           # must fail this gate, but should not hide failures in later checks.
           $PSNativeCommandUseErrorActionPreference = $false
           $failed = [Collections.Generic.List[string]]::new()
-          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Release-Cleanup','Tray-Lifecycle','Update-FromRelease','Install-Bootstrap','Upgrade-Baseline','Dependency-Reuse','Dependency-Transfer','Node-DependencyReuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
+          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Release-Cleanup','Tray-Lifecycle','Update-FromRelease','Install-Bootstrap','Metadata-DateRepair-Launcher','Upgrade-Baseline','Dependency-Reuse','Dependency-Transfer','Node-DependencyReuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
             $arguments = @('-NoLogo','-NoProfile','-File',"./tests/$name.ps1")
             if ($name -eq 'Static-RepositoryAudit') { $arguments += @('-SourceRoot',$source) }
             & "$PSHOME/pwsh.exe" @arguments
@@ -285,7 +285,7 @@ jobs:
           .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
           & ./.tools/node/node.exe ./tests/Metadata-DateFallback.cjs .work/immich --server-root artifacts/application/server
           if ($LASTEXITCODE -ne 0) { throw 'Metadata date fallback checks failed.' }
-          & ./.tools/node/node.exe --test ./tests/Metadata-DateRepair-Core.test.cjs ./tests/Metadata-DateRepair-Gates.test.cjs
+          & ./.tools/node/node.exe --test ./tests/Metadata-DateRepair-Core.test.cjs ./tests/Metadata-DateRepair-Gates.test.cjs ./tests/Metadata-DateRepair-Guided.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Metadata date repair guard checks failed.' }
           .\build\Stage-VcRuntime.ps1
           $version = '${{ needs.plan.outputs.version }}'

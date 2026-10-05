@@ -44,6 +44,7 @@ async function test() {
   const core = require(path.join(runtime, 'core.cjs'));
   const { createAdapter } = require(path.join(runtime, 'runtime.cjs'));
   const { fileJournal, run } = require(path.join(runtime, 'cli.cjs'));
+  const { runGuided } = require(path.join(runtime, 'guided.cjs'));
   const server = path.join(releaseRoot, 'server');
   const req = createRequire(path.join(server, 'package.json'));
   stage = 'installed-date-self-test';
@@ -195,7 +196,59 @@ async function test() {
     assert.deepEqual(await fs.readFile(originalPath), png, 'Original fixture bytes must remain unchanged');
     assert.equal(await adapter.sidecarsAbsent(originalPath), true, 'No sidecar may be written');
     assert.equal((await db.selectFrom('asset_file').select(sql`count(*)::int`.as('n')).where('assetId', '=', assetId).executeTakeFirst()).n, 0);
-    process.stdout.write('PASS installed metadata repair: compiled imports, actual ExifTool, real Kysely/CAS/triggers, atomic rollback, journal failure, apply/undo/reconcile, stale plan and repeat guards; synthetic PNG unchanged.\n');
+    stage = 'guided-user-list-read-only';
+    const { MetadataRepository } = req(path.join(server, 'dist/repositories/metadata.repository.js'));
+    const originalConcurrency = MetadataRepository.prototype.setMaxConcurrency;
+    let readersStarted = 0;
+    MetadataRepository.prototype.setMaxConcurrency = function (...args) { readersStarted++; return originalConcurrency.apply(this, args); };
+    let accountList;
+    try {
+      const accountReader = await createAdapter({ releaseRoot, usersOnly: true });
+      try {
+        assert.equal(accountReader.readMetadata, undefined, 'User listing must not expose a media reader');
+        assert.equal(accountReader.transaction, undefined, 'User listing must not expose mutations');
+        accountList = await accountReader.listUsers();
+      } finally { await accountReader.close(); }
+      assert.equal(readersStarted, 0, 'User listing must not construct an ExifTool-backed reader');
+    } finally { MetadataRepository.prototype.setMaxConcurrency = originalConcurrency; }
+    const selection = String(accountList.findIndex(user => user.id === ownerId) + 1);
+    assert.notEqual(selection, '0', 'The real fixture user must appear in the account list');
+    const beforeGuided = await fullRows();
+    const guidedOptions = { releaseRoot, outputRoot: path.join(fixture, 'guided'), language: 'ja' };
+    const scripted = answers => {
+      const output = [], questions = [];
+      return { output, questions, write(line) { output.push(line); }, async ask(prompt) { questions.push(prompt); return answers.length ? answers.shift() : null; } };
+    };
+    stage = 'guided-cancel-check';
+    const cancelled = await runGuided(guidedOptions, scripted([selection, '0']));
+    assert.equal(cancelled.status, 'cancelled');
+    assert.equal(cancelled.applied, 0);
+    assert.deepEqual(await fullRows(), beforeGuided, 'Declining the guided confirmation must leave all DB rows unchanged');
+    assert(!(await fs.readdir(cancelled.directory)).some(name => name.endsWith('.jsonl')), 'Cancellation must not start a write journal');
+    stage = 'guided-approved-flow-check';
+    const approvedIo = scripted([selection, '1']);
+    const guided = await runGuided(guidedOptions, approvedIo);
+    assert.equal(guided.status, 'complete');
+    assert.equal(guided.applied, 1);
+    assert.equal(approvedIo.questions.length, 2, 'Only user selection and final confirmation are needed');
+    const guidedIndex = JSON.parse(await fs.readFile(path.join(guided.directory, 'plan.json'), 'utf8'));
+    assert.equal(guidedIndex.scope.ownerId, ownerId);
+    assert.equal(guidedIndex.identity.timezone, 'Asia/Tokyo');
+    assert.equal(guidedIndex.proposed, 1);
+    assert.equal((await fs.readdir(guided.directory)).filter(name => name.endsWith('.apply.jsonl')).length, 1);
+    const afterGuided = await fullRows();
+    assert.deepEqual(otherFields(afterGuided), otherFields(beforeGuided), 'Guided repair changes no other database columns');
+    assert.equal(Date.parse(afterGuided.asset.localDateTime), Date.parse(expectedLocal));
+    assert.equal(afterGuided.exif.timeZone, 'Asia/Tokyo');
+    stage = 'guided-no-eligible-repeat-check';
+    const emptyIo = scripted([selection]);
+    const empty = await runGuided(guidedOptions, emptyIo);
+    assert.equal(empty.status, 'empty');
+    assert.equal(empty.applied, 0);
+    assert.equal(emptyIo.questions.length, 1, 'An empty plan must not ask to apply');
+    assert.deepEqual(await fullRows(), afterGuided, 'A repeated guided run must not add another offset');
+    assert.deepEqual(await fs.readFile(originalPath), png, 'Guided repair must preserve original fixture bytes');
+    process.stdout.write('PASS installed metadata repair: compiled imports, actual ExifTool, real Kysely/CAS/triggers, atomic rollback, journal failure, apply/undo/reconcile, stale plan and repeat guards, guided user listing/cancel/apply/empty flow; synthetic PNG unchanged.\n');
   } finally {
     let cleanupError;
     const clean = async (fn) => { try { await fn(); } catch (error) { cleanupError ||= error; } };

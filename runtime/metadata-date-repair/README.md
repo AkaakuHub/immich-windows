@@ -2,15 +2,29 @@
 
 For AkaakuHub/immich-windows, upstream Immich v3.2.4 at `db355f79d910bbfc6378117ed10868493c97b922`. This is a single optional Windows maintenance tool, not a startup hook, background job, or normal metadata refresh. Releasing/building it does not authorize running it on a library.
 
+## Double-click repair
+
+1. Open `runtime\metadata-date-repair\Repair-MetadataDates.cmd` in the extracted package or installed release. No terminal commands are required.
+2. If more than one registered installation is found, choose the installation. An AllUsers installation requests the normal Windows administrator confirmation.
+3. Choose the Immich user by number. The utility reads the selected installation's existing configuration and automatically checks that user's candidates.
+4. Review the selected user, effective server timezone, candidate/repair/exclusion counts, and the historical-edit warning. Enter `1` to repair that exact plan or `0` (or Enter) to cancel.
+5. Keep the window open while progress is displayed. The final result and private plan/recovery-record folder remain visible until you close the window.
+
+UUIDs, environment paths, timezone strings and approval hashes do not need to be entered or copied. Japanese and English follow the Windows UI language. User listing is read-only and does not start ExifTool. The existing installed PowerShell 7 and Node runtimes are used; nothing is downloaded.
+
+Discovery uses existing installer records and validates the current release and configuration. Missing, inconsistent or ambiguous records stop with a visible error; the utility does not guess another installation, database or timezone. Cancelling Windows elevation does not start a repair. The selected installation stays fixed across elevation, even if another administrator approves it.
+
+Each run writes its plan and recovery journals under the selected data directory's `state/metadata-date-repair/repair-*` directory. These records inherit that installation's access controls. No date changes occur until the confirmation. A failed apply can have earlier committed changes: retain these records and reconcile before attempting another write; the utility does not retry uncertain writes. The guided scan is bounded at 100,000 suspicious candidates and refuses to apply an incomplete scan.
+
 ## Scope and uncertainty
 
 The tool proposes only `asset.localDateTime` and `asset_exif.timeZone` changes. It preserves the exact existing `asset.fileCreatedAt` and `asset_exif.dateTimeOriginal` instants. PostgreSQL's existing `updated_at` triggers also advance each changed row's `updatedAt` and `updateId`; those automatic revision changes are checked and journaled by revision ID.
 
-A database date edit made long ago, or an XMP sidecar subsequently deleted, can leave no distinguishing marker. These guards cannot prove that every historical manual edit is absent. Absence of a remembered manual edit is not proof that no historical edit occurred. An exact reviewed plan and deliberate acknowledgement of this residual ambiguity are required later.
+A database date edit made long ago, or an XMP sidecar subsequently deleted, can leave no distinguishing marker. These guards cannot prove that every historical manual edit is absent. Absence of a remembered manual edit is not proof that no historical edit occurred. The guided flow requires deliberate acknowledgement of this residual ambiguity before applying its exact displayed plan.
 
 The default policy is deliberately strict:
 
-- One explicit owner; bounded UUID-keyset candidate pages, at most 1,000 candidates per invocation, 100 per page (defaults 100 / 25)
+- One selected owner; bounded UUID-keyset candidate pages, at most 1,000 candidates per plan chunk and 100 per page (default page size 25); the guided flow checks at most 100,000 candidates
 - PNG/JPEG still images only; exclude edited/offline/deleted assets and either direction of a live-photo link
 - Existing `fileCreatedAt`, `localDateTime`, and `dateTimeOriginal` must agree exactly at millisecond precision; existing timezone must be null; no active metadata locks
 - No linked sidecar; check only the two conventional sibling XMP paths on Windows, without directory enumeration
@@ -26,15 +40,18 @@ Filesystem anchoring may exclude legitimate uploaded images whose on-disk dates 
 
 No reuploads, image display, original writes/copies/moves, whole-media hashes, setting changes, service restarts, job queues, workflow events, metadata extraction handlers, API-based asset updates, schema migrations, or application/Nest bootstrap. It loads a small set of installed runtime modules and uses their existing dependencies. There are no new dependencies.
 
-Originals are read only for metadata/stat information. Reading may update filesystem access times according to the operating system; access time is not a source fingerprint. Small hashes of six installed runtime/package files and the three maintenance-tool modules bind plan approval to the same implementation; these are not photo hashes.
+Originals are read only for metadata/stat information. Reading may update filesystem access times according to the operating system; access time is not a source fingerprint. Small hashes of six installed runtime/package files and the four maintenance-tool modules bind plan approval to the same implementation; these are not photo hashes.
 
 Plans are text and contain asset IDs, original paths, relevant dates/revisions/flags, the proposed two-field change, and small stat/metadata evidence. Keep them private. Journals contain only plan identity and per-ID old/new date fields and revision IDs, never photo content, paths, complete EXIF dumps, or credentials. Existing output files are never overwritten.
 
 ## Installation layout
 
-Package these four files under `runtime/metadata-date-repair/`:
+Package the launcher and its supporting files under `runtime/metadata-date-repair/`:
 
-- `Repair-MetadataDates.ps1`
+- `Repair-MetadataDates.cmd` and `Start-MetadataDateRepair.ps1` (guided launcher)
+- `MetadataDateRepair.Launcher.psm1` (installation discovery)
+- `guided.cjs`
+- `Repair-MetadataDates.ps1` (advanced CLI wrapper)
 - `cli.cjs`
 - `core.cjs`
 - `runtime.cjs`
@@ -45,7 +62,7 @@ Runtime compatibility is fail-closed: Windows, exact upstream commit/version, kn
 
 The requested timezone must exactly match the effective Luxon timezone loaded from the selected service environment/system. The tool never sets `TZ` to make the check pass. If the configured running server differs, establish the correct environment separately before planning; changing settings is outside this tool. The plan binds runtime hashes, effective zone, database endpoint/name, schema/trigger fingerprints, and the exact owner/IDs. A different build, timezone, database target, snapshot, or source requires a new plan.
 
-## Usage and approval
+## Advanced CLI usage and approval
 
 Review the candidate scope and plan before applying changes. Use explicit existing install and env-file paths; do not put credentials on the command line. The PowerShell launcher accepts the ordinary Node arguments after its own named parameters. To avoid shell-argument ambiguity, a new `pwsh -File` invocation is recommended.
 

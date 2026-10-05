@@ -20,10 +20,11 @@ function statToken(s, real) { return { real: normalized(real), dev: String(s.dev
 const ASSET_FIELDS = ['id', 'ownerId', 'originalPath', 'fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'updateId', 'isEdited', 'isOffline', 'isExternal', 'deletedAt', 'type', 'livePhotoVideoId'];
 const EXIF_FIELDS = ['assetId', 'dateTimeOriginal', 'timeZone', 'lockedProperties', 'updatedAt', 'updateId'];
 const DATE_FIELDS = new Set(['fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'dateTimeOriginal', 'deletedAt']);
-async function createAdapter({ releaseRoot, ownerId, connect = true }) {
+async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly = false }) {
   core.insist(process.platform === 'win32', 'windows-runtime-required');
   core.insist(path.isAbsolute(releaseRoot), 'absolute-release-root-required');
-  if (connect) core.insist(UUID.test(ownerId), 'owner-id-required');
+  if (connect && !usersOnly) core.insist(UUID.test(ownerId), 'owner-id-required');
+  core.insist(!usersOnly || (connect && ownerId === undefined), 'invalid-user-list-scope');
   const release = await fs.realpath(releaseRoot);
   const server = path.join(release, 'server');
   const manifest = JSON.parse((await fs.readFile(path.join(release, 'manifest.json'), 'utf8')).replace(/^\uFEFF/, ''));
@@ -67,16 +68,24 @@ async function createAdapter({ releaseRoot, ownerId, connect = true }) {
     core.insist(firstDateTime({ DateTimeOriginal: '2024:05:01 12:34:56' }), 'capture-date-parser-self-test-failed');
     core.insist(!firstDateTime({}), 'empty-date-parser-self-test-failed');
     const toolHashes = {};
-    for (const file of ['core.cjs','runtime.cjs','cli.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
+    for (const file of ['core.cjs','runtime.cjs','cli.cjs','guided.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
     const identity = { upstreamCommit: PIN, version: manifest.immichVersion, node: process.version, platform: process.platform, timezone, files: hashes, toolHashes };
     if (connect) {
       const config = new ConfigRepository().getEnv().database.config;
       const { log: _unredactedLog, ...kyselyConfig } = getKyselyConfig(config);
       db = new Kysely({ ...kyselyConfig, log() {} });
-      metadataRepository = new MetadataRepository(logger);
-      metadataRepository.setMaxConcurrency(1);
     }
     const readOnly = fn => db.transaction().setIsolationLevel('repeatable read').execute(async tx => { await sql`set transaction read only`.execute(tx); await sql`set local statement_timeout = '15000ms'`.execute(tx); return fn(tx); });
+    const close = async () => { let error; try { await metadataRepository?.teardown(); } catch (e) { error = e; } try { await db?.destroy(); } catch (e) { error ||= e; } for (const [key, fn] of Object.entries(quiet)) console[key] = fn; process.chdir(originalCwd); if (error) throw new core.Stop('cleanup-failed'); };
+    if (usersOnly) {
+      // This object cannot read media or mutate assets. ExifTool is constructed
+      // only by readMetadata below, never for the account selection screen.
+      return { identity, close, async listUsers() {
+        const rows = await readOnly(tx => tx.selectFrom('user').select(['id','name','email']).where('deletedAt', 'is', null).orderBy('name').orderBy('id').limit(1001).execute());
+        core.insist(rows.length <= 1000 && rows.every(row => UUID.test(row.id) && typeof row.name === 'string' && typeof row.email === 'string'), 'unsupported-user-list');
+        return rows;
+      } };
+    }
     const selectFields = (alias, fields) => fields.map(f => DATE_FIELDS.has(f) ? sql`to_char(${sql.ref(alias + '.' + f)} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as(alias + '_' + f) : sql.ref(alias + '.' + f).as(alias + '_' + f));
     const baseQuery = tx => tx.selectFrom('asset as a').innerJoin('asset_exif as e', 'e.assetId', 'a.id').select([...selectFields('a', ASSET_FIELDS), ...selectFields('e', EXIF_FIELDS),
       sql`coalesce((select jsonb_agg(jsonb_build_object('id', f.id, 'type', f.type, 'path', f.path) order by f.id) from asset_file f where f."assetId" = a.id and f.type = 'sidecar'), '[]'::jsonb)`.as('linkedSidecars'),
@@ -103,7 +112,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true }) {
     };
     const adapter = {
       identity, firstDateTime, getDates,
-      async close() { let error; try { await metadataRepository?.teardown(); } catch (e) { error = e; } try { await db?.destroy(); } catch (e) { error ||= e; } for (const [key, fn] of Object.entries(quiet)) console[key] = fn; process.chdir(originalCwd); if (error) throw new core.Stop('cleanup-failed'); },
+      close,
       async stat(p) { const { s, real } = await regularPath(p); return { token: statToken(s, real), stats: { birthtimeMs: Number(s.birthtimeNs / 1000000n) + Number(s.birthtimeNs % 1000000n) / 1e6, mtimeMs: Number(s.mtimeNs / 1000000n) + Number(s.mtimeNs % 1000000n) / 1e6, mtime: new Date(Number(s.mtimeNs / 1000000n)) } }; },
       async sidecarsAbsent(p) {
         const base = path.join(path.dirname(p), path.parse(p).name);
@@ -114,6 +123,10 @@ async function createAdapter({ releaseRoot, ownerId, connect = true }) {
         return true;
       },
       async readMetadata(p) {
+        if (!metadataRepository) {
+          metadataRepository = new MetadataRepository(logger);
+          metadataRepository.setMaxConcurrency(1);
+        }
         const before = warnings;
         const tags = await metadataRepository.readTags(p);
         core.insist(before === warnings, 'metadata-reader-warning');

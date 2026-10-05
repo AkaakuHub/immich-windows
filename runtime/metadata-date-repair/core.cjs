@@ -80,6 +80,7 @@ async function plan(adapter, options) {
       }
       if (reason) output.excluded.push({ id, reason });
     }
+    options.onProgress?.({ inspected: output.inspected, proposed: output.entries.length });
     if (rows.length < count) { output.exhausted = true; break; }
   }
   output.nextAfterId = output.exhausted ? null : cursor;
@@ -181,7 +182,7 @@ async function planAll(adapter, options, storeChunk) {
   insist(Number.isInteger(options.maxCandidates) && options.maxCandidates >= 1 && options.maxCandidates <= 100000, 'invalid-total-bound');
   const index = { format: INDEX_FORMAT, createdAt: new Date().toISOString(), identity: structuredClone(adapter.identity), historyWarning: HISTORY_WARNING, scope: { ownerId: options.ownerId, maxCandidates: options.maxCandidates, chunkSize: 1000 }, inspected: 0, proposed: 0, exhausted: false, nextAfterId: options.afterId || null, chunks: [] };
   while (index.inspected < options.maxCandidates) {
-    const p = await plan(adapter, { ownerId: options.ownerId, limit: Math.min(1000, options.maxCandidates-index.inspected), pageSize: options.pageSize, afterId: index.nextAfterId });
+    const p = await plan(adapter, { ownerId: options.ownerId, limit: Math.min(1000, options.maxCandidates-index.inspected), pageSize: options.pageSize, afterId: index.nextAfterId, onProgress: progress => options.onProgress?.({ inspected: index.inspected + progress.inspected, proposed: index.proposed + progress.proposed }) });
     index.chunks.push({ ...(await storeChunk(p,index.chunks.length+1)), planDigest: hash(p), inspected: p.inspected, proposed: p.entries.length });
     index.inspected += p.inspected; index.proposed += p.entries.length; index.exhausted = p.exhausted; index.nextAfterId = p.nextAfterId;
     if (p.exhausted) break;

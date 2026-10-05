@@ -1,0 +1,36 @@
+'use strict';
+// Platform-independent contract checks; the .ps1 suite executes the real functions on Windows.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '..');
+const read = name => fs.readFileSync(path.join(root, 'runtime/metadata-date-repair', name), 'utf8');
+const launcher = read('Start-MetadataDateRepair.ps1');
+const moduleText = read('MetadataDateRepair.Launcher.psm1');
+const cmd = read('Repair-MetadataDates.cmd');
+assert.match(cmd, /"%~dp0Start-MetadataDateRepair\.ps1"/);
+assert.match(cmd, /set "result=%errorlevel%"[\s\S]*pause[\s\S]*exit \/b %result%/);
+assert.doesNotMatch(cmd, /%\*/); // End users never need to provide internal selectors.
+assert.match(launcher, /Start-Process[^\n]*-Verb RunAs -Wait -PassThru/);
+assert.match(launcher, /\$result = \$child\.ExitCode/);
+assert.match(launcher, /\$chosen\.Scope -eq 'AllUsers' -and -not \(Test-ImmichElevated\)/);
+assert.match(launcher, /ConvertTo-WindowsArgument -Value \$_/);
+assert.match(launcher, /Get-RepairInstallCandidates -AllUsersOnly:/);
+assert.match(launcher, /\$selection\.Scope -cne 'AllUsers'/);
+assert.match(launcher, /Test-RepairSamePath \$chosen\.InstallRoot \$selection\.InstallRoot/);
+assert.match(launcher, /Clear-RepairConnectionEnvironment[\s\S]*Load-ImmichEnv\.ps1[\s\S]*--release-root \$install\.ReleaseRoot --output-root \$install\.OutputRoot --language \$Language/);
+assert.match(launcher, /\$result = \$LASTEXITCODE/);
+assert.match(moduleText, /\^\(DB_\|PG\|TZ\$\)/);
+assert.match(moduleText, /function Resolve-RepairStartupTimezone/);
+assert.match(launcher, /GetEnvironmentVariable\('TZ','Machine'\)/);
+assert.match(moduleText, /if \(\$AllUsersOnly\) \{ continue \}/);
+assert.match(moduleText, /IMMICH_WINDOWS_INSTALL_SCOPE/);
+assert.match(launcher, /if \(-not \[string\]::IsNullOrEmpty\(\$startupTimezone\)\) \{ \[Environment\]::SetEnvironmentVariable\('TZ', \$startupTimezone, 'Process'\) \}/);
+assert.match(moduleText, /state\/metadata-date-repair/);
+assert.match(moduleText, /Immich Tray - \$scope\.lnk/);
+assert.match(moduleText, /CurrentVersion\\Run/);
+assert.match(moduleText, /Services\\ImmichServer/);
+assert.match(moduleText, /DtdProcessing\]::Prohibit/);
+assert.doesNotMatch(launcher + moduleText, /Get-ChildItem|Start-Service|Stop-Service|Restart-Service|Set-ItemProperty|Write-EnvFile|icacls\.exe|Invoke-Expression/);
+assert.doesNotMatch(launcher, /Write-(?:Host|Error|Warning)[^\n]*(?:\$_|Exception\.Message)/);
+console.log('PASS: guided launcher static contracts (not a substitute for Windows execution)');

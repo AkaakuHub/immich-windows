@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const core = require('./core.cjs');
-const HELP = `Immich date repair: preparation-only release; production use needs later approval.
+const HELP = `Immich date repair: guarded date-field maintenance; use Repair-MetadataDates.cmd for guided repair.
 Default command: plan (read-only database, bounded metadata reads, text plan only).
 Commands:
   plan-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --out INDEX.json
@@ -78,7 +78,9 @@ function fileJournal(handle) {
   async function appendSync(record) { await handle.writeFile(JSON.stringify(record) + '\n'); await handle.sync(); }
   return { async header(record) { core.insist(!headerWritten, 'duplicate-journal-header'); await appendSync(record); headerWritten = true; }, appendSync };
 }
-async function run(argv) {
+async function run(argv, { onEvent, emit = record => process.stdout.write(JSON.stringify(record) + '\n') } = {}) {
+  let result;
+  const report = record => { result = record; emit(record); };
   const o = parse([...argv]);
   for (const key of ['out','plan','journal','source-journal','index','journal-dir']) if (o[key]) o[key] = path.resolve(o[key]);
   if (o.help || argv.length === 0) { process.stdout.write(HELP); return; }
@@ -119,22 +121,23 @@ async function run(argv) {
     core.insist(adapter.identity.timezone === o['expected-timezone'], 'configured-timezone-mismatch');
     if (o.command === 'self-test') { process.stdout.write(JSON.stringify({ command: 'self-test', passed: true, identity: adapter.identity, databaseOpened: false, mediaRead: false }) + '\n'); return; }
     if (o.command === 'plan-all') {
-      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:Number(o['max-candidates'] || 100000),pageSize:Number(o['page-size'] || 25),afterId:o['after-id']},async (p,n) => {
+      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:Number(o['max-candidates'] || 100000),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onProgress:progress=>onEvent?.({kind:'plan-progress',...progress})},async (p,n) => {
         const file = path.basename(o.out) + '.part-' + String(n).padStart(4,'0') + '.json';
         const text = JSON.stringify(p,null,2) + '\n'; const h = await exclusive(path.join(path.dirname(path.resolve(o.out)),file),'.json');
         try { await h.writeFile(text); await h.sync(); } finally { await h.close(); }
         return {file,sha256:createHash('sha256').update(text).digest('hex')};
       });
       await handle.writeFile(JSON.stringify(output,null,2)+'\n'); await handle.sync();
-      process.stdout.write(JSON.stringify({command:'plan-all',indexDigest:core.hash(output),chunks:output.chunks.length,inspected:output.inspected,proposed:output.proposed,exhausted:output.exhausted,nextAfterId:output.nextAfterId,applied:0})+'\n');
+      report({command:'plan-all',indexDigest:core.hash(output),chunks:output.chunks.length,inspected:output.inspected,proposed:output.proposed,exhausted:output.exhausted,nextAfterId:output.nextAfterId,applied:0});
     } else if (batchMutation) {
       const indexDir = path.dirname(path.resolve(o.index)), journalDir = await fs.realpath(o['journal-dir']);
+      let committed = 0;
       const completed = await core.applyAll(adapter,index,{approvedIndexDigest:o['approved-index-sha256'],ownerId:o['owner-id'],acknowledgeHistoryAmbiguity:true},async chunk => {
         core.insist(typeof chunk.file === 'string' && !/[\\/]/.test(chunk.file) && chunk.file.startsWith(path.basename(o.index)+'.part-') && chunk.file.endsWith('.json'), 'invalid-chunk-path');
         const bytes = await fs.readFile(path.join(indexDir,chunk.file)); core.insist(bytes.length <= 16*1024*1024 && createHash('sha256').update(bytes).digest('hex') === chunk.sha256, 'chunk-file-digest-mismatch');
         return JSON.parse(bytes.toString('utf8'));
-      },async chunk => { const h = await exclusive(path.join(journalDir,chunk.file+'.apply.jsonl'),'.jsonl'); return {...fileJournal(h),close:()=>h.close()}; });
-      process.stdout.write(JSON.stringify({command:'apply-all',completed,chunks:index.chunks.length})+'\n');
+      },async chunk => { const h = await exclusive(path.join(journalDir,chunk.file+'.apply.jsonl'),'.jsonl'); const writer=fileJournal(h); return {...writer,async appendSync(record) { await writer.appendSync(record); if(record.kind === 'committed') onEvent?.({kind:'apply-progress',completed:++committed}); },close:()=>h.close()}; });
+      report({command:'apply-all',completed,chunks:index.chunks.length});
     } else if (o.command === 'plan') {
       const output = await core.plan(adapter, { ownerId: o['owner-id'], limit: Number(o.limit || 100), pageSize: Number(o['page-size'] || 25), afterId: o['after-id'] });
       await handle.writeFile(JSON.stringify(output, null, 2) + '\n'); await handle.sync();
@@ -154,6 +157,7 @@ async function run(argv) {
     try { await handle?.close(); } catch { error ||= new core.Stop('output-close-failed'); }
     if (error) throw error;
   }
+  return result;
 }
 if (require.main === module) run(process.argv.slice(2)).catch(error => {
   // Never print raw DB errors, file paths, connection config, tags or SQL params.
