@@ -24,6 +24,8 @@ if (baselineIndex >= 0) {
 }
 
 function getDatesMethod(text) {
+  // Git checkout may use CRLF on Windows; git show returns the stored LF bytes.
+  text = text.replaceAll('\r\n', '\n');
   const begin = text.indexOf('  private getDates(');
   assert(begin >= 0, 'Missing getDates method');
   const end = text.indexOf('\n  }', begin);
@@ -42,7 +44,7 @@ function probe(text) {
 const patched = probe(source);
 const original = probe(baseline);
 const fallbackMarker = '    if (!localDateTime || !dateTimeOriginal) {';
-assert.equal(getDatesMethod(source).split(fallbackMarker)[0], getDatesMethod(baseline).split(fallbackMarker)[0], 'EXIF capture-date interpretation must be byte-identical');
+assert.equal(getDatesMethod(source).split(fallbackMarker)[0], getDatesMethod(baseline).split(fallbackMarker)[0], 'EXIF capture-date interpretation must be identical apart from line endings');
 let checks = 0;
 const savedTZ = process.env.TZ;
 const savedDefaultZone = Settings.defaultZone;
