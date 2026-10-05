@@ -32,13 +32,15 @@ Assert-Repair (@(Merge-RepairInstallCandidates -Candidates @()).Count -eq 0) 'no
 $previous = [Environment]::GetEnvironmentVariables('Process')
 try {
     foreach ($name in @('DB_HOSTNAME','DB_URL','PGHOST','PGPASSWORD','PGOPTIONS','TZ')) { [Environment]::SetEnvironmentVariable($name,'inherited-wrong-target','Process') }
+    [Environment]::SetEnvironmentVariable('DB_REPAIR_EMPTY_TEST','','Process')
     [Environment]::SetEnvironmentVariable('REPAIR_KEEP_TEST','keep','Process')
     Clear-RepairConnectionEnvironment
     foreach ($name in @('DB_HOSTNAME','DB_URL','PGHOST','PGPASSWORD','PGOPTIONS','TZ')) { Assert-Repair ($null -eq [Environment]::GetEnvironmentVariable($name,'Process')) "$name cleared" }
+    foreach ($name in @('DB_HOSTNAME','DB_URL','PGHOST','PGPASSWORD','PGOPTIONS','TZ','DB_REPAIR_EMPTY_TEST')) { Assert-Repair (-not [Environment]::GetEnvironmentVariables('Process').Contains($name)) "$name removed, not empty" }
     Assert-Repair ([Environment]::GetEnvironmentVariable('REPAIR_KEEP_TEST','Process') -ceq 'keep') 'unrelated environment preserved'
 } finally {
     foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-        if (-not $previous.Contains($name)) { [Environment]::SetEnvironmentVariable($name,$null,'Process') }
+        if (-not $previous.Contains($name)) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction Stop }
     }
     foreach ($name in $previous.Keys) { [Environment]::SetEnvironmentVariable($name,$previous[$name],'Process') }
 }

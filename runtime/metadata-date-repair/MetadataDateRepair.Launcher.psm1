@@ -188,7 +188,8 @@ function Resolve-RepairStartupTimezone {
 
 function Clear-RepairConnectionEnvironment {
     foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-        if ([string]$name -match '^(DB_|PG|TZ$)') { [Environment]::SetEnvironmentVariable([string]$name, $null, 'Process') }
+        # The provider deletes the variable; .NET's string API binds $null as an empty value in PowerShell 7.5+.
+        if ([string]$name -match '^(DB_|PG|TZ$)') { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction Stop }
     }
 }
 

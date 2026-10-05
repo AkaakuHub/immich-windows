@@ -25,6 +25,8 @@ assert.match(moduleText, /function Resolve-RepairStartupTimezone/);
 assert.match(launcher, /GetEnvironmentVariable\('TZ','Machine'\)/);
 assert.match(moduleText, /if \(\$AllUsersOnly\) \{ continue \}/);
 assert.match(moduleText, /IMMICH_WINDOWS_INSTALL_SCOPE/);
+assert.doesNotMatch(launcher + moduleText, /SetEnvironmentVariable\([^\n]*,\s*\$null\s*,\s*'Process'\)/);
+for (const source of [launcher, moduleText]) assert.match(source, /Remove-Item -LiteralPath \("Env:" \+ \$name\) -ErrorAction Stop/);
 assert.match(launcher, /if \(-not \[string\]::IsNullOrEmpty\(\$startupTimezone\)\) \{ \[Environment\]::SetEnvironmentVariable\('TZ', \$startupTimezone, 'Process'\) \}/);
 assert.match(moduleText, /state\/metadata-date-repair/);
 assert.match(moduleText, /Immich Tray - \$scope\.lnk/);

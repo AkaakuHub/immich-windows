@@ -72,7 +72,7 @@ try {
             } finally { Pop-Location }
         } finally {
             foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-                if (-not $previousEnvironment.Contains($name)) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+                if (-not $previousEnvironment.Contains($name)) { Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction Stop }
             }
             foreach ($name in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
         }
