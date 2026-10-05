@@ -148,9 +148,10 @@ version = "7.0.0"
     Prepare 'unrecognized changes' -Reject
     Check ((Get-Content -Raw (Join-Path $source 'notes.txt')) -ceq 'user notes') 'An untracked file was overwritten.'
     Remove-Item -LiteralPath (Join-Path $source 'notes.txt')
-    Invoke-Git @('-C', $source, 'add', 'value.txt') | Out-Null
+    # Stage every generated patch file so this exercises the staged-only guard.
+    Invoke-Git @('-C', $source, 'add', 'value.txt', 'metadata.txt', 'order.txt') | Out-Null
     Prepare 'staged changes' -Reject
-    Check ((Invoke-Git @('-C', $source, 'diff', '--cached', '--name-only')) -eq 'value.txt') 'Staged edits were discarded.'
+    Check (((Invoke-Git @('-C', $source, 'diff', '--cached', '--name-only')) -join ',') -ceq 'metadata.txt,order.txt,value.txt') 'Staged edits were discarded.'
     Invoke-Git @('-C', $source, 'restore', '--staged', '--', '.') | Out-Null
 
     # User edits in the metadata-patched file are protected by the same trust proof.
