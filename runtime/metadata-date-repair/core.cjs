@@ -9,6 +9,27 @@ const MOTION_TAGS = ['MotionPhoto', 'MicroVideo', 'MicroVideoOffset', 'MotionPho
 const HISTORY_WARNING = 'Deleted sidecars or historical database-only date edits can be indistinguishable from this bug. These guards cannot prove there was no past manual edit.';
 class Stop extends Error { constructor(code) { super(code); this.code = code; } }
 function insist(value, code) { if (!value) throw new Stop(code); }
+async function atStage(phase, operation, context = {}) {
+  try { return await operation(); }
+  catch (error) {
+    if (error && typeof error === 'object' && !error.repairContext) error.repairContext = { phase, ...context };
+    throw error;
+  }
+}
+function failureDetails(error) {
+  const codes = new Set(['ENOENT','ENOTDIR','EACCES','EPERM','EIO','ENOSPC','EDQUOT','EBUSY','EMFILE','ENFILE','ETIMEDOUT','ECONNRESET','ECONNREFUSED','EPIPE','EEXIST','57014','08000','08003','08006','57P01','57P02','57P03','53300','53100','53200','40001','40P01']);
+  const names = ['Error','TypeError','RangeError','SyntaxError','AssertionError','AggregateError','PostgresError'];
+  const context = error?.repairContext || {};
+  const details = { phase: /^[a-z-]{1,48}$/.test(context.phase || '') ? context.phase : 'unknown', code: error instanceof Stop && /^[a-z0-9-]{1,64}$/.test(error.code) ? error.code : codes.has(error?.code) ? error.code : 'UNKNOWN', errorClass: names.includes(error?.name) ? error.name : 'Error' };
+  if (UUID.test(context.assetId || '')) details.assetId = context.assetId;
+  if (UUID.test(context.cursor || '')) details.cursor = context.cursor;
+  if (Number.isSafeInteger(context.chunk) && context.chunk >= 1) details.chunk = context.chunk;
+  if (['lstat','stat','realpath','open','read','write','fsync','close','rename','connect'].includes(error?.syscall)) details.syscall = error.syscall;
+  const frame = /\n\s+at [^\n]*[\\/]((?:core|runtime|cli|guided|resume)\.cjs):(\d{1,7}):(\d{1,7})/.exec(String(error?.stack || '').slice(0, 8192));
+  if (frame) details.location = { module: frame[1], line: Number(frame[2]), column: Number(frame[3]) };
+  return details;
+}
+
 function stable(value) { if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']'; if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stable(value[k])).join(',') + '}'; return JSON.stringify(value); }
 function hash(value) { return createHash('sha256').update(stable(value)).digest('hex'); }
 function same(a, b) { return stable(a) === stable(b); }
@@ -38,18 +59,18 @@ function strictTags(tags, sourcePath, parseCapture) {
   insist(!ZONE_TAGS.some(k => nonempty(tags[k])), 'source-timezone-present');
   insist(!MOTION_TAGS.some(k => nonempty(tags[k])), 'motion-or-live-metadata');
 }
-async function verifySource(adapter, s) {
+async function verifySourceBody(adapter, s) {
   const actual = iso(s.asset.fileCreatedAt);
-  const start = await adapter.stat(s.asset.originalPath);
+  const start = await atStage('source-stat-before', () => adapter.stat(s.asset.originalPath), { assetId: s.asset.id });
   // Reject definite filesystem-date mismatches before opening the original for metadata.
   const initialMillis = start.stats.birthtimeMs ? Math.min(start.stats.mtimeMs, start.stats.birthtimeMs) : start.stats.mtime.getTime();
   insist(new Date(initialMillis).toISOString() === actual, 'stored-instant-not-filesystem-anchored');
-  insist((await adapter.sidecarsAbsent(s.asset.originalPath)), 'sibling-sidecar');
-  const metadata = await adapter.readMetadata(s.asset.originalPath);
+  insist((await atStage('source-sidecars', () => adapter.sidecarsAbsent(s.asset.originalPath), { assetId: s.asset.id })), 'sibling-sidecar');
+  const metadata = await atStage('read-metadata', () => adapter.readMetadata(s.asset.originalPath), { assetId: s.asset.id });
   strictTags(metadata.tags, metadata.canonicalSourcePath, adapter.firstDateTime);
-  const end = await adapter.stat(s.asset.originalPath);
+  const end = await atStage('source-stat-after', () => adapter.stat(s.asset.originalPath), { assetId: s.asset.id });
   insist(same(start.token, end.token), 'source-changed-during-read');
-  insist(await adapter.sidecarsAbsent(s.asset.originalPath), 'sibling-sidecar');
+  insist(await atStage('source-sidecars', () => adapter.sidecarsAbsent(s.asset.originalPath), { assetId: s.asset.id }), 'sibling-sidecar');
   const result = adapter.getDates(s.asset, metadata.tags, end.stats);
   const diskMillis = end.stats.birthtimeMs ? Math.min(end.stats.mtimeMs, end.stats.birthtimeMs) : end.stats.mtime.getTime();
   insist(new Date(diskMillis).toISOString() === actual, 'stored-instant-not-filesystem-anchored');
@@ -58,6 +79,7 @@ async function verifySource(adapter, s) {
   insist(iso(result.localDateTime) !== iso(s.asset.localDateTime), 'no-wall-clock-change');
   return { stat: end.token, metadataDigest: hash(adapter.metadataEvidence(metadata.tags)), after: { fileCreatedAt: s.asset.fileCreatedAt, localDateTime: iso(result.localDateTime), dateTimeOriginal: s.exif.dateTimeOriginal, timeZone: result.timeZone } };
 }
+async function verifySource(adapter, snapshot) { return atStage('source-verify', () => verifySourceBody(adapter, snapshot), { assetId: snapshot?.asset?.id }); }
 async function plan(adapter, options) {
   insist(UUID.test(options.ownerId), 'owner-id-required');
   insist(Number.isInteger(options.limit) && options.limit >= 1 && options.limit <= 1000, 'invalid-limit');
@@ -68,7 +90,7 @@ async function plan(adapter, options) {
   const seen = new Set();
   while (output.inspected < options.limit) {
     const count = Math.min(options.pageSize, options.limit - output.inspected);
-    const rows = await adapter.candidates({ ownerId: options.ownerId, afterId: cursor, limit: count });
+    const rows = await atStage('candidate-query', () => adapter.candidates({ ownerId: options.ownerId, afterId: cursor, limit: count }), { cursor });
     insist(Array.isArray(rows) && rows.length <= count, 'invalid-page');
     if (!rows.length) { output.exhausted = true; break; }
     const pending = [];
@@ -87,7 +109,7 @@ async function plan(adapter, options) {
     if (pending.length) {
       insist(typeof adapter.snapshots === 'function', 'batch-snapshots-required');
       const ids = new Set(pending.map(entry => entry.id));
-      const current = await adapter.snapshots([...ids]);
+      const current = await atStage('snapshot-batch', () => adapter.snapshots([...ids]), { cursor });
       insist(Array.isArray(current), 'invalid-snapshot-batch');
       const byId = new Map();
       for (const snapshot of current) {
@@ -109,7 +131,7 @@ async function plan(adapter, options) {
 function validatePlan(p, adapter, approvedDigest) {
   insist(p && p.format === FORMAT && p.historyWarning === HISTORY_WARNING, 'invalid-plan-format');
   insist(hash(p) === approvedDigest, 'plan-digest-not-approved');
-  insist(same(p.identity, adapter.identity), 'runtime-or-timezone-changed');
+  insist(same(p.identity, adapter.identity) || adapter.isCompatiblePlanIdentity?.(p.identity) === true, 'runtime-or-timezone-changed');
   insist(Array.isArray(p.entries) && p.entries.length <= p.scope.limit && p.entries.length <= 1000, 'invalid-plan-entries');
   const ids = new Set();
   for (const e of p.entries) { insist(UUID.test(e.id) && e.id === e.snapshot.asset.id && !ids.has(e.id) && e.snapshot.asset.ownerId === p.scope.ownerId, 'invalid-plan-entry'); ids.add(e.id); insist(!initialReason(e.snapshot), 'ineligible-plan-entry'); insist(e.after.fileCreatedAt === e.snapshot.asset.fileCreatedAt && e.after.dateTimeOriginal === e.snapshot.exif.dateTimeOriginal, 'plan-changes-actual-instant'); }
@@ -198,14 +220,15 @@ async function undo(adapter, p, sourceRecords, options, journal) {
 }
 
 const INDEX_FORMAT = 'immich-date-repair/index-v1';
-async function planAll(adapter, options, storeChunk) {
+async function planAll(adapter, options, storeChunk, initialIndex = null) {
   const maximum = options.maxCandidates == null ? null : options.maxCandidates;
   insist(maximum === null || (Number.isSafeInteger(maximum) && maximum >= 1), 'invalid-total-bound');
-  const index = { format: INDEX_FORMAT, createdAt: new Date().toISOString(), identity: structuredClone(adapter.identity), historyWarning: HISTORY_WARNING, scope: { ownerId: options.ownerId, maxCandidates: maximum, chunkSize: 1000 }, inspected: 0, proposed: 0, exhausted: false, nextAfterId: options.afterId || null, chunks: [] };
-  while (maximum === null || index.inspected < maximum) {
+  const index = initialIndex || { format: INDEX_FORMAT, createdAt: new Date().toISOString(), identity: structuredClone(adapter.identity), historyWarning: HISTORY_WARNING, scope: { ownerId: options.ownerId, maxCandidates: maximum, chunkSize: 1000 }, inspected: 0, proposed: 0, exhausted: false, nextAfterId: options.afterId || null, chunks: [] };
+  insist(index.format === INDEX_FORMAT && same(index.identity, adapter.identity) && index.scope.ownerId === options.ownerId && index.scope.maxCandidates === maximum, 'resume-index-mismatch');
+  while (!index.exhausted && (maximum === null || index.inspected < maximum)) {
     const p = await plan(adapter, { ownerId: options.ownerId, limit: maximum === null ? 1000 : Math.min(1000, maximum-index.inspected), pageSize: options.pageSize, afterId: index.nextAfterId, onProgress: progress => options.onProgress?.({ inspected: index.inspected + progress.inspected, proposed: index.proposed + progress.proposed }) });
     if (p.inspected === 0 && p.exhausted && index.chunks.length) {
-      index.exhausted = true; index.nextAfterId = null; break;
+      index.exhausted = true; index.nextAfterId = null; await options.onCheckpoint?.(index); break;
     }
     if (maximum !== null && !p.exhausted && index.inspected + p.inspected === maximum) {
       const next = await adapter.candidates({ ownerId: options.ownerId, afterId: p.nextAfterId, limit: 1 });
@@ -215,6 +238,7 @@ async function planAll(adapter, options, storeChunk) {
     }
     index.chunks.push({ ...(await storeChunk(p,index.chunks.length+1)), planDigest: hash(p), inspected: p.inspected, proposed: p.entries.length });
     index.inspected += p.inspected; index.proposed += p.entries.length; index.exhausted = p.exhausted; index.nextAfterId = p.nextAfterId;
+    await options.onCheckpoint?.(index);
     if (p.exhausted) break;
     insist(p.inspected > 0 && p.nextAfterId, 'batch-made-no-progress');
   }
@@ -245,4 +269,4 @@ async function applyAll(adapter, index, options, readChunk, openJournal) {
   return completed;
 }
 
-module.exports = { INDEX_FORMAT, planAll, applyAll, FORMAT, CAPTURE_TAGS, ZONE_TAGS, MOTION_TAGS, HISTORY_WARNING, Stop, insist, stable, hash, same, iso, beforeDates, revisions, initialReason, strictTags, verifySource, plan, apply, undo, reconcile, validatePlan, assertChangedOnlyDates };
+module.exports = { atStage, failureDetails, INDEX_FORMAT, planAll, applyAll, FORMAT, CAPTURE_TAGS, ZONE_TAGS, MOTION_TAGS, HISTORY_WARNING, Stop, insist, stable, hash, same, iso, beforeDates, revisions, initialReason, strictTags, verifySource, plan, apply, undo, reconcile, validatePlan, assertChangedOnlyDates };

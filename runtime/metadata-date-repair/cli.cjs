@@ -2,13 +2,13 @@
 'use strict';
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const core = require('./core.cjs');
 const HELP = `Immich date repair: guarded date-field maintenance; use Repair-MetadataDates.cmd for guided repair.
 Default command: plan (read-only database, bounded metadata reads, text plan only).
 Commands:
   plan-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --out INDEX.json
-           [--max-candidates COUNT] [--page-size 25] (no total limit unless supplied)
+           [--max-candidates COUNT] [--page-size 25] [--resume-directory ABSOLUTE] (no total limit unless supplied)
   apply-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --index INDEX.json
             --approved-index-sha256 DIGEST --journal-dir PRIVATE_DIRECTORY
             --acknowledge-history-ambiguity
@@ -32,7 +32,7 @@ function parse(argv) {
   let command = 'plan';
   if (argv[0] && !argv[0].startsWith('--')) command = argv.shift();
   core.insist(['plan','plan-all','apply-all','review','self-test','apply','reconcile','undo'].includes(command), 'unknown-command');
-  const allowed = new Set(['release-root','owner-id','expected-timezone','out','limit','page-size','after-id','plan','approved-plan-sha256','journal','source-journal','approved-journal-sha256','acknowledge-history-ambiguity','max-candidates','index','approved-index-sha256','journal-dir','help']);
+  const allowed = new Set(['release-root','owner-id','expected-timezone','out','limit','page-size','after-id','plan','approved-plan-sha256','journal','source-journal','approved-journal-sha256','acknowledge-history-ambiguity','max-candidates','index','approved-index-sha256','journal-dir','resume-directory','help']);
   const opts = { command };
   while (argv.length) {
     const key = argv.shift();
@@ -46,7 +46,7 @@ function parse(argv) {
   const approval = ['plan','approved-plan-sha256','journal'];
   const perCommand = {
     plan: [...runtime,'out','limit','page-size','after-id'],
-    'plan-all': [...runtime,'out','max-candidates','page-size','after-id'],
+    'plan-all': [...runtime,'out','max-candidates','page-size','after-id','resume-directory'],
     'apply-all': [...runtime,'index','approved-index-sha256','journal-dir','acknowledge-history-ambiguity'],
     review: ['plan'],
     'self-test': ['release-root','expected-timezone'],
@@ -78,11 +78,28 @@ function fileJournal(handle) {
   async function appendSync(record) { await handle.writeFile(JSON.stringify(record) + '\n'); await handle.sync(); }
   return { async header(record) { core.insist(!headerWritten, 'duplicate-journal-header'); await appendSync(record); headerWritten = true; }, appendSync };
 }
-async function run(argv, { onEvent, emit = record => process.stdout.write(JSON.stringify(record) + '\n') } = {}) {
+async function writeAndClose(handle, text) {
+  let primary;
+  try { await handle.writeFile(text); await handle.sync(); } catch (error) { primary = error; throw error; }
+  finally { try { await handle.close(); } catch (error) { if (!primary) throw error; } }
+}
+async function writeCheckpoint(file, index, fileSystem = fs) {
+  const temporary = file + '.checkpoint-' + randomUUID() + '.tmp';
+  const handle = await fileSystem.open(temporary, 'wx', 0o600);
+  await writeAndClose(handle, JSON.stringify(index, null, 2) + '\n');
+  await fileSystem.rename(temporary, file);
+}
+async function persistFailure(directory, details, { cleanup = false, fileSystem = fs } = {}) {
+  const file = path.join(directory, cleanup ? 'failure-cleanup.json' : 'failure.json');
+  const handle = await fileSystem.open(file, 'wx', 0o600);
+  await writeAndClose(handle, JSON.stringify({ format: 'immich-date-repair/failure-v1', timestamp: new Date().toISOString(), ...details }, null, 2) + '\n');
+  return file;
+}
+async function run(argv, { onEvent, onFailure, emit = record => process.stdout.write(JSON.stringify(record) + '\n') } = {}) {
   let result;
   const report = record => { result = record; emit(record); };
   const o = parse([...argv]);
-  for (const key of ['out','plan','journal','source-journal','index','journal-dir']) if (o[key]) o[key] = path.resolve(o[key]);
+  for (const key of ['out','plan','journal','source-journal','index','journal-dir','resume-directory']) if (o[key]) o[key] = path.resolve(o[key]);
   if (o.help || argv.length === 0) { process.stdout.write(HELP); return; }
   if (o.command === 'review') {
     const p = await readJson(o.plan);
@@ -112,27 +129,36 @@ async function run(argv, { onEvent, emit = record => process.stdout.write(JSON.s
     }
     if (o.command === 'undo') core.insist(!source.truncatedTail, 'truncated-journal-review-required');
   }
-  let handle, adapter;
+  let handle, adapter, primaryError;
+  const notifyFailure = async (error, options) => { if (onFailure) { try { await onFailure(error, options); } catch (logError) { process.stderr.write(JSON.stringify({ errorLogFailed: core.failureDetails(logError), original: core.failureDetails(error) }) + '\n'); } } };
   try {
     if (['plan','plan-all'].includes(o.command)) handle = await exclusive(o.out, '.json');
     if (mutation) handle = await exclusive(o.journal, '.jsonl');
     const { createAdapter } = require('./runtime.cjs');
-    adapter = await createAdapter({ releaseRoot: o['release-root'], ownerId: o['owner-id'], connect: o.command !== 'self-test' });
+    adapter = await core.atStage('runtime-init', () => createAdapter({ releaseRoot: o['release-root'], ownerId: o['owner-id'], connect: o.command !== 'self-test' }));
     core.insist(adapter.identity.timezone === o['expected-timezone'], 'configured-timezone-mismatch');
     if (o.command === 'self-test') { process.stdout.write(JSON.stringify({ command: 'self-test', passed: true, identity: adapter.identity, databaseOpened: false, mediaRead: false }) + '\n'); return; }
     if (o.command === 'plan-all') {
-      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:o['max-candidates'] === undefined ? null : Number(o['max-candidates']),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onProgress:progress=>onEvent?.({kind:'plan-progress',...progress})},async (p,n) => {
+      core.insist(!o['resume-directory'] || !o['after-id'], 'resume-and-cursor-conflict');
+      await handle.close(); handle = null; // The reserved index is atomically checkpointed below.
+      const initialIndex = o['resume-directory'] ? await core.atStage('resume-read', () => require('./resume.cjs').prepareResume({ directory: o['resume-directory'], adapter, ownerId: o['owner-id'], maximum: o['max-candidates'] === undefined ? null : Number(o['max-candidates']) })) : null;
+      if (initialIndex) { await core.atStage('checkpoint-write', () => writeCheckpoint(o.out, initialIndex)); onEvent?.({kind:'resumed',inspected:initialIndex.inspected,proposed:initialIndex.proposed}); }
+      const checkpoint = index => core.atStage('checkpoint-write', () => writeCheckpoint(o.out, index));
+      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:o['max-candidates'] === undefined ? null : Number(o['max-candidates']),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onCheckpoint:checkpoint,onProgress:progress=>onEvent?.({kind:'plan-progress',...progress})},async (p,n) => {
+        return core.atStage('chunk-write', async () => {
         const file = path.basename(o.out) + '.part-' + String(n).padStart(4,'0') + '.json';
         const text = JSON.stringify(p,null,2) + '\n'; const h = await exclusive(path.join(path.dirname(path.resolve(o.out)),file),'.json');
-        try { await h.writeFile(text); await h.sync(); } finally { await h.close(); }
+        await writeAndClose(h, text);
         return {file,sha256:createHash('sha256').update(text).digest('hex')};
-      });
-      await handle.writeFile(JSON.stringify(output,null,2)+'\n'); await handle.sync();
+        }, { chunk: n });
+      }, initialIndex);
+      await checkpoint(output);
       report({command:'plan-all',indexDigest:core.hash(output),chunks:output.chunks.length,inspected:output.inspected,proposed:output.proposed,exhausted:output.exhausted,nextAfterId:output.nextAfterId,applied:0});
     } else if (batchMutation) {
       const indexDir = path.dirname(path.resolve(o.index)), journalDir = await fs.realpath(o['journal-dir']);
       let committed = 0;
       const completed = await core.applyAll(adapter,index,{approvedIndexDigest:o['approved-index-sha256'],ownerId:o['owner-id'],acknowledgeHistoryAmbiguity:true},async chunk => {
+        if (chunk.sourceDirectory) return require('./resume.cjs').readResumeChunk(chunk, { directory: indexDir });
         core.insist(typeof chunk.file === 'string' && !/[\\/]/.test(chunk.file) && chunk.file.startsWith(path.basename(o.index)+'.part-') && chunk.file.endsWith('.json'), 'invalid-chunk-path');
         const bytes = await fs.readFile(path.join(indexDir,chunk.file)); core.insist(bytes.length <= 16*1024*1024 && createHash('sha256').update(bytes).digest('hex') === chunk.sha256, 'chunk-file-digest-mismatch');
         return JSON.parse(bytes.toString('utf8'));
@@ -151,17 +177,19 @@ async function run(argv, { onEvent, emit = record => process.stdout.write(JSON.s
       const ids = o.command === 'apply' ? await core.apply(adapter, p, options, fileJournal(handle)) : await core.undo(adapter, p, source.records, options, fileJournal(handle));
       process.stdout.write(JSON.stringify({ command: o.command, completed: ids.length, ids }) + '\n');
     }
+  } catch (error) {
+    primaryError = error; await notifyFailure(error); throw error;
   } finally {
-    let error;
-    try { await adapter?.close(); } catch (e) { error = e; }
-    try { await handle?.close(); } catch { error ||= new core.Stop('output-close-failed'); }
-    if (error) throw error;
+    let cleanupError;
+    try { await core.atStage('cleanup-runtime', () => adapter?.close()); } catch (error) { cleanupError = error; }
+    try { await core.atStage('cleanup-output', () => handle?.close()); } catch (error) { cleanupError ||= error; }
+    if (cleanupError) { await notifyFailure(cleanupError, { cleanup: !!primaryError }); if (!primaryError) throw cleanupError; }
   }
   return result;
 }
 if (require.main === module) run(process.argv.slice(2)).catch(error => {
   // Never print raw DB errors, file paths, connection config, tags or SQL params.
   const code = error instanceof core.Stop ? error.code : 'operation-failed';
-  process.stderr.write(JSON.stringify({ stopped: true, code, note: 'If applying or undoing, earlier IDs may already be committed. Do not retry uncertain writes; inspect and reconcile the journal first.' }) + '\n'); process.exitCode = 2;
+  process.stderr.write(JSON.stringify({ stopped: true, code, ...core.failureDetails(error), note: 'If applying or undoing, earlier IDs may already be committed. Do not retry uncertain writes; inspect and reconcile the journal first.' }) + '\n'); process.exitCode = 2;
 });
-module.exports = { run, parse, readJournal, fileJournal, exclusive };
+module.exports = { writeCheckpoint, persistFailure, run, parse, readJournal, fileJournal, exclusive };

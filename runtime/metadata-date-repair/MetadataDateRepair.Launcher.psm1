@@ -186,6 +186,26 @@ function Resolve-RepairStartupTimezone {
     return $MachineTimezone
 }
 
+function Select-RepairResumeFolder {
+    param(
+        [Parameter(Mandatory)][string]$OutputRoot,
+        [ValidateSet('ja','en')][string]$Language = 'en'
+    )
+    # Start only from the verified installation's repair output. Never search for
+    # runs or silently choose one: the user must select a folder and press OK.
+    Add-Type -AssemblyName System.Windows.Forms
+    $dialog = [System.Windows.Forms.FolderBrowserDialog]::new()
+    try {
+        $dialog.Description = if ($Language -eq 'ja') { '再開する前回の修復フォルダーを選んでください' } else { 'Select the previous repair folder to resume' }
+        $dialog.SelectedPath = $OutputRoot
+        $dialog.ShowNewFolderButton = $false
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            return $dialog.SelectedPath
+        }
+        return $null
+    } finally { $dialog.Dispose() }
+}
+
 function Clear-RepairConnectionEnvironment {
     foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
         # The provider deletes the variable; .NET's string API binds $null as an empty value in PowerShell 7.5+.
@@ -193,4 +213,4 @@ function Clear-RepairConnectionEnvironment {
     }
 }
 
-Export-ModuleMember -Function ConvertFrom-RepairWindowsCommandLine,ConvertFrom-RepairTrayRegistration,ConvertFrom-RepairRunRegistration,ConvertFrom-RepairServiceRegistration,Resolve-RepairServiceInstallRoot,Merge-RepairInstallCandidates,Get-RepairInstallCandidates,Resolve-RepairInstall,Clear-RepairConnectionEnvironment,Test-RepairSamePath,Resolve-RepairStartupTimezone
+Export-ModuleMember -Function ConvertFrom-RepairWindowsCommandLine,ConvertFrom-RepairTrayRegistration,ConvertFrom-RepairRunRegistration,ConvertFrom-RepairServiceRegistration,Resolve-RepairServiceInstallRoot,Merge-RepairInstallCandidates,Get-RepairInstallCandidates,Resolve-RepairInstall,Clear-RepairConnectionEnvironment,Test-RepairSamePath,Resolve-RepairStartupTimezone,Select-RepairResumeFolder

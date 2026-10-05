@@ -58,6 +58,22 @@ try {
         # CurrentUser is never elevated or re-discovered under a different identity.
         $install = Resolve-RepairInstall -Candidate $chosen
         Write-RepairMessage ("Installation: {0} | {1}" -f $install.Scope,$install.DataRoot) ("インストール: {0} | {1}" -f $install.Scope,$install.DataRoot)
+        Write-RepairMessage '1. Start a new scan  2. Resume a previous repair  0. Cancel' '1. 新しくスキャンする  2. 前回の修復を再開する  0. 中止'
+        $mode = Read-Host $(if ($Language -eq 'ja') { '番号（Enter で 1）' } else { 'Number (Enter for 1)' })
+        $resumeDirectory = $null
+        switch (([string]$mode).Trim()) {
+            '' { }
+            '1' { }
+            '2' {
+                $resumeDirectory = Select-RepairResumeFolder -OutputRoot $install.OutputRoot -Language $Language
+                if ([string]::IsNullOrEmpty($resumeDirectory)) { throw 'Cancelled' }
+                if (-not [IO.Path]::IsPathFullyQualified($resumeDirectory)) { throw 'InvalidChoice' }
+            }
+            '0' { throw 'Cancelled' }
+            default { throw 'InvalidChoice' }
+        }
+        $nodeArguments = @((Join-Path $install.ReleaseRoot 'runtime/metadata-date-repair/guided.cjs'), '--release-root', $install.ReleaseRoot, '--output-root', $install.OutputRoot, '--language', $Language)
+        if ($resumeDirectory) { $nodeArguments += @('--resume-directory', $resumeDirectory) }
         $previousEnvironment = [Environment]::GetEnvironmentVariables('Process')
         try {
             Clear-RepairConnectionEnvironment
@@ -67,7 +83,7 @@ try {
             . (Join-Path $install.ReleaseRoot 'runtime/launchers/Load-ImmichEnv.ps1') -EnvFile $install.EnvFile
             Push-Location -LiteralPath $install.ReleaseRoot
             try {
-                & (Join-Path $install.ReleaseRoot 'runtime/node/node.exe') (Join-Path $install.ReleaseRoot 'runtime/metadata-date-repair/guided.cjs') --release-root $install.ReleaseRoot --output-root $install.OutputRoot --language $Language
+                & (Join-Path $install.ReleaseRoot 'runtime/node/node.exe') @nodeArguments
                 $result = $LASTEXITCODE
             } finally { Pop-Location }
         } finally {

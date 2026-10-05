@@ -6,7 +6,7 @@ For AkaakuHub/immich-windows, upstream Immich v3.2.4 at `db355f79d910bbfc6378117
 
 1. Open `runtime\metadata-date-repair\Repair-MetadataDates.cmd` in the extracted package or installed release. No terminal commands are required.
 2. If more than one registered installation is found, choose the installation. An AllUsers installation requests the normal Windows administrator confirmation.
-3. Choose the Immich user by number. The utility reads the selected installation's existing configuration and automatically checks that user's candidates.
+3. Choose a new scan or resume. For resume, select the exact previous repair folder in the folder picker. Then choose the Immich user by number. The utility reads the selected installation's existing configuration and automatically checks that user's candidates.
 4. Review the selected user, effective server timezone, candidate/repair/exclusion counts, and the historical-edit warning. Enter `1` to repair that exact plan or `0` (or Enter) to cancel.
 5. Keep the window open while progress is displayed. The final result and private plan/recovery-record folder remain visible until you close the window.
 
@@ -15,6 +15,16 @@ UUIDs, environment paths, timezone strings and approval hashes do not need to be
 Discovery uses existing installer records and validates the current release and configuration. Missing, inconsistent or ambiguous records stop with a visible error; the utility does not guess another installation, database or timezone. Cancelling Windows elevation does not start a repair. The selected installation stays fixed across elevation, even if another administrator approves it.
 
 Each run writes its plan and recovery journals under the selected data directory's `state/metadata-date-repair/repair-*` directory. These records inherit that installation's access controls. No date changes occur until the confirmation. A failed apply can have earlier committed changes: retain these records and reconcile before attempting another write; the utility does not retry uncertain writes. The guided scan continues until the selected user’s candidate scope is exhausted, with no total-count limit. Pages and saved chunks remain bounded; an incomplete scan is never applied.
+
+## Failure logs and resuming a scan
+
+In the guided launcher, caught failures are recorded as `failure.json` in the new private repair folder, before runtime cleanup. The record contains a safe phase, error code/class, optional asset UUID/cursor and completed-page counters. It excludes raw messages, source paths, SQL, credentials and environment values. A cleanup failure is recorded separately. Advanced CLI commands emit the same structured safe diagnostic to stderr; file logging is provided by the guided launcher. If the log cannot be saved (for example disk full), the window keeps both the original safe diagnostic and the log-write failure visible.
+
+Choose **Resume** and select the previous folder. The tool reads only the exact saved part files and index in that folder, plus any immutable part references already recorded by that index; it does not search media folders. Completed parts from v3.2.4.6 are accepted only for the exact recognized tool bytes and unchanged owner, runtime, timezone, database and schema identity. Gaps, malformed parts, unknown tools or identity mismatches stop. Existing plan files are neither copied nor relabeled nor changed. A fresh index references their exact byte hashes; new work is saved in a new private folder.
+
+New indexes are atomically checkpointed after each completed 1,000-candidate chunk. An old v3.2.4.6 scan may have an empty index, but its complete consecutively numbered part files can be verified and reused. The unfinished chunk must be read again. An unreferenced tail after a newer checkpoint is not trusted; scanning resumes at the checkpoint cursor. Keep every referenced repair folder until repair/recovery is finished.
+
+Resume is still planning. It shows the complete proposed/excluded counts and requires a new approval. Apply rechecks the current database snapshot, original metadata and exact date-field CAS for every proposed asset; stale or changed data stops rather than being overwritten. Missing or access-denied source files are explicitly excluded with their IDs/reasons. Database errors, unexpected I/O and output-write failures stop. A resumed keyset pass does not revisit new or changed candidates behind its saved UUID cursor; it is not a claim about concurrent changes to the whole library.
 
 ## Scope and uncertainty
 
@@ -40,7 +50,7 @@ Filesystem anchoring may exclude legitimate uploaded images whose on-disk dates 
 
 No reuploads, image display, original writes/copies/moves, whole-media hashes, setting changes, service restarts, job queues, workflow events, metadata extraction handlers, API-based asset updates, schema migrations, or application/Nest bootstrap. It loads a small set of installed runtime modules and uses their existing dependencies. There are no new dependencies.
 
-Originals are read only for metadata/stat information. Reading may update filesystem access times according to the operating system; access time is not a source fingerprint. Small hashes of six installed runtime/package files and the four maintenance-tool modules bind plan approval to the same implementation; these are not photo hashes.
+Originals are read only for metadata/stat information. Reading may update filesystem access times according to the operating system; access time is not a source fingerprint. Small hashes of six installed runtime/package files and the five maintenance-tool modules bind plan approval to the same implementation; these are not photo hashes.
 
 Plans are text and contain asset IDs, original paths, relevant dates/revisions/flags, the proposed two-field change, and small stat/metadata evidence. Keep them private. Journals contain only plan identity and per-ID old/new date fields and revision IDs, never photo content, paths, complete EXIF dumps, or credentials. Existing output files are never overwritten.
 
@@ -51,6 +61,7 @@ Package the launcher and its supporting files under `runtime/metadata-date-repai
 - `Repair-MetadataDates.cmd` and `Start-MetadataDateRepair.ps1` (guided launcher)
 - `MetadataDateRepair.Launcher.psm1` (installation discovery)
 - `guided.cjs`
+- `resume.cjs` (verified immutable-part resume)
 - `Repair-MetadataDates.ps1` (advanced CLI wrapper)
 - `cli.cjs`
 - `core.cjs`

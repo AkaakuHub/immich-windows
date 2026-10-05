@@ -205,8 +205,9 @@ test('changing a plan during the confirmation is rejected by the actual CLI usin
   assert.equal(f.calls[1].options['approved-index-sha256'], f.plannedDigest);
   assert.notEqual(f.calls[1].options['approved-index-sha256'], changedDigest);
   assert.equal(f.writes, 0);
-  assert.deepEqual(await fs.readdir(path.dirname(f.indexFile)), ['plan.json']);
-  assert.match(f.output(), /Stopped before completion\. Error code: index-not-approved-or-owner-mismatch/);
+  assert.deepEqual((await fs.readdir(path.dirname(f.indexFile))).sort(), ['failure.json', 'plan.json']);
+  assert.equal(JSON.parse(await fs.readFile(path.join(path.dirname(f.indexFile), 'failure.json'), 'utf8')).code, 'index-not-approved-or-owner-mismatch');
+  assert.match(f.output(), /Stopped before completion\. Error code: unknown \/ index-not-approved-or-owner-mismatch/);
 });
 
 for (const [name, index, code] of [
@@ -240,7 +241,7 @@ test('failure after an apply write reports uncertainty and saved evidence withou
   await assert.rejects(f.run, thrown => thrown === error);
   assert.equal(f.calls.filter(call => call.options.command === 'apply-all').length, 1);
   assert.equal(f.writes, 1);
-  assert.match(f.output(), /Stopped before completion\. Error code: operation-failed/);
+  assert.match(f.output(), /Stopped before completion\. Error code: unknown \/ UNKNOWN \/ Error/);
   assert.match(f.output(), /Earlier changes may already be committed/);
   assert.match(f.output(), /reconcile them before retrying/);
   assert(f.output().includes(path.dirname(f.indexFile)));

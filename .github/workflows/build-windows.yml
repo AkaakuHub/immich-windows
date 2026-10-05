@@ -285,7 +285,7 @@ jobs:
           .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
           & ./.tools/node/node.exe ./tests/Metadata-DateFallback.cjs .work/immich --server-root artifacts/application/server
           if ($LASTEXITCODE -ne 0) { throw 'Metadata date fallback checks failed.' }
-          & ./.tools/node/node.exe --test ./tests/Metadata-DateRepair-Core.test.cjs ./tests/Metadata-DateRepair-Gates.test.cjs ./tests/Metadata-DateRepair-Guided.test.cjs ./tests/Metadata-DateRepair-Performance.test.cjs
+          & ./.tools/node/node.exe --test ./tests/Metadata-DateRepair-Core.test.cjs ./tests/Metadata-DateRepair-Gates.test.cjs ./tests/Metadata-DateRepair-Guided.test.cjs ./tests/Metadata-DateRepair-Performance.test.cjs ./tests/Metadata-DateRepair-Resume.test.cjs ./tests/Metadata-DateRepair-Diagnostics.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Metadata date repair guard checks failed.' }
           .\build\Stage-VcRuntime.ps1
           $version = '${{ needs.plan.outputs.version }}'

@@ -227,9 +227,17 @@ async function test() {
     assert.equal(cancelled.applied, 0);
     assert.deepEqual(await fullRows(), beforeGuided, 'Declining the guided confirmation must leave all DB rows unchanged');
     assert(!(await fs.readdir(cancelled.directory)).some(name => name.endsWith('.jsonl')), 'Cancellation must not start a write journal');
-    stage = 'guided-approved-flow-check';
+    stage = 'guided-resumed-approved-flow-check';
+    const oldPart = path.join(cancelled.directory, 'plan.json.part-0001.json');
+    const oldPartBytes = await fs.readFile(oldPart);
+    const originalReadTags = MetadataRepository.prototype.readTags;
+    let resumedMetadataReads = 0, guided;
     const approvedIo = scripted([selection, '1']);
-    const guided = await runGuided(guidedOptions, approvedIo);
+    MetadataRepository.prototype.readTags = function (...args) { resumedMetadataReads++; return originalReadTags.apply(this, args); };
+    try { guided = await runGuided({ ...guidedOptions, resumeDirectory: cancelled.directory }, approvedIo); }
+    finally { MetadataRepository.prototype.readTags = originalReadTags; }
+    assert.equal(resumedMetadataReads, 1, 'Resume reuses planning evidence; only apply revalidates original metadata');
+    assert.deepEqual(await fs.readFile(oldPart), oldPartBytes, 'Resuming must preserve old plan bytes');
     assert.equal(guided.status, 'complete');
     assert.equal(guided.applied, 1);
     assert.equal(approvedIo.questions.length, 2, 'Only user selection and final confirmation are needed');
@@ -237,6 +245,7 @@ async function test() {
     assert.equal(guidedIndex.scope.ownerId, ownerId);
     assert.equal(guidedIndex.identity.timezone, 'Asia/Tokyo');
     assert.equal(guidedIndex.proposed, 1);
+    assert.equal(guidedIndex.chunks[0].sourceDirectory, await fs.realpath(cancelled.directory));
     assert.equal((await fs.readdir(guided.directory)).filter(name => name.endsWith('.apply.jsonl')).length, 1);
     const afterGuided = await fullRows();
     assert.deepEqual(otherFields(afterGuided), otherFields(beforeGuided), 'Guided repair changes no other database columns');

@@ -9,10 +9,15 @@ const core = require('./core.cjs');
 const PIN = 'db355f79d910bbfc6378117ed10868493c97b922';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function normalized(p) { const v = path.resolve(p); return process.platform === 'win32' ? v.toLowerCase() : v; }
+function sourceFileError(error) {
+  if (['ENOENT','ENOTDIR'].includes(error?.code)) return new core.Stop('source-file-missing');
+  if (['EACCES','EPERM'].includes(error?.code)) return new core.Stop('source-file-inaccessible');
+  return error;
+}
 async function regularPath(p) {
-  const s = await fs.lstat(p, { bigint: true });
+  const s = await fs.lstat(p, { bigint: true }).catch(error => { throw sourceFileError(error); });
   core.insist(s.isFile() && !s.isSymbolicLink(), 'source-not-regular-file');
-  const real = await fs.realpath(p);
+  const real = await fs.realpath(p).catch(error => { throw sourceFileError(error); });
   core.insist(normalized(real) === normalized(p), 'source-link-or-reparse-path');
   return { s, real };
 }
@@ -68,7 +73,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     core.insist(firstDateTime({ DateTimeOriginal: '2024:05:01 12:34:56' }), 'capture-date-parser-self-test-failed');
     core.insist(!firstDateTime({}), 'empty-date-parser-self-test-failed');
     const toolHashes = {};
-    for (const file of ['core.cjs','runtime.cjs','cli.cjs','guided.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
+    for (const file of ['core.cjs','runtime.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
     const identity = { upstreamCommit: PIN, version: manifest.immichVersion, node: process.version, platform: process.platform, timezone, files: hashes, toolHashes };
     if (connect) {
       const config = new ConfigRepository().getEnv().database.config;
@@ -112,13 +117,14 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     };
     const adapter = {
       identity, firstDateTime, getDates,
+      isCompatiblePlanIdentity: previous => require('./resume.cjs').isCompatiblePlanIdentity(previous, identity),
       close,
       async stat(p) { const { s, real } = await regularPath(p); return { token: statToken(s, real), stats: { birthtimeMs: Number(s.birthtimeNs / 1000000n) + Number(s.birthtimeNs % 1000000n) / 1e6, mtimeMs: Number(s.mtimeNs / 1000000n) + Number(s.mtimeNs % 1000000n) / 1e6, mtime: new Date(Number(s.mtimeNs / 1000000n)) } }; },
       async sidecarsAbsent(p) {
         const base = path.join(path.dirname(p), path.parse(p).name);
         core.insist(process.platform === 'win32', 'windows-runtime-required');
         for (const candidate of new Set([p + '.xmp', base + '.xmp'])) {
-          try { await fs.lstat(candidate); return false; } catch (e) { if (e.code !== 'ENOENT') throw new core.Stop('sidecar-check-failed'); }
+          try { await fs.lstat(candidate); return false; } catch (e) { if (e.code !== 'ENOENT') throw sourceFileError(e); }
         }
         return true;
       },
@@ -199,4 +205,4 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     throw new core.Stop('runtime-initialization-failed');
   }
 }
-module.exports = { createAdapter, statToken, normalized, PIN };
+module.exports = { sourceFileError, createAdapter, statToken, normalized, PIN };

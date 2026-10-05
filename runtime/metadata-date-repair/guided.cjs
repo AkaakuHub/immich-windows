@@ -25,6 +25,10 @@ const messages = {
   confirm: ['Accept this uncertainty and apply the displayed plan? 1: repair / 0: cancel', 'この不確実性を了承して、表示した計画で修復しますか？ 1: 修復する / 0: キャンセル'],
   applying: ['Repairing the approved dates. Keep this window open.', '確認した日付を修復しています。この画面を閉じないでください。'],
   repaired: ['Repaired', '修復済み'],
+  resumed: ['Reusing saved candidates', '保存済み候補を再利用'],
+  keepFolders: ['Keep both the previous and new repair folders until repair/recovery is finished.', '修復・復旧が完了するまで、以前の修復フォルダーと新しい修復フォルダーの両方を保管してください。'],
+  errorLog: ['Error log', 'エラーログ'],
+  logFailed: ['Could not save the error log', 'エラーログを保存できませんでした'],
   done: ['Repair completed.', '修復が完了しました。'],
   empty: ['No eligible dates to repair. Excluded items were left unchanged.', '安全に修復できる対象はありません。除外された項目は変更していません。'],
   incomplete: ['The scan is incomplete; no dates were changed.', '確認が完了していないため、日付は変更していません。'],
@@ -54,41 +58,57 @@ function parse(argv) {
   const options = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
-    core.insist(['--release-root','--output-root','--language'].includes(key) && !(key in options) && argv[i + 1] && !argv[i + 1].startsWith('--'), 'invalid-guided-arguments');
+    core.insist(['--release-root','--output-root','--language','--resume-directory'].includes(key) && !(key in options) && argv[i + 1] && !argv[i + 1].startsWith('--'), 'invalid-guided-arguments');
     options[key] = argv[i + 1];
   }
   core.insist(options['--release-root'] && path.isAbsolute(options['--release-root']) && options['--output-root'] && path.isAbsolute(options['--output-root']), 'absolute-guided-paths-required');
   core.insist(['en','ja'].includes(options['--language']), 'invalid-guided-language');
-  return { releaseRoot: options['--release-root'], outputRoot: options['--output-root'], language: options['--language'] };
+  if (options['--resume-directory']) core.insist(path.isAbsolute(options['--resume-directory']), 'absolute-resume-path-required');
+  return { releaseRoot: options['--release-root'], outputRoot: options['--output-root'], language: options['--language'], ...(options['--resume-directory'] ? { resumeDirectory: options['--resume-directory'] } : {}) };
 }
-async function runGuided({ releaseRoot, outputRoot, language = 'en' }, io, dependencies = {}) {
+async function runGuided({ releaseRoot, outputRoot, language = 'en', resumeDirectory }, io, dependencies = {}) {
   const createAdapter = dependencies.createAdapter || require('./runtime.cjs').createAdapter;
   const run = dependencies.run || require('./cli.cjs').run;
-  let directory, applying = false;
+  const persistFailure = dependencies.persistFailure || require('./cli.cjs').persistFailure;
+  let directory, applying = false, lastProgress = { inspected: 0, proposed: 0 }, resumedCount = 0;
+  const recorded = new Set();
   const say = (key, value) => io.write(text(language, key) + (value === undefined ? '' : ': ' + value));
+  const ensureDirectory = async () => {
+    if (!directory) { await fs.mkdir(outputRoot, { recursive: true, mode: 0o700 }); directory = await fs.mkdtemp(path.join(await fs.realpath(outputRoot), 'repair-')); }
+  };
+  const recordFailure = async (error, { cleanup = false } = {}) => {
+    if (recorded.has(error)) return; recorded.add(error);
+    const details = { operation: applying ? 'apply-all' : 'plan-all', ...core.failureDetails(error), completedPage: lastProgress, cleanup };
+    say('failed', `${details.phase} / ${details.code} / ${details.errorClass}${details.assetId ? ' / ' + details.assetId : ''}`);
+    try { await ensureDirectory(); say('errorLog', await persistFailure(directory, details, { cleanup })); }
+    catch (logError) { say('logFailed', core.failureDetails(logError).code); }
+  };
   try {
     say('title');
     let users, timezone;
-    const directoryAdapter = await createAdapter({ releaseRoot, usersOnly: true });
-    try { users = await directoryAdapter.listUsers(); timezone = directoryAdapter.identity.timezone; }
-    finally { await directoryAdapter.close(); }
+    const directoryAdapter = await core.atStage('user-runtime', () => createAdapter({ releaseRoot, usersOnly: true }));
+    let userError;
+    try { users = await core.atStage('user-list', () => directoryAdapter.listUsers()); timezone = directoryAdapter.identity.timezone; }
+    catch (error) { userError = error; await recordFailure(error); throw error; }
+    finally { try { await directoryAdapter.close(); } catch (error) { await recordFailure(error, { cleanup: !!userError }); if (!userError) throw error; } }
     if (!users.length) { say('noUsers'); return { status: 'empty-users', applied: 0 }; }
     users.forEach((user, i) => io.write(`${i + 1}. ${label(user.name)} (${label(user.email)})`));
     const selected = await choose(io, text(language, 'users'), users.length, language);
     if (selected === null) { say('cancelled'); return { status: 'cancelled', applied: 0 }; }
     const user = users[selected];
     say('user', `${label(user.name)} (${label(user.email)})`); say('timezone', label(timezone));
-    await fs.mkdir(outputRoot, { recursive: true, mode: 0o700 });
-    const output = await fs.realpath(outputRoot);
-    directory = await fs.mkdtemp(path.join(output, 'repair-'));
+    await ensureDirectory();
     const indexFile = path.join(directory, 'plan.json');
     say('saved', directory); say('scanning');
     const common = ['--release-root', releaseRoot, '--owner-id', user.id, '--expected-timezone', timezone];
     const scanStarted = performance.now();
-    const planned = await run(['plan-all', ...common, '--out', indexFile], {
-      emit() {}, onEvent: event => { if (event.kind === 'plan-progress') {
+    const planned = await run(['plan-all', ...common, '--out', indexFile, ...(resumeDirectory ? ['--resume-directory', resumeDirectory] : [])], {
+      emit() {}, onFailure: recordFailure, onEvent: event => {
+        if (event.kind === 'resumed') { resumedCount = event.inspected; lastProgress = { inspected: event.inspected, proposed: event.proposed }; say('resumed', event.inspected); say('keepFolders'); }
+        if (event.kind === 'plan-progress') {
+        lastProgress = { inspected: event.inspected, proposed: event.proposed };
         const seconds = (performance.now() - scanStarted) / 1000;
-        say('checked', `${event.inspected}; ${text(language, 'proposed')}: ${event.proposed}; ${text(language, 'elapsed')}: ${seconds.toFixed(1)}s; ${seconds > 0 ? (event.inspected / seconds).toFixed(1) : '0.0'} ${text(language, 'rate')}`);
+        say('checked', `${event.inspected}; ${text(language, 'proposed')}: ${event.proposed}; ${text(language, 'elapsed')}: ${seconds.toFixed(1)}s; ${seconds > 0 ? ((event.inspected - resumedCount) / seconds).toFixed(1) : '0.0'} ${text(language, 'rate')}`);
       } },
     });
     const index = JSON.parse(await fs.readFile(indexFile, 'utf8'));
@@ -102,13 +122,13 @@ async function runGuided({ releaseRoot, outputRoot, language = 'en' }, io, depen
     if (await choose(io, text(language, 'confirm'), 1, language) === null) { say('cancelled'); return { status: 'cancelled', applied: 0, directory }; }
     applying = true; say('applying');
     const result = await run(['apply-all', ...common, '--index', indexFile, '--approved-index-sha256', approvedDigest, '--journal-dir', directory, '--acknowledge-history-ambiguity'], {
-      emit() {}, onEvent: event => { if (event.kind === 'apply-progress') say('repaired', `${event.completed} / ${index.proposed}`); },
+      emit() {}, onFailure: recordFailure, onEvent: event => { if (event.kind === 'apply-progress') say('repaired', `${event.completed} / ${index.proposed}`); },
     });
     core.insist(result.completed === index.proposed, 'guided-apply-count-mismatch');
     say('done'); say('repaired', result.completed); say('saved', directory);
     return { status: 'complete', applied: result.completed, directory };
   } catch (error) {
-    say('failed', error instanceof core.Stop ? error.code : 'operation-failed');
+    await recordFailure(error);
     if (applying) say('uncertain');
     if (directory) say('saved', directory);
     throw error;

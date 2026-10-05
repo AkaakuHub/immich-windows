@@ -109,6 +109,7 @@ if ($IsWindows) {
         Copy-Item -LiteralPath $realNode -Destination (Join-Path $fixture 'runtime/node/node.exe')
         [IO.File]::WriteAllText((Join-Path $fixture 'runtime/launchers/Load-ImmichEnv.ps1'), @'
 param([string]$EnvFile)
+$repairTestState.LoaderCalls++
 if ($env:DB_HOSTNAME -or $env:PGPASSWORD) { throw 'Inherited connection leaked into loader' }
 $env:DB_HOSTNAME = 'fixture-db'
 $env:TZ = 'Etc/UTC'
@@ -118,13 +119,22 @@ const assert = require('node:assert/strict');
 assert.equal(process.env.DB_HOSTNAME, 'fixture-db');
 assert.equal(process.env.PGPASSWORD, undefined);
 assert.equal(process.env.TZ, 'Etc/UTC');
-assert.deepEqual(process.argv.slice(2).filter((_, i) => i % 2 === 0), ['--release-root','--output-root','--language']);
+assert.deepEqual(process.argv.slice(2), JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, 'expected-arguments.json'), 'utf8')));
 console.log('FIXTURE_GUIDED_CALLED');
 process.exit(23);
 '@)
         $repairTestState.Candidates = @([pscustomobject]@{Scope='CurrentUser';InstallRoot=$fixture;DataRoot=$fixture;Service=$false})
         $repairTestState.Elevated = $false; $repairTestState.UacCalls = 0; $repairTestState.Denied = $false; $repairTestState.Answer = '2'
         $repairTestState.ResolveCalls = 0; $repairTestState.AllUsersOnly = $false
+        $repairTestState.ModeAnswer = '1'; $repairTestState.FolderCalls = 0; $repairTestState.LoaderCalls = 0
+        $repairTestState.ResumeFolder = Join-Path $fixture 'state/metadata-date-repair/前回 & Family repair'
+        function Set-RepairFixtureArguments {
+            param([string]$FixtureLanguage = 'en', [string]$ResumeDirectory)
+            $expectedArguments = @('--release-root', $fixture, '--output-root', (Join-Path $fixture 'state/metadata-date-repair'), '--language', $FixtureLanguage)
+            if ($ResumeDirectory) { $expectedArguments += @('--resume-directory', $ResumeDirectory) }
+            [IO.File]::WriteAllText((Join-Path $fixture 'runtime/metadata-date-repair/expected-arguments.json'), (ConvertTo-Json -InputObject $expectedArguments -Compress))
+        }
+        Set-RepairFixtureArguments
         function Import-Module { param([string]$Name,[switch]$Force) } # Modules are already loaded above.
         function Get-RepairInstallCandidates { param([switch]$AllUsersOnly); $repairTestState.AllUsersOnly = [bool]$AllUsersOnly; return $repairTestState.Candidates }
         function Test-ImmichElevated { return $repairTestState.Elevated }
@@ -134,7 +144,18 @@ process.exit(23);
             $repairTestState.ResolvedScope = $Candidate.Scope
             return [pscustomobject]@{Scope=$Candidate.Scope;InstallRoot=$fixture;DataRoot=$fixture;ReleaseRoot=$fixture;EnvFile=(Join-Path $fixture 'immich.env');OutputRoot=(Join-Path $fixture 'state/metadata-date-repair')}
         }
-        function Read-Host { param([string]$Prompt); return $repairTestState.Answer }
+        function Read-Host {
+            param([string]$Prompt)
+            if ($Prompt -cin @('Number (Enter for 1)', '番号（Enter で 1）')) { return $repairTestState.ModeAnswer }
+            return $repairTestState.Answer
+        }
+        function Select-RepairResumeFolder {
+            param([string]$OutputRoot, [string]$Language)
+            $repairTestState.FolderCalls++
+            $repairTestState.FolderLanguage = $Language
+            Assert-Repair ($OutputRoot -ceq (Join-Path $fixture 'state/metadata-date-repair')) 'folder picker starts at the exact verified output root'
+            return $repairTestState.ResumeFolder
+        }
         function Start-Process {
             param($FilePath,$ArgumentList,$Verb,[switch]$Wait,[switch]$PassThru,$ErrorAction)
             $repairTestState.UacCalls++
@@ -149,6 +170,34 @@ process.exit(23);
         Assert-Repair ($LASTEXITCODE -eq 23 -and $output.Contains('FIXTURE_GUIDED_CALLED')) ("real Node exit propagated; exit=$LASTEXITCODE; fixture output: $output")
         Assert-Repair ($repairTestState.UacCalls -eq 0) 'CurrentUser never requests elevation'
         Assert-Repair ($env:DB_HOSTNAME -ceq 'wrong-inherited' -and $env:PGPASSWORD -ceq 'wrong-secret' -and $env:TZ -ceq 'wrong-zone') 'caller environment restored'
+        Assert-Repair ($repairTestState.FolderCalls -eq 0 -and $repairTestState.LoaderCalls -eq 1) 'new scan bypasses the folder picker'
+        $repairTestState.ModeAnswer = ''
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 23 -and $repairTestState.FolderCalls -eq 0) 'Enter defaults to a new scan without showing a dialog'
+        $repairTestState.ModeAnswer = '2'
+        Set-RepairFixtureArguments -ResumeDirectory $repairTestState.ResumeFolder
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 23 -and $output.Contains('FIXTURE_GUIDED_CALLED') -and $repairTestState.FolderCalls -eq 1 -and $repairTestState.FolderLanguage -ceq 'en') ("resume passes the exact selected Japanese/spaced path to real Node; exit=$LASTEXITCODE; fixture output: $output")
+        Set-RepairFixtureArguments -FixtureLanguage ja -ResumeDirectory $repairTestState.ResumeFolder
+        $output = (& $entry -Language ja 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 23 -and $repairTestState.FolderLanguage -ceq 'ja' -and $output.Contains('前回の修復を再開する')) 'Japanese resume uses the localized picker and native argument array'
+        $beforeLoader = $repairTestState.LoaderCalls; $beforeFolder = $repairTestState.FolderCalls
+        $repairTestState.ModeAnswer = '0'
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 0 -and $repairTestState.LoaderCalls -eq $beforeLoader -and $repairTestState.FolderCalls -eq $beforeFolder -and -not $output.Contains('FIXTURE_GUIDED_CALLED')) 'mode cancellation never loads environment or opens a dialog or starts Node'
+        $repairTestState.ModeAnswer = '2'; $repairTestState.ResumeFolder = $null
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 0 -and $repairTestState.LoaderCalls -eq $beforeLoader -and $repairTestState.FolderCalls -eq ($beforeFolder + 1) -and -not $output.Contains('FIXTURE_GUIDED_CALLED')) 'folder cancellation exits cleanly before environment loading or Node'
+        $repairTestState.ResumeFolder = 'relative-directory'
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 1 -and $repairTestState.LoaderCalls -eq $beforeLoader -and -not $output.Contains('FIXTURE_GUIDED_CALLED')) 'relative resume directory is rejected before environment loading or Node'
+        $repairTestState.ModeAnswer = 'invalid'
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 1 -and $repairTestState.LoaderCalls -eq $beforeLoader -and -not $output.Contains('FIXTURE_GUIDED_CALLED')) 'invalid run mode is rejected before environment loading or Node'
+        Assert-Repair ($repairTestState.UacCalls -eq 0) 'new, resume and cancelled CurrentUser flows never request elevation'
+        Assert-Repair ($env:DB_HOSTNAME -ceq 'wrong-inherited' -and $env:PGPASSWORD -ceq 'wrong-secret' -and $env:TZ -ceq 'wrong-zone') 'caller environment restored after resume and all cancellation paths'
+        $repairTestState.ModeAnswer = '1'
+        Set-RepairFixtureArguments
         $repairTestState.Candidates = @([pscustomobject]@{Scope='AllUsers';InstallRoot=$fixture;DataRoot=$fixture;Service=$true})
         $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
         Assert-Repair ($LASTEXITCODE -eq 37 -and $repairTestState.UacCalls -eq 1) ("elevated true exit propagated; exit=$LASTEXITCODE; fixture output: $output")
@@ -177,7 +226,7 @@ process.exit(23);
         $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
         Assert-Repair ($LASTEXITCODE -eq 0 -and $repairTestState.ResolveCalls -eq $beforeResolve) ("cancel never loads env or starts Node; exit=$LASTEXITCODE; fixture output: $output")
     } finally {
-        foreach ($name in @('Import-Module','Get-RepairInstallCandidates','Test-ImmichElevated','Resolve-RepairInstall','Read-Host','Start-Process')) { Remove-Item -LiteralPath ("Function:" + $name) -ErrorAction SilentlyContinue }
+        foreach ($name in @('Import-Module','Get-RepairInstallCandidates','Test-ImmichElevated','Resolve-RepairInstall','Read-Host','Select-RepairResumeFolder','Set-RepairFixtureArguments','Start-Process')) { Remove-Item -LiteralPath ("Function:" + $name) -ErrorAction SilentlyContinue }
         $env:DB_HOSTNAME=$oldDb; $env:PGPASSWORD=$oldPg; $env:TZ=$oldTz
         if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
     }
