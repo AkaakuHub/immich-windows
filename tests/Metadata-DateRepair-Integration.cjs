@@ -16,12 +16,14 @@ function inside(root, target) {
   const relative = path.relative(root, target);
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
+let stage = 'windows-ci-guards';
 async function test() {
   assert.equal(process.platform, 'win32', 'Disposable Windows CI only');
   assert.equal(process.env.GITHUB_ACTIONS, 'true', 'GitHub Actions only');
   assert.equal(process.env.CI, 'true', 'Explicit CI environment required');
   assert.equal(process.env.IMMICH_METADATA_REPAIR_TEST_ONLY, '1', 'Explicit CI test opt-in required');
   assert(process.env.RUNNER_TEMP, 'RUNNER_TEMP required');
+  stage = 'ci-path-and-password-guards';
   const temporary = await fs.realpath(process.env.RUNNER_TEMP);
   const releaseRoot = await fs.realpath(arg('--release-root'));
   const passwordFile = await fs.realpath(arg('--password-file'));
@@ -37,12 +39,14 @@ async function test() {
   process.env.FFMPEG_PATH = path.join(releaseRoot, 'runtime/ffmpeg/ffmpeg.exe');
   process.env.FFPROBE_PATH = path.join(releaseRoot, 'runtime/ffmpeg/ffprobe.exe');
 
+  stage = 'installed-module-import';
   const runtime = path.join(releaseRoot, 'runtime', 'metadata-date-repair');
   const core = require(path.join(runtime, 'core.cjs'));
   const { createAdapter } = require(path.join(runtime, 'runtime.cjs'));
   const { fileJournal, run } = require(path.join(runtime, 'cli.cjs'));
   const server = path.join(releaseRoot, 'server');
   const req = createRequire(path.join(server, 'package.json'));
+  stage = 'installed-date-self-test';
   const synthetic = await createAdapter({ releaseRoot, connect: false });
   assert.equal(synthetic.identity.timezone, 'Asia/Tokyo');
   await synthetic.close();
@@ -92,9 +96,11 @@ async function test() {
     };
   };
   try {
-    const identity = (await sql`select current_database() as name, inet_server_addr()::text as host`.execute(db)).rows[0];
+    stage = 'database-loopback-guard';
+    const identity = (await sql`select current_database() as name, host(inet_server_addr()) as host`.execute(db)).rows[0];
     assert.equal(identity.name, 'immich_ci_allusers', 'Never write to another database');
     assert(['127.0.0.1', '::1'].includes(identity.host), 'Never write to a remote database');
+    stage = 'fixture-setup';
     fixture = await fs.mkdtemp(path.join(temporary, 'immich-date-repair-ci-'));
     const originalPath = path.join(fixture, 'synthetic.png');
     // Generated 1x1 PNG fixture, unrelated to any user media.
@@ -108,6 +114,7 @@ async function test() {
       await tx.insertInto('asset_exif').values({ assetId, dateTimeOriginal: new Date(instant), timeZone: null, lockedProperties: null }).execute();
     });
     wroteFixture = true;
+    stage = 'installed-database-adapter';
     adapter = await createAdapter({ releaseRoot, ownerId });
     const initial = await adapter.snapshot(assetId);
     const initialFullRows = await fullRows();
@@ -116,6 +123,7 @@ async function test() {
     assert.equal(core.initialReason(initial), null, 'Real trigger audit timestamps must be accepted');
     const proposed = { ...core.beforeDates(initial), localDateTime: expectedLocal, timeZone: 'Asia/Tokyo' };
 
+    stage = 'transaction-rollback-checks';
     // Real Kysely SQL and real installed schema triggers; stale second-row CAS
     // must roll back the already-issued first-row UPDATE in the same transaction.
     await assert.rejects(adapter.transaction(async tx => {
@@ -132,10 +140,12 @@ async function test() {
 
     // Real ExifTool and filesystem evidence, with no decoder, original rewrite,
     // metadata extraction job, storage-template event, or workflow execution.
+    stage = 'default-plan-check';
     const cliPlanFile = path.join(fixture, 'default-plan.json');
     await run(['--release-root', releaseRoot, '--owner-id', ownerId, '--expected-timezone', 'Asia/Tokyo', '--out', cliPlanFile, '--limit', '10', '--page-size', '10']);
     assert.equal(JSON.parse(await fs.readFile(cliPlanFile, 'utf8')).entries.length, 1, 'CLI without a command must produce a read-only plan');
     assert.deepEqual(await fullRows(), initialFullRows, 'Default CLI planning must not mutate database rows');
+    stage = 'batch-plan-check';
     const batchIndexFile = path.join(fixture, 'batch-index.json');
     await run(['plan-all', '--release-root', releaseRoot, '--owner-id', ownerId, '--expected-timezone', 'Asia/Tokyo', '--out', batchIndexFile, '--max-candidates', '10', '--page-size', '10']);
     const batchIndex = JSON.parse(await fs.readFile(batchIndexFile, 'utf8'));
@@ -154,6 +164,7 @@ async function test() {
     await assert.rejects(core.apply(adapter, plan, approved, journal('failed', true)), /synthetic-journal-failure/);
     assert.deepEqual(await adapter.snapshot(assetId), initial, 'Journal failure before COMMIT must roll back both rows');
 
+    stage = 'journal-apply-check';
     const appliedJournal = journal('apply');
     assert.deepEqual(await core.apply(adapter, plan, approved, appliedJournal), [assetId]);
     const applied = await adapter.snapshot(assetId);
@@ -170,6 +181,7 @@ async function test() {
     assert.equal(again.entries.length, 0, 'Already-repaired row must not gain another offset');
     await assert.rejects(core.apply(adapter, plan, approved, journal('stale')), /stale-plan/);
 
+    stage = 'guarded-undo-check';
     const undoJournal = journal('undo');
     assert.deepEqual(await core.undo(adapter, plan, appliedJournal.records, { ...approved, approvedJournalDigest: core.hash(appliedJournal.records) }, undoJournal), [assetId]);
     const undone = await adapter.snapshot(assetId);
@@ -205,4 +217,11 @@ async function test() {
     if (cleanupError) throw new Error('Fixture cleanup failed');
   }
 }
-test().catch(error => { process.stderr.write(`Metadata repair integration failed: ${error.code || error.message}\n`); process.exitCode = 1; });
+test().catch(error => {
+  // A stable stage and source line locate failures without values, paths, SQL,
+  // assertion diffs, connection settings, or credentials in the public log.
+  const line = /Metadata-DateRepair-Integration\.cjs:(\d+):\d+/.exec(error.stack || '')?.[1];
+  const code = typeof error.code === 'string' && /^[a-z0-9_-]+$/i.test(error.code) ? error.code : 'test-failure';
+  process.stderr.write(`Metadata repair integration failed: ${JSON.stringify({ stage, code, line })}\n`);
+  process.exitCode = 1;
+});
