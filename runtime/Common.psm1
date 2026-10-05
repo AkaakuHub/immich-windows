@@ -605,14 +605,52 @@ function Set-ImmichServerDependencies {
 }
 
 function Get-ImmichUserProcess {
-    param([string]$InstallRoot,[string]$DataRoot,[string]$Name)
+    param([string]$InstallRoot,[string]$DataRoot,[string]$Name,[switch]$RequireIdentity)
     $pidFile=Join-Path $DataRoot "services\$Name.pid"
-    if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { return }
-    $process=Get-Process -Id ([int](Get-Content -Raw -LiteralPath $pidFile)) -ErrorAction SilentlyContinue
-    if (-not $process -or -not $process.Path) { return }
-    $roots=@((Join-Path $InstallRoot 'current'),(Get-CurrentReleaseTarget -InstallRoot $InstallRoot))
-    foreach ($root in $roots) {
-        if ($root -and $process.Path.StartsWith($root.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) { return $process }
+    if ($RequireIdentity) {
+        try { $processId=[int](Get-Content -Raw -LiteralPath $pidFile -ErrorAction Stop) }
+        catch [System.Management.Automation.ItemNotFoundException] { return }
+        if ($processId -le 0) { throw "Invalid process identity: $Name" }
+        try { $process=Get-Process -Id $processId -ErrorAction Stop }
+        catch {
+            if ($_.FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId,*') { throw }
+            return
+        }
+    } else {
+        # Preserve the existing start/stop ownership helper's default behavior.
+        if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { return }
+        $process=Get-Process -Id ([int](Get-Content -Raw -LiteralPath $pidFile)) -ErrorAction SilentlyContinue
+    }
+    if (-not $process) { return }
+    try {
+        if ($RequireIdentity) { [void]$process.Handle } # Pin before inspecting executable identity.
+        if (-not $process.Path) {
+            if ($RequireIdentity) { throw "Cannot verify process identity: $Name" }
+            return
+        }
+        $roots=@((Join-Path $InstallRoot 'current'),(Get-CurrentReleaseTarget -InstallRoot $InstallRoot))
+        foreach ($root in $roots) {
+            if ($root -and $process.Path.StartsWith($root.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) { return $process }
+        }
+    } catch {
+        if ($RequireIdentity) { $process.Dispose() }
+        throw
+    }
+    if ($RequireIdentity) { $process.Dispose() }
+}
+
+function Get-ImmichUserProcessSnapshot {
+    param([Parameter(Mandatory)][string]$InstallRoot,[Parameter(Mandatory)][string]$DataRoot)
+    # Only non-secret identities cross to the tray, as decimal text (never JSON doubles).
+    foreach ($name in @('ImmichServer','ImmichMachineLearning')) {
+        $process=$null
+        try {
+            $process=Get-ImmichUserProcess -InstallRoot $InstallRoot -DataRoot $DataRoot -Name $name -RequireIdentity
+            if (-not $process -or $process.HasExited) { 'Stopped'; continue }
+            $started=$process.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+            $process.Id.ToString([Globalization.CultureInfo]::InvariantCulture)+':'+$started
+        } catch { 'Unknown' }
+        finally { if ($process) { $process.Dispose() } }
     }
 }
 

@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
@@ -78,6 +79,7 @@ namespace Immich.Windows {
     public sealed class TrayText {
         public string Open, OpenConfigFolder, Start, Stop, Update, Exit, Busy, Failed, Cancelled, Continue, NotElevated;
         public string Started, Stopped, Updated, Language;
+        public string Status, Running, NotRunning, Partial, Changing, Unknown;
 
         public static TrayText ForCulture(string culture) {
             bool japanese = (culture ?? "").Replace('_', '-').Split('-')[0].Equals("ja", StringComparison.OrdinalIgnoreCase);
@@ -89,6 +91,8 @@ namespace Immich.Windows {
                     Cancelled = "操作はキャンセルされました。", Continue = "Enterキーを押して閉じます",
                     NotElevated = "トレイは管理者として実行できません。スタートアップのImmich Trayショートカットを通常の方法で開くか、サインインし直してください。",
                     Started = "Immichを起動しました。", Stopped = "Immichを停止しました。", Updated = "Immichの更新処理が完了しました。",
+                    Status = "サーバー・MLの状態: ", Running = "稼働中",
+                    NotRunning = "停止中", Partial = "一部稼働／一時停止", Changing = "状態変更中", Unknown = "確認できません",
                     Language = "ja"
                 };
             }
@@ -99,8 +103,20 @@ namespace Immich.Windows {
                 Cancelled = "The action was cancelled.", Continue = "Press Enter to close",
                 NotElevated = "The tray cannot run as administrator. Open the Immich Tray Startup shortcut normally, or sign out and sign in again.",
                 Started = "Immich started.", Stopped = "Immich stopped.", Updated = "Immich update completed.",
+                Status = "Server / ML status: ", Running = "Running",
+                NotRunning = "Stopped", Partial = "Partially running / paused", Changing = "Changing", Unknown = "Unknown",
                 Language = "en"
             };
+        }
+
+        public string RuntimeStatus(string state) {
+            switch (state) {
+                case "Running": return Running;
+                case "Stopped": return NotRunning;
+                case "Partial": return Partial;
+                case "Changing": return Changing;
+                default: return Unknown;
+            }
         }
     }
 
@@ -115,6 +131,9 @@ namespace Immich.Windows {
                 command = "Import-Module " + Quote(Path.Combine(options.CurrentRoot, @"runtime\Common.psm1")) +
                     " -Force; Start-Process -FilePath (Get-ImmichLocalUrl -EnvFile " + Quote(options.EnvFile) +
                     " -InstallRoot " + Quote(options.InstallRoot) + ")";
+            } else if (action == "status") {
+                command = "Import-Module " + Quote(Path.Combine(options.CurrentRoot, @"runtime\Common.psm1")) +
+                    " -Force -DisableNameChecking; Get-ImmichUserProcessSnapshot" + common;
             } else if (action == "start" || action == "stop") {
                 string script = action == "start" ? "Start-Immich.ps1" : "Stop-Immich.ps1";
                 command = "& " + Quote(Path.Combine(options.CurrentRoot, @"runtime\launchers", script)) +
@@ -126,7 +145,7 @@ namespace Immich.Windows {
 
             // Management actions have a real console for progress and a persistent error on failure,
             // including when an update replaces/exits this tray. No -NoExit after a successful action.
-            string failure = action == "open"
+            string failure = action == "open" || action == "status"
                 ? "[Console]::Error.WriteLine($_.Exception.Message); exit 1"
                 : "Write-Host ($_ | Out-String) -ForegroundColor Red; [void](Read-Host " + Quote(text.Continue) + "); exit 1";
             // Update results are acknowledged by the updater itself, even if it replaces this tray.
@@ -144,7 +163,7 @@ namespace Immich.Windows {
             var info = new ProcessStartInfo(options.PowerShellPath,
                 "-NoLogo -NoProfile -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(command)));
             info.WorkingDirectory = options.InstallRoot;
-            if (action == "open") {
+            if (action == "open" || action == "status") {
                 info.UseShellExecute = false;
                 info.CreateNoWindow = true;
                 info.RedirectStandardOutput = true;
@@ -188,7 +207,7 @@ namespace Immich.Windows {
                     // Exercise the actual menu/icon and all commands without publishing a tray icon,
                     // taking the resident mutex, launching a process, or entering a message loop.
                     using (var context = new TrayContext(options, text, null, false)) {
-                        foreach (string action in new string[] { "open", "open-config-folder", "start", "stop", "update" }) {
+                        foreach (string action in new string[] { "open", "open-config-folder", "start", "stop", "update", "status" }) {
                             TrayCommands.BuildStartInfo(options, action, text);
                         }
                     }
@@ -263,6 +282,288 @@ namespace Immich.Windows {
         }
     }
 
+    public static class RuntimeStatus {
+        public static string Combine(string first, string second) {
+            if (first == "Unknown" || second == "Unknown") { return "Unknown"; }
+            if (first == "Changing" || second == "Changing") { return "Changing"; }
+            if (first == "Running" && second == "Running") { return "Running"; }
+            if (first == "Stopped" && second == "Stopped") { return "Stopped"; }
+            return "Partial";
+        }
+
+        public static string ServiceState(uint state) {
+            if (state == 1) { return "Stopped"; }
+            if (state == 4) { return "Running"; }
+            if (state == 2 || state == 3 || state == 5 || state == 6) { return "Changing"; }
+            return state == 7 ? "Partial" : "Unknown";
+        }
+    }
+
+    public sealed class ProcessSnapshot {
+        public int Id;
+        public long Started;
+        public string State = "Unknown";
+
+        public static ProcessSnapshot[] Parse(string output) {
+            var result = new ProcessSnapshot[] { new ProcessSnapshot(), new ProcessSnapshot() };
+            string[] lines = (output ?? "").Trim().Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length != 2) { return result; }
+            for (int i = 0; i < 2; i++) {
+                if (lines[i] == "Stopped") { result[i].State = "Stopped"; continue; }
+                string[] values = lines[i].Split(':');
+                int id; long started;
+                if (values.Length == 2 && Int32.TryParse(values[0], NumberStyles.None, CultureInfo.InvariantCulture, out id) && id > 0 &&
+                    Int64.TryParse(values[1], NumberStyles.None, CultureInfo.InvariantCulture, out started) && started > 0) {
+                    result[i].Id = id; result[i].Started = started; result[i].State = "Running";
+                }
+            }
+            return result;
+        }
+    }
+
+    internal sealed class RuntimeMonitor : IDisposable {
+        private static readonly string[] Names = { "ImmichServer", "ImmichMachineLearning" };
+        private readonly TrayOptions options;
+        private readonly TrayText text;
+        private readonly Action<string> changed;
+        private readonly object sync = new object();
+        private readonly string[] states = { "Unknown", "Unknown" };
+        private readonly Process[] processes = new Process[2];
+        private readonly IntPtr[] services = new IntPtr[2];
+        private readonly IntPtr[] subscriptions = new IntPtr[2];
+        private readonly ServiceCallback serviceCallback;
+        private FileSystemWatcher watcher;
+        private Process query;
+        private bool disposed, refreshing, dirty, resetWatcher, userMonitoring;
+        private int revision;
+        private string published = "Unknown";
+
+        public RuntimeMonitor(TrayOptions options, TrayText text, Action<string> changed) {
+            this.options = options; this.text = text; this.changed = changed;
+            // SCM callbacks must return immediately: no file I/O, RPC, or unsubscription here.
+            serviceCallback = delegate { ThreadPool.QueueUserWorkItem(delegate { RequestRefresh(); }); };
+        }
+
+        public void Start() { RequestRefresh(); }
+
+        public void AfterAction() {
+            // Healthy subscriptions already observe starts/stops. Retry only a failed attachment.
+            lock (sync) {
+                if (disposed || (options.Scope == "CurrentUser" ? watcher != null : subscriptions[0] != IntPtr.Zero && subscriptions[1] != IntPtr.Zero)) { return; }
+            }
+            RequestRefresh();
+        }
+
+        private void RequestRefresh() {
+            lock (sync) {
+                if (disposed) { return; }
+                dirty = true; revision++;
+                if (refreshing) { return; }
+                refreshing = true;
+            }
+            ThreadPool.QueueUserWorkItem(delegate { Refresh(); });
+        }
+
+        private void Refresh() {
+            int current;
+            lock (sync) { if (disposed) { refreshing = false; return; } dirty = false; current = revision; }
+            try {
+                if (options.Scope == "AllUsers") {
+                    lock (sync) {
+                        if (disposed) { return; }
+                        AttachServices(); // Subscribe before reading, so a concurrent change is not lost.
+                        for (int i = 0; i < 2; i++) {
+                            ServiceStatus status;
+                            states[i] = subscriptions[i] != IntPtr.Zero && QueryServiceStatus(services[i], out status)
+                                ? RuntimeStatus.ServiceState(status.CurrentState) : "Unknown";
+                        }
+                    }
+                } else {
+                    AttachFileWatcher(); // Arm directory notification before the initial PID snapshot.
+                    ProcessSnapshot[] snapshot = ProcessSnapshot.Parse(ReadSnapshot());
+                    lock (sync) {
+                        if (disposed || current != revision) { return; }
+                        for (int i = 0; i < 2; i++) { AttachProcess(i, snapshot[i]); }
+                        userMonitoring = true;
+                    }
+                }
+            } catch { lock (sync) { userMonitoring = false; states[0] = states[1] = "Unknown"; } }
+            finally {
+                Publish();
+                bool again;
+                lock (sync) { refreshing = false; again = dirty && !disposed; if (again) { refreshing = true; } }
+                // Drain only notifications received during this read. There is no timer/retry loop.
+                if (again) { ThreadPool.QueueUserWorkItem(delegate { Refresh(); }); }
+            }
+        }
+
+        private void AttachFileWatcher() {
+            lock (sync) {
+                if (disposed) { throw new ObjectDisposedException("RuntimeMonitor"); }
+                if (resetWatcher && watcher != null) { watcher.Dispose(); watcher = null; }
+                resetWatcher = false;
+                if (watcher != null) { return; }
+                var next = new FileSystemWatcher(Path.Combine(options.DataRoot, "services"), "*.pid");
+                next.IncludeSubdirectories = false;
+                next.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size;
+                next.Created += PidChanged; next.Changed += PidChanged; next.Deleted += PidChanged;
+                next.Renamed += delegate(object sender, RenamedEventArgs e) {
+                    if (IsManagedPid(e.Name) || IsManagedPid(e.OldName)) { RequestRefresh(); }
+                };
+                next.Error += delegate {
+                    lock (sync) { resetWatcher = true; userMonitoring = false; states[0] = states[1] = "Unknown"; }
+                    Publish(); RequestRefresh();
+                };
+                try { next.EnableRaisingEvents = true; watcher = next; }
+                catch { next.Dispose(); throw; }
+            }
+        }
+
+        private static bool IsManagedPid(string name) {
+            return String.Equals(name, Names[0] + ".pid", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(name, Names[1] + ".pid", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void PidChanged(object sender, FileSystemEventArgs e) {
+            if (IsManagedPid(e.Name)) { RequestRefresh(); }
+        }
+
+        private string ReadSnapshot() {
+            using (var process = new Process()) {
+                var output = new StringBuilder();
+                process.StartInfo = TrayCommands.BuildStartInfo(options, "status", text);
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) {
+                    if (e.Data != null) { lock (output) { if (output.Length < 256) { output.AppendLine(e.Data); } } }
+                };
+                process.ErrorDataReceived += delegate { };
+                try {
+                    lock (sync) {
+                        if (disposed) { return null; }
+                        if (!process.Start()) { return null; }
+                        query = process;
+                    }
+                    process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                    if (!process.WaitForExit(10000)) { StopQuery(process); return null; }
+                    process.WaitForExit(); // Drain async pipe callbacks after the bounded process wait.
+                    if (process.ExitCode != 0) { return null; }
+                    lock (output) { return output.ToString(); }
+                } finally { lock (sync) { query = null; } }
+            }
+        }
+
+        private void AttachProcess(int index, ProcessSnapshot snapshot) {
+            Process previous = processes[index];
+            if (previous != null && !previous.HasExited &&
+                (snapshot.State == "Stopped" || (snapshot.State == "Running" && previous.Id == snapshot.Id && previous.StartTime.ToUniversalTime().Ticks == snapshot.Started))) {
+                // A deleted PID file cannot turn a still-observed owned process into Stopped.
+                states[index] = "Running"; return;
+            }
+            processes[index] = null;
+            if (previous != null) { previous.Dispose(); }
+            states[index] = snapshot.State;
+            if (snapshot.State != "Running") { return; }
+            Process next = null;
+            try {
+                next = Process.GetProcessById(snapshot.Id);
+                IntPtr handle = next.Handle; // Retain this exact process instance across PID reuse.
+                Process observed = next;
+                next.Exited += delegate {
+                    // Process invokes Exited under its own lock; never acquire sync there.
+                    ThreadPool.QueueUserWorkItem(delegate {
+                        lock (sync) {
+                            if (disposed || processes[index] != observed) { return; }
+                            states[index] = "Stopped";
+                        }
+                        Publish(); // TaskKill/crash/normal exit: no PowerShell or PID reread.
+                    });
+                };
+                processes[index] = next;
+                next.EnableRaisingEvents = true;
+                // Pin the process handle, then revalidate snapshot identity across the handoff.
+                if (next.StartTime.ToUniversalTime().Ticks != snapshot.Started) { throw new InvalidOperationException(); }
+                states[index] = next.HasExited ? "Stopped" : "Running";
+            } catch (ArgumentException) { states[index] = "Stopped"; }
+            catch { states[index] = "Unknown"; }
+            if (states[index] != "Running") {
+                processes[index] = null;
+                if (next != null) { next.Dispose(); }
+            }
+        }
+
+        private void AttachServices() {
+            IntPtr manager = OpenSCManager(null, null, 1); // SC_MANAGER_CONNECT only.
+            if (manager == IntPtr.Zero) { throw new Win32Exception(); }
+            try {
+                for (int i = 0; i < 2; i++) {
+                    if (subscriptions[i] != IntPtr.Zero) { continue; }
+                    IntPtr service = OpenService(manager, Names[i], 4); // SERVICE_QUERY_STATUS only.
+                    if (service == IntPtr.Zero) { continue; }
+                    IntPtr subscription;
+                    uint result;
+                    try { result = SubscribeServiceChangeNotifications(service, 2, serviceCallback, IntPtr.Zero, out subscription); }
+                    catch { CloseServiceHandle(service); throw; }
+                    if (result != 0) { CloseServiceHandle(service); continue; }
+                    services[i] = service; subscriptions[i] = subscription;
+                }
+            } finally { CloseServiceHandle(manager); }
+        }
+
+        private void Publish() {
+            lock (sync) {
+                if (disposed) { return; }
+                string state = options.Scope == "CurrentUser" && !userMonitoring ? "Unknown" : RuntimeStatus.Combine(states[0], states[1]);
+                if (state == published) { return; }
+                published = state;
+                changed(state); // Caller only posts to the UI queue; never blocks this lock.
+            }
+        }
+
+        private static void StopQuery(Process process) {
+            try { if (!process.HasExited) { process.Kill(); } }
+            catch (InvalidOperationException) { }
+            catch (Win32Exception) { }
+        }
+
+        public void Dispose() {
+            FileSystemWatcher oldWatcher;
+            lock (sync) {
+                if (disposed) { return; }
+                disposed = true;
+                if (query != null) { StopQuery(query); }
+                oldWatcher = watcher; watcher = null;
+                foreach (Process process in processes) { if (process != null) { process.Dispose(); } }
+            }
+            if (oldWatcher != null) { oldWatcher.Dispose(); }
+            // Do not hold sync or execute this from an SCM callback: unsubscribe waits for callbacks.
+            for (int i = 0; i < 2; i++) {
+                if (subscriptions[i] != IntPtr.Zero) { UnsubscribeServiceChangeNotifications(subscriptions[i]); }
+                if (services[i] != IntPtr.Zero) { CloseServiceHandle(services[i]); }
+            }
+            GC.KeepAlive(serviceCallback);
+        }
+
+        [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+        private delegate void ServiceCallback(uint notification, IntPtr context);
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ServiceStatus {
+            public uint ServiceType, CurrentState, ControlsAccepted, Win32ExitCode, ServiceSpecificExitCode, CheckPoint, WaitHint;
+        }
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenSCManager(string machine, string database, uint access);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenService(IntPtr manager, string name, uint access);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryServiceStatus(IntPtr service, out ServiceStatus status);
+        [DllImport("advapi32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseServiceHandle(IntPtr handle);
+        [DllImport("sechost.dll")]
+        private static extern uint SubscribeServiceChangeNotifications(IntPtr service, uint eventType, ServiceCallback callback, IntPtr context, out IntPtr subscription);
+        [DllImport("sechost.dll")]
+        private static extern void UnsubscribeServiceChangeNotifications(IntPtr subscription);
+    }
+
     internal sealed class TrayContext : ApplicationContext {
         private readonly TrayOptions options;
         private readonly TrayText text;
@@ -271,6 +572,8 @@ namespace Immich.Windows {
         private readonly Icon icon;
         private readonly NotifyIcon tray;
         private readonly ContextMenuStrip menu;
+        private readonly ToolStripMenuItem statusItem;
+        private readonly RuntimeMonitor runtimeMonitor;
         private readonly List<ToolStripMenuItem> actions = new List<ToolStripMenuItem>();
         private readonly EventWaitHandle exitSignal;
         private readonly RegisteredWaitHandle exitWait;
@@ -284,6 +587,9 @@ namespace Immich.Windows {
             iconBytes = new MemoryStream(File.ReadAllBytes(options.IconPath), false);
             icon = new Icon(iconBytes);
             menu = new ContextMenuStrip();
+            statusItem = new ToolStripMenuItem(text.Status + text.Unknown) { Enabled = false };
+            menu.Items.Add(statusItem);
+            menu.Items.Add(new ToolStripSeparator());
             AddAction(text.Open, "open");
             AddAction(text.OpenConfigFolder, "open-config-folder");
             AddAction(text.Start, "start");
@@ -291,7 +597,7 @@ namespace Immich.Windows {
             AddAction(text.Update, "update");
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(text.Exit, null, delegate { ExitThread(); });
-            tray = new NotifyIcon { Icon = icon, Text = "Immich", ContextMenuStrip = menu };
+            tray = new NotifyIcon { Icon = icon, Text = "Immich: " + text.Unknown, ContextMenuStrip = menu };
             tray.DoubleClick += delegate { RunAction("open"); };
             if (visible) {
                 dispatcher = new Control();
@@ -299,6 +605,13 @@ namespace Immich.Windows {
                 exitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, instance + "-exit");
                 exitWait = ThreadPool.RegisterWaitForSingleObject(exitSignal, delegate { Post(delegate { ExitThread(); }); },
                     null, Timeout.Infinite, false);
+                runtimeMonitor = new RuntimeMonitor(options, text, delegate(string state) {
+                    Post(delegate {
+                        statusItem.Text = text.Status + text.RuntimeStatus(state);
+                        tray.Text = "Immich: " + text.RuntimeStatus(state);
+                    });
+                });
+                runtimeMonitor.Start();
                 tray.Visible = true;
             }
         }
@@ -323,7 +636,6 @@ namespace Immich.Windows {
             }
             busy = true;
             foreach (ToolStripMenuItem item in actions) { item.Enabled = false; }
-            tray.Text = "Immich: " + text.Busy;
             ThreadPool.QueueUserWorkItem(delegate {
                 string failure = null;
                 bool cancelled = false;
@@ -357,7 +669,7 @@ namespace Immich.Windows {
                 Post(delegate {
                     busy = false;
                     foreach (ToolStripMenuItem item in actions) { item.Enabled = true; }
-                    tray.Text = "Immich";
+                    if (runtimeMonitor != null) { runtimeMonitor.AfterAction(); }
                     if (failure != null) {
                         MessageBox.Show(failure, "Immich", MessageBoxButtons.OK, cancelled ? MessageBoxIcon.Information : MessageBoxIcon.Error);
                     } else if (action == "start" || action == "stop") {
@@ -384,6 +696,7 @@ namespace Immich.Windows {
         protected override void Dispose(bool disposing) {
             if (disposing && !disposed) {
                 disposed = true;
+                if (runtimeMonitor != null) { runtimeMonitor.Dispose(); }
                 if (exitWait != null) { exitWait.Unregister(null); }
                 if (exitSignal != null) { exitSignal.Dispose(); }
                 if (tray != null) { tray.Visible = false; tray.Dispose(); }

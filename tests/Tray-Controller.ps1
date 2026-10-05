@@ -176,7 +176,7 @@ try {
     $expectedJapanese = @{ Open = 'Immichを開く'; OpenConfigFolder = '設定フォルダーを開く'; Start = 'Immichを起動'; Stop = 'Immichを停止'; Update = 'Immichを更新'; Exit = 'トレイを終了（サーバーは停止しません）'; Continue = 'Enterキーを押して閉じます' }
     foreach ($field in $expectedEnglish.Keys) { Assert-Equal $english.$field $expectedEnglish[$field] ("English $field") }
     foreach ($field in $expectedJapanese.Keys) { Assert-Equal $japanese.$field $expectedJapanese[$field] ("Japanese $field") }
-    $textFields = @('Open', 'OpenConfigFolder', 'Start', 'Stop', 'Update', 'Exit', 'Busy', 'Failed', 'Cancelled', 'Continue', 'NotElevated', 'Started', 'Stopped', 'Updated', 'Language')
+    $textFields = @('Open', 'OpenConfigFolder', 'Start', 'Stop', 'Update', 'Exit', 'Busy', 'Failed', 'Cancelled', 'Continue', 'NotElevated', 'Started', 'Stopped', 'Updated', 'Language', 'Status', 'Running', 'NotRunning', 'Partial', 'Changing', 'Unknown')
     foreach ($culture in @('ja_JP', 'JA-jp', 'ja')) {
         $text = [Immich.Windows.TrayText]::ForCulture($culture)
         foreach ($field in $textFields) { Assert-Equal $text.$field $japanese.$field ("Japanese culture $culture / $field") }
@@ -190,9 +190,36 @@ try {
         Assert-True (-not [string]::IsNullOrWhiteSpace($japanese.$field)) ("Missing Japanese $field")
     }
 
+    foreach ($text in @($english, $japanese)) {
+        foreach ($state in @('Running','Partial','Changing','Unknown')) {
+            Assert-Equal $text.RuntimeStatus($state) $text.$state ("Localized runtime state $state")
+        }
+        Assert-Equal $text.RuntimeStatus('Stopped') $text.NotRunning 'Localized stopped state'
+        foreach ($state in @('', $null, 'unexpected output', 'Running Stopped')) {
+            Assert-Equal $text.RuntimeStatus($state) $text.Unknown 'Malformed status output stays unknown'
+        }
+    }
+    Assert-Equal $japanese.Running '稼働中' 'Japanese running state'
+    Assert-Equal $japanese.NotRunning '停止中' 'Japanese stopped state'
+    Assert-Equal $japanese.Unknown '確認できません' 'Japanese unknown state'
+
     foreach ($scope in @('CurrentUser', 'AllUsers')) {
         $options.Scope = $scope
         foreach ($text in @($english, $japanese)) {
+            $statusCommand = [Immich.Windows.TrayCommands]::BuildCommand($options, 'status', $text)
+            $statusAst = Parse-Command $statusCommand "$scope / status"
+            $statusInfo = [Immich.Windows.TrayCommands]::BuildStartInfo($options, 'status', $text)
+            Assert-Equal $statusInfo.FileName $fakePowerShell 'Status reuses the configured PowerShell'
+            Assert-True (-not $statusInfo.UseShellExecute -and $statusInfo.Verb -ne 'runas') 'Status never elevates, including AllUsers'
+            Assert-True ($statusInfo.CreateNoWindow -and $statusInfo.RedirectStandardOutput -and $statusInfo.RedirectStandardError) 'Status uses an isolated quiet query'
+            Assert-Equal @(Find-Command $statusAst 'Read-Host').Count 0 'Status never waits for interactive input'
+            $statusCalls = @(Find-Command $statusAst 'Get-ImmichUserProcessSnapshot')
+            Assert-Equal $statusCalls.Count 1 'Status uses the shared detection helper once'
+            Assert-CommandParameter $statusCalls[0] 'InstallRoot' $installRoot 'Status'
+            Assert-CommandParameter $statusCalls[0] 'DataRoot' $dataRoot 'Status'
+            Assert-Equal @($statusCalls[0].CommandElements | Where-Object { $_ -is [Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'Scope' }).Count 0 'Process snapshot does not accept a Scope parameter'
+            Assert-True (-not $statusCommand.Contains('immich.env')) 'Status does not require private env access'
+            Assert-True $statusCommand.Contains('-DisableNameChecking') 'Import warnings cannot corrupt the status token'
             # Resolve only the active env's parent. The second installation has no env to read.
             foreach ($folderRoot in @($dataRoot, (Join-Path $base "Other 設定's `$dollar; [custom]"))) {
                 $folderArguments = [string[]]$validArguments.Clone()
@@ -270,6 +297,163 @@ try {
     $options.Scope = 'CurrentUser'
     $null = Assert-Throws { [Immich.Windows.TrayCommands]::BuildCommand($options, 'invalid', $english) } ([ArgumentException]) 'Unknown action'
     $null = Assert-Throws { [Immich.Windows.TrayCommands]::BuildStartInfo($options, 'START', $english) } ([ArgumentException]) 'Action case validation'
+
+    foreach ($case in @(
+        @{Value=1;Expected='Stopped'}, @{Value=2;Expected='Changing'}, @{Value=3;Expected='Changing'},
+        @{Value=4;Expected='Running'}, @{Value=5;Expected='Changing'}, @{Value=6;Expected='Changing'},
+        @{Value=7;Expected='Partial'}, @{Value=0;Expected='Unknown'}, @{Value=99;Expected='Unknown'}
+    )) {
+        Assert-Equal ([Immich.Windows.RuntimeStatus]::ServiceState($case.Value)) $case.Expected 'SCM state mapping'
+    }
+    foreach ($case in @(
+        @{First='Running';Second='Running';Expected='Running'}, @{First='Stopped';Second='Stopped';Expected='Stopped'},
+        @{First='Running';Second='Stopped';Expected='Partial'}, @{First='Changing';Second='Running';Expected='Changing'},
+        @{First='Unknown';Second='Stopped';Expected='Unknown'}, @{First='Running';Second='Unknown';Expected='Unknown'},
+        @{First='Stopped';Second='Running';Expected='Partial'}, @{First='Partial';Second='Running';Expected='Partial'},
+        @{First='Stopped';Second='Changing';Expected='Changing'}, @{First='Changing';Second='Unknown';Expected='Unknown'},
+        @{First='Unknown';Second='Changing';Expected='Unknown'}, @{First='Partial';Second='Partial';Expected='Partial'}
+    )) {
+        Assert-Equal ([Immich.Windows.RuntimeStatus]::Combine($case.First,$case.Second)) $case.Expected 'Combined Server/ML state'
+    }
+    $identities=[Immich.Windows.ProcessSnapshot]::Parse("123:638712864000000001`n456:638712864000000002")
+    Assert-Equal $identities.Count 2 'Snapshot has exactly two component identities'
+    Assert-Equal $identities[0].State 'Running' 'Server identity marks the process running'
+    Assert-Equal $identities[1].State 'Running' 'ML identity marks the process running'
+    Assert-Equal $identities[0].Id 123 'Snapshot process ID'
+    Assert-Equal $identities[1].Id 456 'Snapshot ML process ID'
+    Assert-Equal $identities[0].Started ([long]638712864000000001) 'Creation ticks never round through a JSON number'
+    Assert-Equal $identities[1].Started ([long]638712864000000002) 'Creation ticks remain distinct'
+    foreach ($output in @($null, '', 'Running', "Stopped`nStopped`nStopped", "-1:123`nUnknown", "0:123`nUnknown", "123:0`nUnknown", "123:-1`nUnknown", "2147483648:123`nUnknown", "123:9223372036854775808`nUnknown", "+123:123`nUnknown", "123:1.5`nUnknown", "123:1:2`nUnknown", "garbage`nUnknown")) {
+        $identities=[Immich.Windows.ProcessSnapshot]::Parse($output)
+        Assert-Equal $identities.Count 2 'Malformed protocol still returns two safe component states'
+        Assert-Equal $identities[0].State 'Unknown' 'Invalid identity protocol stays unknown'
+        Assert-Equal $identities[1].State 'Unknown' 'Malformed protocol cannot silently mark ML running'
+    }
+    $identities=[Immich.Windows.ProcessSnapshot]::Parse("Stopped`nUnknown")
+    Assert-Equal $identities[0].State 'Stopped' 'Explicit stopped identity'
+    Assert-Equal $identities[1].State 'Unknown' 'Explicit inaccessible identity'
+    $identities=[Immich.Windows.ProcessSnapshot]::Parse("Stopped`r`n456:638712864000000002`r`n")
+    Assert-Equal $identities[0].State 'Stopped' 'Windows line endings preserve stopped component'
+    Assert-Equal $identities[1].State 'Running' 'Windows line endings preserve running component'
+    Assert-Equal $identities[1].Started ([long]638712864000000002) 'Windows line endings preserve exact creation ticks'
+
+    # Reflectively construct the real context without publishing an icon or subscribing to OS events.
+    $contextType=[Immich.Windows.TrayOptions].Assembly.GetType('Immich.Windows.TrayContext', $true)
+    $flags=[Reflection.BindingFlags]'Instance,NonPublic'
+    $context=[Activator]::CreateInstance($contextType,[object[]]@($options,$japanese,$null,$false))
+    try {
+        $statusItem=$contextType.GetField('statusItem',$flags).GetValue($context)
+        Assert-True (-not $statusItem.Enabled) 'Status row cannot dispatch an action'
+        Assert-Equal $statusItem.Text ($japanese.Status+$japanese.Unknown) 'Status starts unknown'
+        Assert-True ($null -eq $contextType.GetField('runtimeMonitor',$flags).GetValue($context)) '--check has no OS subscriptions or query process'
+    } finally { $context.Dispose() }
+
+    # Exercise publication/error fencing without Start(), watchers, services, or a child shell.
+    $monitorType=[Immich.Windows.TrayOptions].Assembly.GetType('Immich.Windows.RuntimeMonitor', $true)
+    $monitor=[Activator]::CreateInstance($monitorType,[object[]]@($options,$english,[Action[string]]{ param($state) }))
+    try {
+        $states=$monitorType.GetField('states',$flags).GetValue($monitor)
+        $states[0]='Stopped'; $states[1]='Stopped'
+        $monitorType.GetField('published',$flags).SetValue($monitor,'Running')
+        $null=$monitorType.GetMethod('Publish',$flags).Invoke($monitor,@())
+        Assert-Equal $monitorType.GetField('published',$flags).GetValue($monitor) 'Unknown' 'Lost file watcher cannot publish stopped from old exit callbacks'
+        $monitorType.GetField('userMonitoring',$flags).SetValue($monitor,$true)
+        $null=$monitorType.GetMethod('Publish',$flags).Invoke($monitor,@())
+        Assert-Equal $monitorType.GetField('published',$flags).GetValue($monitor) 'Stopped' 'Working watcher permits a stopped state'
+        $observed=$monitorType.GetField('processes',$flags).GetValue($monitor)
+        $observed[0]=[Diagnostics.Process]::GetCurrentProcess()
+        $unknown=[Immich.Windows.ProcessSnapshot]::new()
+        $null=$monitorType.GetMethod('AttachProcess',$flags).Invoke($monitor,[object[]]@(0,$unknown))
+        Assert-True ($null -eq $observed[0]) 'An unknown replacement identity detaches the old process callback'
+        Assert-Equal $states[0] 'Unknown' 'A failed replacement identity cannot remain running or become stopped'
+    } finally { $monitor.Dispose() }
+
+    # Exercise the production snapshot and ownership functions against inert OS adapters.
+    # Extract only these PS5-compatible helpers, without importing the PS7 runtime module.
+    $tokens = $null; $errors = $null
+    $commonAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\runtime\Common.psm1'), [ref]$tokens, [ref]$errors)
+    $statusFunctions = @('Get-ImmichUserProcess','Get-ImmichUserProcessSnapshot') | ForEach-Object {
+        $name = $_
+        $function = $commonAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+        Assert-True ($null -ne $function) ("Production status helper $name exists")
+        $function.Extent.Text
+    }
+    $statusFixture = @'
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$script:Values=@{}
+function Get-Content {
+    [CmdletBinding()] param($LiteralPath,[switch]$Raw)
+    if (-not $LiteralPath.EndsWith('.pid')) { throw 'Status must not read env or unrelated files.' }
+    $script:Reads++
+    $name=[IO.Path]::GetFileNameWithoutExtension($LiteralPath)
+    $value=$script:Values[$name]
+    if ($null -eq $value) { throw [Management.Automation.ItemNotFoundException]::new('Absent PID') }
+    if ($value -eq 'Unreadable') { throw [UnauthorizedAccessException]::new('Private PID') }
+    if ($value -eq 'Malformed') { return 'invalid-pid' }
+    if ($value -eq 'Negative') { return '-1' }
+    if ($value -eq 'Zero') { return '0' }
+    if ($value -eq 'Empty') { return '' }
+    if ($name -eq 'ImmichServer') { return '123' }; return '456'
+}
+function Get-Process {
+    [CmdletBinding()] param($Id)
+    $name=if ($Id -eq 123) { 'ImmichServer' } else { 'ImmichMachineLearning' }
+    $value=$script:Values[$name]
+    if ($value -eq 'Denied') { throw [UnauthorizedAccessException]::new('Query denied') }
+    if ($value -eq 'Stale') {
+        $queryError=[Management.Automation.ErrorRecord]::new([ArgumentException]::new('No process'),'NoProcessFoundForGivenId',[Management.Automation.ErrorCategory]::ObjectNotFound,$Id)
+        $PSCmdlet.ThrowTerminatingError($queryError)
+    }
+    $path=Join-Path $script:Root 'current\runtime\node\node.exe'
+    if ($value -eq 'Release') { $path=Join-Path $script:Root 'releases\test\runtime\node\node.exe' }
+    if ($value -eq 'Foreign') { $path=Join-Path ($script:Root+'-other') 'current\runtime\node\node.exe' }
+    if ($value -eq 'NoIdentity') { $path='' }
+    $process=[pscustomobject]@{ Id=$Id; Handle=1; StartTime=[DateTime]::SpecifyKind([DateTime]'2025-01-01',[DateTimeKind]::Utc); Path=$path; HasExited=($value -eq 'Exited') }
+    if ($value -eq 'HandleDenied') { $process | Add-Member -MemberType ScriptProperty -Name Handle -Value { throw [UnauthorizedAccessException]::new('Handle denied') } -Force }
+    if ($value -eq 'StartTimeDenied') { $process | Add-Member -MemberType ScriptProperty -Name StartTime -Value { throw [UnauthorizedAccessException]::new('Start time denied') } -Force }
+    $process|Add-Member ScriptMethod Dispose { $script:Disposed++ }
+    return $process
+}
+function Get-CurrentReleaseTarget { param($InstallRoot) return Join-Path $InstallRoot 'releases\test' }
+function Snapshot($InstallRoot,$DataRoot,$Server,$ML) {
+    $script:Root=$InstallRoot; $script:Reads=0; $script:Disposed=0; $script:Values=@{}
+    if ($null -ne $Server) { $script:Values.ImmichServer=$Server }
+    if ($null -ne $ML) { $script:Values.ImmichMachineLearning=$ML }
+    $result=@(Get-ImmichUserProcessSnapshot -InstallRoot $InstallRoot -DataRoot $DataRoot)
+    $parsed=[Immich.Windows.ProcessSnapshot]::Parse(($result -join "`n"))
+    $state=[Immich.Windows.RuntimeStatus]::Combine($parsed[0].State,$parsed[1].State)
+    return [pscustomobject]@{State=$state;Reads=$script:Reads;Disposed=$script:Disposed;Lines=$result}
+}
+'@
+    $statusModule = New-Module -ScriptBlock ([scriptblock]::Create(($statusFunctions -join "`n") + "`n" + $statusFixture))
+    $startedTicks=[DateTime]::SpecifyKind([DateTime]'2025-01-01',[DateTimeKind]::Utc).Ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $statusCases = @(
+        @{Server='Running'; ML='Release'; Expected='Running'; Tokens=@(('123:'+$startedTicks),('456:'+$startedTicks))},
+        @{Server='Running'; ML=$null; Expected='Partial'; Tokens=@(('123:'+$startedTicks),'Stopped')},
+        @{Server=$null; ML=$null; Expected='Stopped'; Tokens=@('Stopped','Stopped')},
+        @{Server='Exited'; ML='Stale'; Expected='Stopped'; Tokens=@('Stopped','Stopped')},
+        @{Server='Foreign'; ML=$null; Expected='Stopped'; Tokens=@('Stopped','Stopped')},
+        @{Server='NoIdentity'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='Denied'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='HandleDenied'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='StartTimeDenied'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='Unreadable'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='Malformed'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='Negative'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='Zero'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')},
+        @{Server='Empty'; ML=$null; Expected='Unknown'; Tokens=@('Unknown','Stopped')}
+    )
+    foreach ($case in $statusCases) {
+        $snapshot = & $statusModule { param($root,$data,$case) Snapshot $root $data $case.Server $case.ML } $installRoot $dataRoot $case
+        $label="Snapshot CurrentUser: $($case.Server) / $($case.ML)"
+        Assert-Equal $snapshot.State $case.Expected $label
+        Assert-Equal $snapshot.Reads 2 ($label+': reads only the two managed PID files')
+        Assert-Equal $snapshot.Lines.Count 2 ($label+': emits exactly two protocol lines')
+        Assert-Equal $snapshot.Lines[0] $case.Tokens[0] ($label+': exact Server token')
+        Assert-Equal $snapshot.Lines[1] $case.Tokens[1] ($label+': exact ML token')
+        if ($case.Expected -eq 'Running') { Assert-Equal $snapshot.Disposed 2 'Snapshot disposes both inspected OS objects' }
+    }
 
     $sid = 'S-1-5-21-111-222-333-1001'
     $key = [Immich.Windows.ImmichTray]::InstanceName($installRoot, $sid, 17)
