@@ -136,8 +136,12 @@ session = ort.InferenceSession(
     model.SerializeToString(), sess_options=options, providers=[selected],
     provider_options=[{"device_id": device}] if accelerator == "directml" else [{}], enable_fallback=False,
 )
-if session.get_providers() != [selected]:
-    raise RuntimeError(f"Unexpected active providers: {session.get_providers()}")
+# ORT registers CPU EP implicitly even when CPU node fallback is disabled.
+# The strict session option above rejects CPU-assigned graph nodes at creation.
+registered = session.get_providers()
+allowed = ([selected], [selected, "CPUExecutionProvider"]) if accelerator == "directml" else ([selected],)
+if registered not in allowed:
+    raise RuntimeError(f"Unexpected registered providers: {registered}")
 actual = session.run(None, {"x": np.array([[1., 2.]], dtype=np.float32)})[0]
 np.testing.assert_array_equal(actual, np.array([[2., 4.]], dtype=np.float32))
 print(json.dumps({"onnxruntime": ort.__version__, "inferenceProvider": selected, "tinyGraph": "passed"}))

@@ -50,7 +50,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
  from collections.abc import Sequence
  from pathlib import Path
  from threading import Lock
-@@ -56,14 +57,31 @@
+@@ -56,14 +57,36 @@
      ):
          self.model_path = Path(model_path)
          self.providers = providers if providers is not None else self._providers_default
@@ -75,14 +75,19 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 +            **({"enable_fallback": False} if sys.platform == "win32" else {}),
          )
 +        if "DmlExecutionProvider" in self.providers:
-+            active_providers = self.session.get_providers()
-+            if active_providers != ["DmlExecutionProvider"]:
-+                raise RuntimeError(f"DirectML session initialization failed; active providers: {active_providers}")
++            # ORT registers CPU EP implicitly; the strict session option above
++            # rejects CPU-assigned graph nodes, not CPU provider registration.
++            registered_providers = self.session.get_providers()
++            if registered_providers not in (
++                ["DmlExecutionProvider"],
++                ["DmlExecutionProvider", "CPUExecutionProvider"],
++            ):
++                raise RuntimeError(f"DirectML session initialization failed; registered providers: {registered_providers}")
 +
 
      def get_inputs(self) -> Sequence[SessionNode]:
          inputs: Sequence[SessionNode] = self.session.get_inputs()
-@@ -83,6 +101,10 @@
+@@ -83,6 +106,10 @@
          input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
          run_options: Any = None,
      ) -> list[NDArray[np.float32]]:
@@ -93,7 +98,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
          if "MIGraphXExecutionProvider" in self.providers:
              model_key = self.model_path.resolve().as_posix()
              input_key = (model_key, _migraphx_input_signature(input_feed))
-@@ -113,7 +135,15 @@
+@@ -113,7 +140,15 @@
      def _providers_default(self) -> list[str]:
          available_providers = set(ort.get_available_providers())
          log.debug(f"Available ORT providers: {available_providers}")
@@ -110,7 +115,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 
      @property
      def provider_options(self) -> list[dict[str, Any]]:
-@@ -131,6 +161,8 @@
+@@ -131,6 +166,8 @@
              match provider:
                  case "CPUExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested"}

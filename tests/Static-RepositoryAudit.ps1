@@ -238,6 +238,9 @@ Assert-True (Test-Path -LiteralPath $mediaPatch -PathType Leaf) 'Pinned Immich b
 
 Write-Host "Static repository audit passed for $($scriptFiles.Count) PowerShell files."
 
+& python (Join-Path $PSScriptRoot 'DirectML-ProviderPolicy.py')
+if ($LASTEXITCODE -ne 0) { throw 'Selected-provider smoke policy tests failed.' }
+
 if ($SourceRoot) {
     $policyTest = @'
 import ast
@@ -271,9 +274,11 @@ supported = ['CUDAExecutionProvider', 'MIGraphXExecutionProvider', 'OpenVINOExec
 globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported)
 exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), globals_)
 Session=globals_['OrtSession']
-def fresh(providers=None, options=None):
+def fresh(providers=None, options=None, registered=None):
     factory.reset_mock(return_value=True, side_effect=True)
-    factory.return_value.get_providers.return_value=['DmlExecutionProvider']
+    factory.return_value.get_providers.return_value=(
+        ['DmlExecutionProvider', 'CPUExecutionProvider'] if registered is None else registered
+    )
     return Session('model.onnx', providers=providers, sess_options=options)
 def raises(fn, typ):
     try: fn()
@@ -288,6 +293,11 @@ assert kw['provider_options']==[{'device_id':'2'}]
 assert kw['sess_options'].enable_mem_pattern is False
 assert kw['sess_options'].execution_mode is seq
 assert kw['sess_options'].entries=={'session.disable_cpu_ep_fallback':'1'}
+fresh(registered=['DmlExecutionProvider'])
+for registered in ([], ['CPUExecutionProvider'], ['CPUExecutionProvider', 'DmlExecutionProvider'],
+                   ['DmlExecutionProvider', 'UnexpectedExecutionProvider']):
+    raises(lambda: fresh(registered=registered), RuntimeError)
+    assert factory.call_count == 1
 custom=Options();s=fresh(options=custom)
 assert custom.enable_mem_pattern is False and custom.execution_mode is seq
 assert custom.entries['session.disable_cpu_ep_fallback']=='1'
@@ -332,7 +342,7 @@ for platform_name in ('linux', 'darwin'):
     assert s.providers==supported and s._run_lock is None
     assert 'enable_fallback' not in factory.call_args.kwargs
     assert not s.sess_options.entries
-print('DirectML policy: 13 cases passed (mocked ORT; no hardware inference claim).')
+print('DirectML policy passed, including implicit CPU registration (mocked ORT; no hardware inference claim).')
 '@
     & python -c $policyTest $SourceRoot
     if ($LASTEXITCODE -ne 0) { throw 'DirectML policy tests failed.' }

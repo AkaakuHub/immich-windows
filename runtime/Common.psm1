@@ -623,7 +623,7 @@ function Get-ImmichUserProcess {
     }
     if (-not $process) { return }
     try {
-        if ($RequireIdentity) { [void]$process.Handle } # Pin before inspecting executable identity.
+        if ($RequireIdentity -and -not $process.Handle) { throw "Cannot pin process identity: $Name" } # Pin before inspecting executable identity.
         if (-not $process.Path) {
             if ($RequireIdentity) { throw "Cannot verify process identity: $Name" }
             return
