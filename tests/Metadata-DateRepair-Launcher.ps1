@@ -7,10 +7,11 @@ $ErrorActionPreference = 'Stop'
 $directory = Join-Path $RepositoryRoot 'runtime/metadata-date-repair'
 Import-Module (Join-Path $RepositoryRoot 'runtime/Common.psm1') -Force
 Import-Module (Join-Path $directory 'MetadataDateRepair.Launcher.psm1') -Force
-$script:checks = 0
+# Shared reference state survives invocation from the launcher's separate script scope.
+$repairTestState = @{ Checks = 0 }
 function Assert-Repair([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "FAILED: $Message" }
-    $script:checks++
+    $repairTestState.Checks++
 }
 function Assert-RepairThrows([scriptblock]$Action, [string]$Message) {
     $threw = $false
@@ -121,64 +122,64 @@ assert.deepEqual(process.argv.slice(2).filter((_, i) => i % 2 === 0), ['--releas
 console.log('FIXTURE_GUIDED_CALLED');
 process.exit(23);
 '@)
-        $script:FlowCandidates = @([pscustomobject]@{Scope='CurrentUser';InstallRoot=$fixture;DataRoot=$fixture;Service=$false})
-        $script:FlowElevated = $false; $script:FlowUacCalls = 0; $script:FlowDenied = $false; $script:FlowAnswer = '2'
-        $script:FlowResolveCalls = 0; $script:FlowAllUsersOnly = $false
+        $repairTestState.Candidates = @([pscustomobject]@{Scope='CurrentUser';InstallRoot=$fixture;DataRoot=$fixture;Service=$false})
+        $repairTestState.Elevated = $false; $repairTestState.UacCalls = 0; $repairTestState.Denied = $false; $repairTestState.Answer = '2'
+        $repairTestState.ResolveCalls = 0; $repairTestState.AllUsersOnly = $false
         function Import-Module { param([string]$Name,[switch]$Force) } # Modules are already loaded above.
-        function Get-RepairInstallCandidates { param([switch]$AllUsersOnly); $script:FlowAllUsersOnly = [bool]$AllUsersOnly; return $script:FlowCandidates }
-        function Test-ImmichElevated { return $script:FlowElevated }
+        function Get-RepairInstallCandidates { param([switch]$AllUsersOnly); $repairTestState.AllUsersOnly = [bool]$AllUsersOnly; return $repairTestState.Candidates }
+        function Test-ImmichElevated { return $repairTestState.Elevated }
         function Resolve-RepairInstall {
             param($Candidate)
-            $script:FlowResolveCalls++
-            $script:FlowResolvedScope = $Candidate.Scope
+            $repairTestState.ResolveCalls++
+            $repairTestState.ResolvedScope = $Candidate.Scope
             return [pscustomobject]@{Scope=$Candidate.Scope;InstallRoot=$fixture;DataRoot=$fixture;ReleaseRoot=$fixture;EnvFile=(Join-Path $fixture 'immich.env');OutputRoot=(Join-Path $fixture 'state/metadata-date-repair')}
         }
-        function Read-Host { param([string]$Prompt); return $script:FlowAnswer }
+        function Read-Host { param([string]$Prompt); return $repairTestState.Answer }
         function Start-Process {
             param($FilePath,$ArgumentList,$Verb,[switch]$Wait,[switch]$PassThru,$ErrorAction)
-            $script:FlowUacCalls++
+            $repairTestState.UacCalls++
             Assert-Repair ($Verb -ceq 'RunAs' -and $Wait -and $PassThru) 'UAC waits and captures process'
-            $script:FlowUacArguments = @(ConvertFrom-RepairWindowsCommandLine $ArgumentList)
-            if ($script:FlowDenied) { throw 'raw-secret-must-not-appear' }
+            $repairTestState.UacArguments = @(ConvertFrom-RepairWindowsCommandLine $ArgumentList)
+            if ($repairTestState.Denied) { throw 'raw-secret-must-not-appear' }
             return [pscustomobject]@{ExitCode=37}
         }
         $entry = Join-Path $directory 'Start-MetadataDateRepair.ps1'
         $env:DB_HOSTNAME='wrong-inherited'; $env:PGPASSWORD='wrong-secret'; $env:TZ='wrong-zone'
-        $output = (& $entry -Language en 6>&1 | Out-String)
-        Assert-Repair ($LASTEXITCODE -eq 23 -and $output.Contains('FIXTURE_GUIDED_CALLED')) 'real Node exit propagated'
-        Assert-Repair ($script:FlowUacCalls -eq 0) 'CurrentUser never requests elevation'
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 23 -and $output.Contains('FIXTURE_GUIDED_CALLED')) ("real Node exit propagated; exit=$LASTEXITCODE; fixture output: $output")
+        Assert-Repair ($repairTestState.UacCalls -eq 0) 'CurrentUser never requests elevation'
         Assert-Repair ($env:DB_HOSTNAME -ceq 'wrong-inherited' -and $env:PGPASSWORD -ceq 'wrong-secret' -and $env:TZ -ceq 'wrong-zone') 'caller environment restored'
-        $script:FlowCandidates = @([pscustomobject]@{Scope='AllUsers';InstallRoot=$fixture;DataRoot=$fixture;Service=$true})
-        $output = (& $entry -Language en 6>&1 | Out-String)
-        Assert-Repair ($LASTEXITCODE -eq 37 -and $script:FlowUacCalls -eq 1) 'elevated true exit propagated'
-        $selectorIndex = [Array]::IndexOf($script:FlowUacArguments, '-ElevatedSelection')
-        $pinned = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($script:FlowUacArguments[$selectorIndex + 1])) | ConvertFrom-Json
+        $repairTestState.Candidates = @([pscustomobject]@{Scope='AllUsers';InstallRoot=$fixture;DataRoot=$fixture;Service=$true})
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 37 -and $repairTestState.UacCalls -eq 1) ("elevated true exit propagated; exit=$LASTEXITCODE; fixture output: $output")
+        $selectorIndex = [Array]::IndexOf($repairTestState.UacArguments, '-ElevatedSelection')
+        $pinned = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($repairTestState.UacArguments[$selectorIndex + 1])) | ConvertFrom-Json
         Assert-Repair ($pinned.Scope -ceq 'AllUsers' -and $pinned.DataRoot -ceq $fixture -and $pinned.InstallRoot -ceq $fixture) 'UAC exact target pinned'
-        $script:FlowDenied = $true
-        $output = (& $entry -Language en 6>&1 | Out-String)
-        Assert-Repair ($LASTEXITCODE -eq 1 -and $output.Contains('cancelled') -and -not $output.Contains('raw-secret')) 'UAC cancellation visible and sanitized'
-        $script:FlowDenied = $false; $script:FlowElevated = $true
+        $repairTestState.Denied = $true
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 1 -and $output.Contains('cancelled') -and -not $output.Contains('raw-secret')) ("UAC cancellation visible and sanitized; exit=$LASTEXITCODE; fixture output: $output")
+        $repairTestState.Denied = $false; $repairTestState.Elevated = $true
         $bad = @{Scope='CurrentUser';InstallRoot=$fixture;DataRoot=$fixture} | ConvertTo-Json -Compress
         $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bad))
-        $beforeResolve = $script:FlowResolveCalls
-        $null = & $entry -Language en -ElevatedSelection $encoded 6>&1
-        Assert-Repair ($LASTEXITCODE -eq 1 -and $script:FlowResolveCalls -eq $beforeResolve -and $script:FlowAllUsersOnly) 'elevated CurrentUser selector rejected'
+        $beforeResolve = $repairTestState.ResolveCalls
+        $output = (& $entry -Language en -ElevatedSelection $encoded 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 1 -and $repairTestState.ResolveCalls -eq $beforeResolve -and $repairTestState.AllUsersOnly) ("elevated CurrentUser selector rejected; exit=$LASTEXITCODE; fixture output: $output")
         $bad = @{Scope='AllUsers';InstallRoot=(Join-Path $fixture 'wrong-root');DataRoot=$fixture} | ConvertTo-Json -Compress
         $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bad))
-        $null = & $entry -Language en -ElevatedSelection $encoded 6>&1
-        Assert-Repair ($LASTEXITCODE -eq 1 -and $script:FlowResolveCalls -eq $beforeResolve) 'changed elevated root rejected'
-        $script:FlowCandidates += [pscustomobject]@{Scope='CurrentUser';InstallRoot=$fixture;DataRoot=(Join-Path $fixture 'other');Service=$false}
-        $script:FlowAnswer = '2'; $script:FlowElevated = $false
-        $null = & $entry -Language en 6>&1
-        Assert-Repair ($LASTEXITCODE -eq 23 -and $script:FlowResolvedScope -ceq 'CurrentUser') 'multiple install numeric selection honored'
-        $script:FlowAnswer = ''
-        $beforeResolve = $script:FlowResolveCalls
-        $null = & $entry -Language en 6>&1
-        Assert-Repair ($LASTEXITCODE -eq 0 -and $script:FlowResolveCalls -eq $beforeResolve) 'cancel never loads env or starts Node'
+        $output = (& $entry -Language en -ElevatedSelection $encoded 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 1 -and $repairTestState.ResolveCalls -eq $beforeResolve) ("changed elevated root rejected; exit=$LASTEXITCODE; fixture output: $output")
+        $repairTestState.Candidates += [pscustomobject]@{Scope='CurrentUser';InstallRoot=$fixture;DataRoot=(Join-Path $fixture 'other');Service=$false}
+        $repairTestState.Answer = '2'; $repairTestState.Elevated = $false
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 23 -and $repairTestState.ResolvedScope -ceq 'CurrentUser') ("multiple install numeric selection honored; exit=$LASTEXITCODE; fixture output: $output")
+        $repairTestState.Answer = ''
+        $beforeResolve = $repairTestState.ResolveCalls
+        $output = (& $entry -Language en 2>&1 6>&1 | Out-String)
+        Assert-Repair ($LASTEXITCODE -eq 0 -and $repairTestState.ResolveCalls -eq $beforeResolve) ("cancel never loads env or starts Node; exit=$LASTEXITCODE; fixture output: $output")
     } finally {
         foreach ($name in @('Import-Module','Get-RepairInstallCandidates','Test-ImmichElevated','Resolve-RepairInstall','Read-Host','Start-Process')) { Remove-Item -LiteralPath ("Function:" + $name) -ErrorAction SilentlyContinue }
         $env:DB_HOSTNAME=$oldDb; $env:PGPASSWORD=$oldPg; $env:TZ=$oldTz
         if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
     }
 }
-Write-Host "PASS: $script:checks launcher assertions"
+Write-Host "PASS: $($repairTestState.Checks) launcher assertions"
