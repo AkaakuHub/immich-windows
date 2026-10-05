@@ -8,7 +8,7 @@ const HELP = `Immich date repair: guarded date-field maintenance; use Repair-Met
 Default command: plan (read-only database, bounded metadata reads, text plan only).
 Commands:
   plan-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --out INDEX.json
-           [--max-candidates 100000] [--page-size 25]
+           [--max-candidates COUNT] [--page-size 25] (no total limit unless supplied)
   apply-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --index INDEX.json
             --approved-index-sha256 DIGEST --journal-dir PRIVATE_DIRECTORY
             --acknowledge-history-ambiguity
@@ -121,7 +121,7 @@ async function run(argv, { onEvent, emit = record => process.stdout.write(JSON.s
     core.insist(adapter.identity.timezone === o['expected-timezone'], 'configured-timezone-mismatch');
     if (o.command === 'self-test') { process.stdout.write(JSON.stringify({ command: 'self-test', passed: true, identity: adapter.identity, databaseOpened: false, mediaRead: false }) + '\n'); return; }
     if (o.command === 'plan-all') {
-      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:Number(o['max-candidates'] || 100000),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onProgress:progress=>onEvent?.({kind:'plan-progress',...progress})},async (p,n) => {
+      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:o['max-candidates'] === undefined ? null : Number(o['max-candidates']),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onProgress:progress=>onEvent?.({kind:'plan-progress',...progress})},async (p,n) => {
         const file = path.basename(o.out) + '.part-' + String(n).padStart(4,'0') + '.json';
         const text = JSON.stringify(p,null,2) + '\n'; const h = await exclusive(path.join(path.dirname(path.resolve(o.out)),file),'.json');
         try { await h.writeFile(text); await h.sync(); } finally { await h.close(); }

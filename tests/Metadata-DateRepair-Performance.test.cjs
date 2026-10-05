@@ -294,3 +294,165 @@ test('cancellation at a completed page does not read the next page or write anyt
   assert.equal(adapter.batches.length, 1);
   assertReadOnly(adapter, before);
 });
+
+// Generate each keyset page directly: these large-library tests never allocate,
+// filter, or sort the whole library, and must never open an original file.
+function generatedIneligibleLibrary(count) {
+  const state = { queries: 0, returned: 0, originalReads: 0, lastId: null, lastSize: null };
+  const forbidden = async () => { state.originalReads++; throw new Error('DB-ineligible rows must not read originals or snapshots'); };
+  return {
+    identity: { upstreamCommit: 'synthetic-uncapped', timezone: 'Asia/Tokyo' },
+    state,
+    async candidates(options) {
+      assert.equal(options.ownerId, OWNER);
+      assert(Number.isInteger(options.limit) && options.limit >= 1 && options.limit <= 25);
+      assert.equal(options.afterId || null, state.lastId, 'keyset cursor must neither repeat nor skip a row');
+      const after = options.afterId ? Number(options.afterId.slice(-12)) : 0;
+      const length = Math.min(options.limit, Math.max(0, count - after));
+      const rows = Array.from({ length }, (_, offset) => {
+        const row = snapshot(after + offset + 1);
+        row.exif.timeZone = 'UTC';
+        return row;
+      });
+      state.queries++;
+      state.returned += rows.length;
+      state.lastSize = rows.length;
+      if (rows.length) state.lastId = rows.at(-1).asset.id;
+      return rows;
+    },
+    stat: forbidden, sidecarsAbsent: forbidden, readMetadata: forbidden,
+    snapshots: forbidden, snapshot: forbidden, transaction: forbidden,
+  };
+}
+
+for (const count of [0, 25, 1000, 100000, 100001]) {
+  test(`uncapped plan-all exhausts ${count} generated candidates with bounded pages and chunks`, async () => {
+    const adapter = generatedIneligibleLibrary(count);
+    let stored = 0, storedCandidates = 0;
+    const options = { ownerId: OWNER, pageSize: 25 };
+    // Both omitted and explicit null represent the unlimited default.
+    if (count === 100001) options.maxCandidates = null;
+    const index = await core.planAll(adapter, options, async (plan, number) => {
+      assert.equal(number, ++stored);
+      assert.equal(plan.format, core.FORMAT);
+      assert(plan.inspected >= 0 && plan.inspected <= 1000);
+      assert(plan.scope.limit <= 1000);
+      assert.equal(plan.entries.length, 0);
+      assert.equal(plan.excluded.length, plan.inspected);
+      for (const excluded of plan.excluded) {
+        assert.equal(excluded.id, ID(++storedCandidates), 'saved IDs must be unique, consecutive, and complete');
+        assert.equal(excluded.reason, 'existing-timezone');
+      }
+      return { file: `generated-${number}.json`, sha256: core.hash(plan) };
+    });
+    assert.equal(index.inspected, count);
+    assert.equal(index.proposed, 0);
+    assert.equal(index.exhausted, true);
+    assert.equal(index.nextAfterId, null);
+    assert.equal(storedCandidates, count);
+    assert.equal(adapter.state.returned, count);
+    assert.equal(adapter.state.queries, Math.floor(count / 25) + 1, 'continue until an empty or partial page proves exhaustion');
+    assert.equal(adapter.state.lastSize, count % 25);
+    assert.equal(adapter.state.originalReads, 0);
+    assert.equal(index.chunks.length, stored);
+    assert.equal(stored, Math.max(1, Math.ceil(count / 1000)), 'an empty terminal page must not create a redundant saved chunk');
+    if (count === 100001) assert.equal(stored, 101, 'the former 100-chunk ceiling must not truncate the library');
+  });
+}
+
+for (const count of [25, 26]) {
+  test(`uncapped planner explicit advanced bound uses DB-only lookahead for ${count} candidates`, async () => {
+    const adapter = generatedIneligibleLibrary(count);
+    const index = await core.planAll(adapter, { ownerId: OWNER, pageSize: 25, maxCandidates: 25 }, async (plan, n) => {
+      assert.equal(plan.inspected, 25);
+      return { file: `bounded-${n}.json`, sha256: core.hash(plan) };
+    });
+    assert.equal(index.inspected, 25);
+    assert.equal(index.exhausted, count === 25);
+    assert.equal(index.nextAfterId, count === 25 ? null : ID(25));
+    assert.equal(adapter.state.queries, 2);
+    assert.equal(adapter.state.originalReads, 0);
+  });
+}
+
+function generatedEmptyChunkIndex(adapter, count) {
+  const plans = new Map();
+  const index = {
+    format: core.INDEX_FORMAT, createdAt: INSTANT, identity: structuredClone(adapter.identity),
+    historyWarning: core.HISTORY_WARNING,
+    scope: { ownerId: OWNER, maxCandidates: null, chunkSize: 1000 },
+    inspected: count, proposed: 0, exhausted: true, nextAfterId: null, chunks: [],
+  };
+  for (let n = 1; n <= count; n++) {
+    const plan = {
+      format: core.FORMAT, createdAt: INSTANT, identity: structuredClone(adapter.identity),
+      historyWarning: core.HISTORY_WARNING,
+      scope: { ownerId: OWNER, limit: 1000, pageSize: 25, afterId: n === 1 ? null : ID(n - 1) },
+      inspected: 1, nextAfterId: n === count ? null : ID(n), exhausted: n === count,
+      entries: [], excluded: [{ id: ID(n), reason: 'existing-timezone' }],
+    };
+    const file = `empty-${n}.json`;
+    plans.set(file, plan);
+    index.chunks.push({ file, sha256: core.hash(plan), planDigest: core.hash(plan), inspected: 1, proposed: 0 });
+  }
+  return { index, plans };
+}
+
+test('uncapped apply-all accepts 101 valid chunks and preflights every digest before opening journals', async () => {
+  const adapter = generatedIneligibleLibrary(0);
+  const { index, plans } = generatedEmptyChunkIndex(adapter, 101);
+  let reads = 0, opened = 0, headers = 0, completed = 0, closed = 0;
+  const applied = await core.applyAll(adapter, index, {
+    ownerId: OWNER, approvedIndexDigest: core.hash(index), acknowledgeHistoryAmbiguity: true,
+  }, async chunk => { reads++; return structuredClone(plans.get(chunk.file)); }, async () => {
+    assert(reads >= 102, 'all 101 plan digests must be checked before the first journal opens');
+    opened++;
+    return {
+      async header(value) { assert.equal(value.format, core.FORMAT); headers++; },
+      async appendSync(value) { assert.deepEqual(value, { kind: 'complete', count: 0 }); completed++; },
+      async close() { closed++; },
+    };
+  });
+  assert.equal(applied, 0);
+  assert.equal(reads, 202);
+  assert.deepEqual([opened, headers, completed, closed], [101, 101, 101, 101]);
+  assert.equal(adapter.state.originalReads, 0);
+});
+
+test('uncapped apply-all rejects a changed last chunk before any journal or original read', async () => {
+  const adapter = generatedIneligibleLibrary(0);
+  const { index, plans } = generatedEmptyChunkIndex(adapter, 101);
+  plans.get('empty-101.json').createdAt = '2025-01-01T00:00:00.000Z';
+  let opened = 0;
+  await assert.rejects(() => core.applyAll(adapter, index, {
+    ownerId: OWNER, approvedIndexDigest: core.hash(index), acknowledgeHistoryAmbiguity: true,
+  }, async chunk => plans.get(chunk.file), async () => { opened++; throw new Error('must not open a journal'); }),
+  error => error.code === 'plan-digest-not-approved');
+  assert.equal(opened, 0);
+  assert.equal(adapter.state.originalReads, 0);
+});
+
+for (const order of ['duplicate', 'descending']) {
+  test(`uncapped apply-all rejects ${order} cross-chunk asset IDs before journals`, async () => {
+    const adapter = fixture(2);
+    const source = await core.plan(adapter, OPTIONS);
+    const { index, plans } = generatedEmptyChunkIndex(adapter, 2);
+    index.proposed = 2;
+    const selected = order === 'duplicate' ? [source.entries[0], source.entries[0]] : [...source.entries].reverse();
+    for (let i = 0; i < 2; i++) {
+      const chunk = index.chunks[i], plan = plans.get(chunk.file);
+      plan.entries = [structuredClone(selected[i])];
+      plan.excluded = [];
+      chunk.proposed = 1;
+      chunk.planDigest = core.hash(plan);
+      chunk.sha256 = core.hash(plan);
+    }
+    let opened = 0;
+    await assert.rejects(() => core.applyAll(adapter, index, {
+      ownerId: OWNER, approvedIndexDigest: core.hash(index), acknowledgeHistoryAmbiguity: true,
+    }, async chunk => plans.get(chunk.file), async () => { opened++; throw new Error('must not open a journal'); }),
+    error => error.code === 'duplicate-or-unordered-index-asset');
+    assert.equal(opened, 0);
+    assertReadOnly(adapter);
+  });
+}

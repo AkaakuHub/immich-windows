@@ -14,7 +14,7 @@ UUIDs, environment paths, timezone strings and approval hashes do not need to be
 
 Discovery uses existing installer records and validates the current release and configuration. Missing, inconsistent or ambiguous records stop with a visible error; the utility does not guess another installation, database or timezone. Cancelling Windows elevation does not start a repair. The selected installation stays fixed across elevation, even if another administrator approves it.
 
-Each run writes its plan and recovery journals under the selected data directory's `state/metadata-date-repair/repair-*` directory. These records inherit that installation's access controls. No date changes occur until the confirmation. A failed apply can have earlier committed changes: retain these records and reconcile before attempting another write; the utility does not retry uncertain writes. The guided scan is bounded at 100,000 suspicious candidates and refuses to apply an incomplete scan.
+Each run writes its plan and recovery journals under the selected data directory's `state/metadata-date-repair/repair-*` directory. These records inherit that installation's access controls. No date changes occur until the confirmation. A failed apply can have earlier committed changes: retain these records and reconcile before attempting another write; the utility does not retry uncertain writes. The guided scan continues until the selected user’s candidate scope is exhausted, with no total-count limit. Pages and saved chunks remain bounded; an incomplete scan is never applied.
 
 ## Scope and uncertainty
 
@@ -24,7 +24,7 @@ A database date edit made long ago, or an XMP sidecar subsequently deleted, can 
 
 The default policy is deliberately strict:
 
-- One selected owner; bounded UUID-keyset candidate pages, at most 1,000 candidates per plan chunk and 100 per page (default page size 25); the guided flow checks at most 100,000 candidates
+- One selected owner; bounded UUID-keyset candidate pages, at most 1,000 candidates per plan chunk and 100 per page (default page size 25); the guided flow continues until no further candidates remain
 - PNG/JPEG still images only; exclude edited/offline/deleted assets and either direction of a live-photo link
 - Existing `fileCreatedAt`, `localDateTime`, and `dateTimeOriginal` must agree exactly at millisecond precision; existing timezone must be null; no active metadata locks
 - No linked sidecar; check only the two conventional sibling XMP paths on Windows, without directory enumeration
@@ -74,7 +74,7 @@ A separately authorized planning invocation would be:
 pwsh -NoProfile -File "<release>\runtime\metadata-date-repair\Repair-MetadataDates.ps1" -ReleaseRoot "<release>" -EnvFile "<existing immich.env>" plan --owner-id "<owner UUID>" --expected-timezone "Asia/Tokyo" --limit 100 --page-size 25 --out "<private text directory>\plan.json"
 ```
 
-`plan` is the default command and performs PostgreSQL reads in actual read-only transactions. It does not write any database row. Returned candidates are paged by UUID, and linked sidecar/live-photo checks are part of that page's SQL statement rather than per-candidate SQL round trips. A small page limit bounds returned candidates and source reads; it does not promise PostgreSQL avoids an internal broad scan. `exhausted` refers only to this SQL candidate scope. If bounded early, `nextAfterId` can be supplied explicitly in a new planning invocation. The bounded `plan-all` command below automates chunking when a larger scan is explicitly requested.
+`plan` is the default command and performs PostgreSQL reads in actual read-only transactions. It does not write any database row. Returned candidates are paged by UUID, and linked sidecar/live-photo checks are part of that page's SQL statement rather than per-candidate SQL round trips. A small page limit bounds returned candidates and source reads; it does not promise PostgreSQL avoids an internal broad scan. `exhausted` refers only to this SQL candidate scope. If bounded early, `nextAfterId` can be supplied explicitly in a new planning invocation. The `plan-all` command below automates chunking when a larger scan is explicitly requested.
 
 Review every exact before/after proposal. `review --plan plan.json` works offline and prints a canonical SHA-256 plan digest and summary. The digest is over parsed canonical JSON, not formatting or raw file bytes. Neither a generated plan nor its digest is itself permission to apply.
 
@@ -88,13 +88,13 @@ Pass the same installed runtime/env context through the launcher. The acknowledg
 
 ## One command for a large approved scan
 
-`plan-all` uses the same read-only planner, automatically walking UUID-keyset chunks of at most 1,000 candidates. A single invocation is bounded at 100,000 candidates by default (the maximum); `--max-candidates` can reduce it. It writes one small index plus numbered text plan files in the index's directory. Each index entry contains the exact chunk-file SHA-256 and the canonical plan digest. No new tool, scheduled worker, dependency, or image copy is involved.
+`plan-all` uses the same read-only planner, automatically walking UUID-keyset chunks of at most 1,000 candidates. By default it continues until the candidate scope is exhausted, without a total-count limit. Advanced CLI use may explicitly supply `--max-candidates COUNT` to request a limited scan. It writes one small index plus numbered text plan files in the index's directory. Each index entry contains the exact chunk-file SHA-256 and the canonical plan digest. No new tool, scheduled worker, dependency, or image copy is involved.
 
 ```text
-plan-all --owner-id <UUID> --expected-timezone Asia/Tokyo --max-candidates 100000 --page-size 25 --out index.json
+plan-all --owner-id <UUID> --expected-timezone Asia/Tokyo --page-size 25 --out index.json
 ```
 
-Pass the same runtime/env context through the launcher. Review the index and the exact chunk proposals. `review --plan index.json` prints the single index approval digest; it also reports whether the bound was reached. `exhausted: false` is an incomplete scan, not a claim that the whole candidate scope was inspected.
+Pass the same runtime/env context through the launcher. Review the index and the exact chunk proposals. `review --plan index.json` prints the single index approval digest; it also reports whether the candidate scope was exhausted. `exhausted: false` is an incomplete scan, not a claim that the whole candidate scope was inspected.
 
 After later explicit approval of that exact index and its listed changes, one command runs the approved chunks sequentially:
 

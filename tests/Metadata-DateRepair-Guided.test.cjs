@@ -55,7 +55,7 @@ async function fixture(t, settings = {}) {
           createdAt: '2026-10-05T00:00:00.000Z',
           identity: { timezone: TIMEZONE, upstreamCommit: 'synthetic-guided-fixture' },
           historyWarning: core.HISTORY_WARNING,
-          scope: { ownerId: parsed['owner-id'], maxCandidates: 100000, chunkSize: 1000 },
+          scope: { ownerId: parsed['owner-id'], maxCandidates: null, chunkSize: 1000 },
           inspected: 5, proposed: 2, exhausted: true, nextAfterId: null, chunks: [],
           ...(settings.index || {}),
         };
@@ -97,6 +97,7 @@ test('selecting a nonfirst owner passes that exact owner and installed timezone 
     assert.equal(options['expected-timezone'], TIMEZONE);
     assert.equal(options['release-root'], f.options.releaseRoot);
   }
+  assert.equal(f.calls[0].options['max-candidates'], undefined, 'guided scan never supplies a total limit');
   const applied = f.calls[1].options;
   assert.equal(applied['approved-index-sha256'], f.plannedDigest);
   assert.equal(applied['acknowledge-history-ambiguity'], true);
@@ -176,7 +177,7 @@ test('a fully scanned but ineligible scope never asks for approval or applies', 
   assert(!f.output().includes('Accept this uncertainty'));
 });
 
-test('the incomplete 100,000-candidate bound never offers apply even with proposed repairs', async t => {
+test('an unexpectedly incomplete scan never offers apply even with proposed repairs', async t => {
   const f = await fixture(t, { index: { inspected: 100000, proposed: 99000, exhausted: false, nextAfterId: ID(100000) } });
   const result = await f.run();
   assert.equal(result.status, 'incomplete');
@@ -184,7 +185,8 @@ test('the incomplete 100,000-candidate bound never offers apply even with propos
   assert.equal(f.asks, 1);
   assert.equal(f.calls.length, 1);
   assert.equal(f.writes, 0);
-  assert.match(f.output(), /100,000-candidate safety limit was reached/);
+  assert.equal(f.calls[0].options['max-candidates'], undefined);
+  assert(!f.output().includes('100,000-candidate safety limit'));
   assert.match(f.output(), /scan is incomplete; no dates were changed/);
   assert(!f.output().includes('Accept this uncertainty'));
 });

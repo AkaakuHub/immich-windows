@@ -27,7 +27,7 @@ const messages = {
   repaired: ['Repaired', '修復済み'],
   done: ['Repair completed.', '修復が完了しました。'],
   empty: ['No eligible dates to repair. Excluded items were left unchanged.', '安全に修復できる対象はありません。除外された項目は変更していません。'],
-  limit: ['The 100,000-candidate safety limit was reached. The scan is incomplete; no dates were changed.', '候補100,000件の安全上限に達しました。確認が完了していないため、日付は変更していません。'],
+  incomplete: ['The scan is incomplete; no dates were changed.', '確認が完了していないため、日付は変更していません。'],
   failed: ['Stopped before completion. Error code', '完了前に停止しました。エラーコード'],
   uncertain: ['Earlier changes may already be committed. Keep the plan and journals; reconcile them before retrying.', '停止前の変更が確定している場合があります。計画・復旧記録を保管し、再実行の前に適用状態を確認してください。'],
 };
@@ -95,7 +95,7 @@ async function runGuided({ releaseRoot, outputRoot, language = 'en' }, io, depen
     core.insist(index.format === core.INDEX_FORMAT && index.scope?.ownerId === user.id && index.identity?.timezone === timezone && core.hash(index) === planned.indexDigest, 'guided-plan-identity-mismatch');
     core.insist(Number.isInteger(index.inspected) && Number.isInteger(index.proposed) && index.proposed >= 0 && index.inspected >= index.proposed, 'guided-plan-count-mismatch');
     say('checked', index.inspected); say('proposed', index.proposed); say('excluded', index.inspected - index.proposed);
-    if (!index.exhausted) { say('limit'); return { status: 'incomplete', applied: 0, directory }; }
+    if (!index.exhausted) { say('incomplete'); return { status: 'incomplete', applied: 0, directory }; }
     if (!index.proposed) { say('empty'); return { status: 'empty', applied: 0, directory }; }
     say('changes'); say('history');
     const approvedDigest = core.hash(index);

@@ -199,10 +199,20 @@ async function undo(adapter, p, sourceRecords, options, journal) {
 
 const INDEX_FORMAT = 'immich-date-repair/index-v1';
 async function planAll(adapter, options, storeChunk) {
-  insist(Number.isInteger(options.maxCandidates) && options.maxCandidates >= 1 && options.maxCandidates <= 100000, 'invalid-total-bound');
-  const index = { format: INDEX_FORMAT, createdAt: new Date().toISOString(), identity: structuredClone(adapter.identity), historyWarning: HISTORY_WARNING, scope: { ownerId: options.ownerId, maxCandidates: options.maxCandidates, chunkSize: 1000 }, inspected: 0, proposed: 0, exhausted: false, nextAfterId: options.afterId || null, chunks: [] };
-  while (index.inspected < options.maxCandidates) {
-    const p = await plan(adapter, { ownerId: options.ownerId, limit: Math.min(1000, options.maxCandidates-index.inspected), pageSize: options.pageSize, afterId: index.nextAfterId, onProgress: progress => options.onProgress?.({ inspected: index.inspected + progress.inspected, proposed: index.proposed + progress.proposed }) });
+  const maximum = options.maxCandidates == null ? null : options.maxCandidates;
+  insist(maximum === null || (Number.isSafeInteger(maximum) && maximum >= 1), 'invalid-total-bound');
+  const index = { format: INDEX_FORMAT, createdAt: new Date().toISOString(), identity: structuredClone(adapter.identity), historyWarning: HISTORY_WARNING, scope: { ownerId: options.ownerId, maxCandidates: maximum, chunkSize: 1000 }, inspected: 0, proposed: 0, exhausted: false, nextAfterId: options.afterId || null, chunks: [] };
+  while (maximum === null || index.inspected < maximum) {
+    const p = await plan(adapter, { ownerId: options.ownerId, limit: maximum === null ? 1000 : Math.min(1000, maximum-index.inspected), pageSize: options.pageSize, afterId: index.nextAfterId, onProgress: progress => options.onProgress?.({ inspected: index.inspected + progress.inspected, proposed: index.proposed + progress.proposed }) });
+    if (p.inspected === 0 && p.exhausted && index.chunks.length) {
+      index.exhausted = true; index.nextAfterId = null; break;
+    }
+    if (maximum !== null && !p.exhausted && index.inspected + p.inspected === maximum) {
+      const next = await adapter.candidates({ ownerId: options.ownerId, afterId: p.nextAfterId, limit: 1 });
+      insist(Array.isArray(next) && next.length <= 1, 'invalid-boundary-page');
+      if (!next.length) { p.exhausted = true; p.nextAfterId = null; }
+      else insist(UUID.test(next[0]?.asset?.id) && next[0].asset.id > p.nextAfterId && next[0].asset.ownerId === options.ownerId, 'invalid-boundary-page');
+    }
     index.chunks.push({ ...(await storeChunk(p,index.chunks.length+1)), planDigest: hash(p), inspected: p.inspected, proposed: p.entries.length });
     index.inspected += p.inspected; index.proposed += p.entries.length; index.exhausted = p.exhausted; index.nextAfterId = p.nextAfterId;
     if (p.exhausted) break;
@@ -213,17 +223,18 @@ async function planAll(adapter, options, storeChunk) {
 async function applyAll(adapter, index, options, readChunk, openJournal) {
   insist(options.acknowledgeHistoryAmbiguity === true, 'historical-ambiguity-not-acknowledged');
   insist(index?.format === INDEX_FORMAT && hash(index) === options.approvedIndexDigest && same(index.identity,adapter.identity), 'index-not-approved-or-runtime-changed');
-  insist(Array.isArray(index.chunks) && index.chunks.length >= 1 && index.chunks.length <= 100 && index.scope.maxCandidates <= 100000 && index.scope.ownerId === options.ownerId, 'invalid-index-scope');
-  const ids = new Set(); let inspected = 0, proposed = 0;
+  const maximum = index.scope?.maxCandidates;
+  insist(Array.isArray(index.chunks) && index.chunks.length >= 1 && (maximum === null || (Number.isSafeInteger(maximum) && maximum >= 1)) && index.scope.ownerId === options.ownerId, 'invalid-index-scope');
+  let lastId = null, inspected = 0, proposed = 0;
   // Verify every chunk's exact bytes/plan before the first mutation. Read again
   // at use time so a concurrent plan-file replacement cannot change the action.
   for (const chunk of index.chunks) {
     const p = await readChunk(chunk); validatePlan(p,adapter,chunk.planDigest);
     insist(p.scope.ownerId === index.scope.ownerId && p.inspected === chunk.inspected && p.entries.length === chunk.proposed, 'chunk-scope-mismatch');
-    for (const e of p.entries) { insist(!ids.has(e.id), 'duplicate-index-asset'); ids.add(e.id); }
+    for (const e of p.entries) { insist(lastId === null || e.id > lastId, 'duplicate-or-unordered-index-asset'); lastId = e.id; }
     inspected += p.inspected; proposed += p.entries.length;
   }
-  insist(inspected === index.inspected && proposed === index.proposed && inspected <= index.scope.maxCandidates, 'index-count-mismatch');
+  insist(Number.isSafeInteger(inspected) && Number.isSafeInteger(proposed) && inspected === index.inspected && proposed === index.proposed && (maximum === null || inspected <= maximum), 'index-count-mismatch');
   let completed = 0;
   for (const chunk of index.chunks) {
     const p = await readChunk(chunk);
