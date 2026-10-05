@@ -71,7 +71,7 @@ jobs:
         id: server-cache
         with:
           path: artifacts/application
-          key: application-${{ runner.os }}-${{ steps.cache-key.outputs.application }}-${{ steps.cache-key.outputs.upstream }}-${{ hashFiles('patches/server/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
+          key: application-${{ runner.os }}-${{ steps.cache-key.outputs.application }}-${{ steps.cache-key.outputs.upstream }}-${{ hashFiles('patches/server/**', 'patches/series', 'metadata-patches/server/**', 'metadata-patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
       - uses: actions/cache/restore@v6
         id: ml-cache
         with:

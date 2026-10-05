@@ -19,6 +19,7 @@ import urllib.request
 UPSTREAM = 'immich-app/immich'
 WORKFLOW = 'build-windows.yml'
 BRANCH_PREFIX = 'automation/upstream-'
+PATCH_ROOTS = ('patches', 'metadata-patches')
 STABLE = re.compile(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
 SHA = re.compile(r'[0-9a-f]{40}')
 MARKER = '<!-- immich-windows:automatic-upstream:v1 -->'
@@ -171,22 +172,32 @@ def prepare_patches(api, main, old_commit, new_commit):
     API reads are pinned to immutable commits. No upstream hook or program is
     executed; only a minimal text-file Git repository exists in a disposable dir.
     """
-    series_text = api.file('patches/series', main)
-    series = [line.strip() for line in series_text.splitlines() if line.strip() and not line.lstrip().startswith('#')]
-    require(len(series) == len(set(series)), 'Duplicate entries in patch series')
-    patches, paths = {}, set()
-    for name in series:
-        require(name.endswith('.patch') and not name.startswith('/') and '..' not in name.split('/') and '\\' not in name,
-                'Unsafe patch-series entry')
-        patch = api.file('patches/' + name, main)
-        targets = re.findall(r'^\+\+\+ b/(.+)$', patch, re.M)
-        require(targets and not re.search(r'^(rename |copy |GIT binary patch|deleted file mode|new file mode)', patch, re.M),
-                f'Patch {name} uses an unsupported structural operation; manual review required')
-        for path in targets:
-            require(path.startswith(('server/', 'machine-learning/')) and '.git' not in path.split('/') and '..' not in path.split('/') and '\\' not in path and '\t' not in path,
-                    f'Unsafe target in patch {name}')
-            paths.add(path)
-        patches[name] = patch
+    # Match Prepare-Source: Windows portability first, metadata behavior second.
+    # One ordered worktree pair also handles patches that touch the same file.
+    series_by_root, patches, paths = {}, {}, set()
+    for root in PATCH_ROOTS:
+        series_text = api.file(root + '/series', main)
+        series = [line.strip() for line in series_text.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+        require(len(series) == len(set(series)), f'Duplicate entries in {root}/series')
+        series_by_root[root] = (series_text, series)
+        for name in series:
+            require(name.endswith('.patch') and all(part not in ('', '.', '..', '.git') for part in name.split('/'))
+                    and '\\' not in name and ':' not in name,
+                    f'Unsafe patch-series entry in {root}/series')
+            require(root != 'metadata-patches' or name.startswith('server/'),
+                    'Metadata patches must be in metadata-patches/server')
+            patch_path = root + '/' + name
+            patch = api.file(patch_path, main)
+            targets = re.findall(r'^\+\+\+ b/(.+)$', patch, re.M)
+            require(targets and not re.search(r'^(rename |copy |GIT binary patch|deleted file mode|new file mode)', patch, re.M),
+                    f'Patch {patch_path} uses an unsupported structural operation; manual review required')
+            for path in targets:
+                allowed = ('server/',) if root == 'metadata-patches' else ('server/', 'machine-learning/')
+                require(path.startswith(allowed) and all(part not in ('', '.', '..', '.git') for part in path.split('/'))
+                        and '\\' not in path and '\t' not in path and ':' not in path,
+                        f'Unsafe target in patch {patch_path}')
+                paths.add(path)
+            patches[patch_path] = patch
 
     def command(directory, *arguments, check=True, data=None):
         # Blob stdin must bypass Windows text-mode newline conversion. Keep the
@@ -212,8 +223,7 @@ def prepare_patches(api, main, old_commit, new_commit):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(api.file(path, commit, UPSTREAM), encoding='utf-8', newline='')
             command(directory, 'add', '.')
-        for name in series:
-            patch = patches[name]
+        for name, patch in patches.items():
             patch_file = Path(temporary) / 'change.patch'
             patch_file.write_text(patch, encoding='utf-8', newline='')
             old_tree = command(old, 'write-tree').stdout.strip()
@@ -229,7 +239,7 @@ def prepare_patches(api, main, old_commit, new_commit):
                 continue
             reverse = command(new, 'apply', '--reverse', '--check', '--index', str(patch_file), check=False)
             if reverse.returncode == 0:
-                changed['patches/' + name] = None
+                changed[name] = None
                 summary(f'Upstream already contains {name}; removed the redundant patch.')
                 continue
             # Supply exact old base blobs so --3way never fetches or guesses.
@@ -238,18 +248,19 @@ def prepare_patches(api, main, old_commit, new_commit):
             patch_file.write_text(full_patch, encoding='utf-8', newline='')
             merged = command(new, 'apply', '--3way', '--index', '--whitespace=error-all', str(patch_file), check=False)
             if merged.returncode or command(new, 'ls-files', '--unmerged').stdout:
-                raise ValueError(f'Cannot automatically apply Windows patch {name} to {new_commit}:\n{merged.stderr.strip()}')
+                raise ValueError(f'Cannot automatically apply patch {name} to {new_commit}:\n{merged.stderr.strip()}')
             rebased = command(new, 'diff', '--binary', '--full-index', new_tree).stdout
             if rebased:
-                changed['patches/' + name] = rebased
+                changed[name] = rebased
                 kept.append(name)
                 summary(f'Rebased {name} with a conflict-free Git three-way merge.')
             else:
-                changed['patches/' + name] = None
+                changed[name] = None
                 summary(f'Upstream already implements {name}; removed the empty patch.')
-    if kept != series:
-        removed = set(series) - set(kept)
-        changed['patches/series'] = '\n'.join(line for line in series_text.splitlines() if line.strip() not in removed) + '\n'
+    for root, (series_text, series) in series_by_root.items():
+        removed = {name for name in series if root + '/' + name not in kept}
+        if removed:
+            changed[root + '/series'] = '\n'.join(line for line in series_text.splitlines() if line.strip() not in removed) + '\n'
     return changed
 
 
@@ -258,9 +269,11 @@ def write_tree(api, base, files):
     entries = []
     # Validate the complete output before making any write, even orphan blobs.
     for path, content in sorted(files.items()):
-        require(path in ('upstream.json', 'dependencies/versions.json') or path == 'patches/series'
-                or (path.startswith('patches/') and path.endswith('.patch')), f'Unexpected updater output: {path}')
-        require('..' not in path.split('/') and '\\' not in path, 'Invalid updater path')
+        require(path in ('upstream.json', 'dependencies/versions.json', 'patches/series', 'metadata-patches/series')
+                or (path.startswith(('patches/server/', 'patches/machine-learning/', 'metadata-patches/server/'))
+                    and path.endswith('.patch')), f'Unexpected updater output: {path}')
+        require(all(part not in ('', '.', '..', '.git') for part in path.split('/'))
+                and '\\' not in path and ':' not in path, 'Invalid updater path')
         require(isinstance(content, str) or content is None, 'Updater output must be UTF-8 text or a deletion')
     for path, content in sorted(files.items()):
         if content is None:
@@ -371,7 +384,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
         'title': f'Update Immich to {version}.0', 'head': branch, 'base': 'main', 'draft': True,
         'body': f'{MARKER}\n<!-- immich-windows:automatic-head {head} base {main} -->\n\nAutomated stable update: {pin["version"]} → {version}.0.\n\n'
                 f'Upstream commit: `{upstream_commit}`.\nUpstream release: https://github.com/{UPSTREAM}/releases/tag/{version}\n\n'
-                'Version pins and the Windows patch stack are prepared deterministically. '
+                'Version pins and the Windows and metadata patch stacks are prepared deterministically. '
                 'Qualification must verify the exact PR head and current main before automatic merge; '
                 'publication promotes the identical qualified artifacts without a second build.\n',
     })

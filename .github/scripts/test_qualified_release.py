@@ -418,7 +418,8 @@ class ReleasePolicyTests(OfflineTestCase):
                 self.assertTrue(release.ci_only(paths))
         for path in ('README.md', 'docs/installation.md', 'docs/development.md.bak',
                      'runtime/Start.ps1', 'packaging/package.ps1', 'tests/Smoke-Windows.ps1',
-                     'dependencies/pins.json', 'upstream.json', 'unknown.txt'):
+                     'dependencies/pins.json', 'upstream.json', 'metadata-patches/series',
+                     'metadata-patches/server/fix.patch', 'unknown.txt'):
             with self.subTest(path=path):
                 self.assertFalse(release.ci_only(['.github/workflows/build.yml', path]))
 
@@ -1038,6 +1039,54 @@ class NativeReuseTests(OfflineTestCase):
         self.assertFalse(Path('artifacts/native/sharp-libvips-custom').exists())
 
 
+class AutomationPatchBoundaryTests(OfflineTestCase):
+    def setUp(self):
+        super().setUp()
+        self.api = mock.Mock()
+
+    def changes(self, before=(), after=()):
+        def tree(blob, paths):
+            return {'truncated': False, 'tree': [
+                {'path': 'upstream.json', 'mode': '100644', 'type': 'blob', 'sha': blob},
+                *({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob} for path in paths),
+            ]}
+        self.api.get.side_effect = [tree(BASE, before), tree(HEAD, after)]
+        release.automation_changes(self.api, HEAD, BASE)
+        self.assertEqual(self.api.get.call_args_list[-2:], [
+            mock.call(f'git/trees/{BASE}?recursive=1'), mock.call(f'git/trees/{HEAD}?recursive=1')])
+        self.api.write.assert_not_called()
+
+    def test_both_patch_stacks_allow_regular_rebases_additions_and_removals(self):
+        paths = ('patches/series', 'patches/server/fix.patch', 'patches/machine-learning/fix.patch',
+                 'metadata-patches/series', 'metadata-patches/server/fix.patch')
+        for before, after in ((paths, paths), ((), paths), (paths, ())):
+            with self.subTest(before=before, after=after):
+                self.changes(before, after)
+
+    def test_metadata_does_not_expand_trust_to_other_paths_or_components(self):
+        for path in ('metadata-patches/README.md', 'metadata-patches/fix.patch',
+                     'metadata-patches/machine-learning/fix.patch', 'metadata-patches/server/../fix.patch',
+                     'metadata-patches/server/.git/fix.patch', 'metadata-patches/server//fix.patch',
+                     'metadata-patches/server/a\\b.patch', 'metadata-patches/server/a:b.patch',
+                     'metadata-patches/server/run.ps1', '.github/workflows/build-windows.yml'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'disallowed path'):
+                self.changes(after=(path,))
+        self.api.write.assert_not_called()
+
+    def test_metadata_patches_cannot_be_executable_or_symlink(self):
+        for mode, kind in (('100755', 'blob'), ('120000', 'blob'), ('160000', 'commit')):
+            with self.subTest(mode=mode):
+                self.api.get.side_effect = [
+                    {'truncated': False, 'tree': []},
+                    {'truncated': False, 'tree': [
+                        {'path': 'upstream.json', 'mode': '100644', 'type': 'blob', 'sha': HEAD},
+                        {'path': 'metadata-patches/server/fix.patch', 'mode': mode, 'type': kind, 'sha': HEAD},
+                    ]},
+                ]
+                with self.assertRaisesRegex(ValueError, 'regular, non-executable files'):
+                    release.automation_changes(self.api, HEAD, BASE)
+
+
 class NativeWorkflowTests(unittest.TestCase):
     def test_native_reuse_is_cache_miss_only_and_seeding_does_not_block_publication(self):
         workflow = Path(__file__).parents[1] / 'workflows/build-windows.yml'
@@ -1054,6 +1103,29 @@ class NativeWorkflowTests(unittest.TestCase):
         self.assertNotIn('seed-codec-cache', publish)
         keys = [line.strip() for line in text.splitlines() if line.strip().startswith('key: libvips-')]
         self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0], keys[1])
+
+
+    def test_metadata_fallback_runs_once_after_build_and_before_packaging(self):
+        workflow = Path(__file__).parents[1] / 'workflows/build-windows.yml'
+        text = workflow.read_text()
+        invocation = '& ./.tools/node/node.exe ./tests/Metadata-DateFallback.cjs .work/immich --server-root artifacts/application/server'
+        self.assertEqual(text.count(invocation), 1)
+        self.assertLess(text.index('.\\build\\Build-All.ps1 -SkipNativeDependencies'), text.index(invocation))
+        self.assertLess(text.index(invocation), text.index('.\\packaging\\New-Package.ps1'))
+        self.assertIn("if ($LASTEXITCODE -ne 0) { throw 'Metadata date fallback checks failed.' }", text)
+
+    def test_metadata_patch_inputs_only_invalidate_application_cache(self):
+        workflows = Path(__file__).parents[1] / 'workflows'
+        keys = []
+        for name in ('build-windows.yml', 'keep-build-cache.yml'):
+            text = (workflows / name).read_text()
+            app = next(line for line in text.splitlines() if line.strip().startswith('key: application-'))
+            ml = next(line for line in text.splitlines() if line.strip().startswith('key: machine-learning-'))
+            keys.append(app.split('hashFiles(', 1)[1])
+            self.assertIn("'metadata-patches/server/**'", app)
+            self.assertIn("'metadata-patches/series'", app)
+            self.assertNotIn('metadata-patches', ml)
         self.assertEqual(keys[0], keys[1])
 
 

@@ -11,7 +11,7 @@ pwsh -NoProfile -File .\tests\Static-RepositoryAudit.ps1
 pwsh -NoProfile -File .\build\Prepare-Source.ps1
 ```
 
-`.work/immich`は生成物です。直接変更せず、Windows固有の変更は`patches/`へ追加します。[パッチ方針](../patches/README.md)を守ってください。
+`.work/immich`は生成物です。直接変更せず、Windows固有の変更は`patches/`へ追加します。[パッチ方針](../patches/README.md)を守ってください。日時メタデータの挙動修正は別の`metadata-patches/`で管理します（[対象範囲](../metadata-patches/README.md)）。
 
 ## ビルドと検証
 
@@ -53,9 +53,19 @@ Windows runnerの使い捨てDBで起動・更新・設定保持・同一版拒�
 
 ### Windows移植の回帰検証
 
-パッチは`patches/series`の順に固定コミットへ適用します。準備済みソースの再利用は、現在のコミット・タグとパッチ内容のハッシュで判定します。生成時の差分と一致しない編集は上書きしません。全ソースファイルのハッシュ走査は追加していません。
+パッチは既存の`Prepare-Source.ps1`で、`patches/series`、`metadata-patches/series`の順に固定コミットへ適用します。両方の一覧・パッチ内容が同じ準備状態に含まれます。準備済みソースの再利用は、現在のコミット・タグとパッチ内容のハッシュで判定します。生成時の差分と一致しない編集は上書きしません。全ソースファイルのハッシュ走査は追加していません。
 
 機械学習は上流のアイドル終了を保ち、Windowsでも既存のUvicorn管理機能で1ワーカーを再起動します。CIでは両スコープの更新後に、使用前の安定待機、予測要求後の複数回のワーカー交換、停止時に子プロセスが残らないことを短いTTLで確認します。GPUや実モデルの性能測定をこの検証の代わりにはしません。
+
+### 撮影日時のないファイルの回帰検証
+
+既存のビルド後に`tests/Metadata-DateFallback.cjs`を一度実行し、準備済みの実際の`getDates`とサーバーのLuxonを検証します。PNG/JPEGを想定した合成入力だけを使い、画像・DB・サービスにはアクセスしません。
+
+```powershell
+node ./tests/Metadata-DateFallback.cjs ./.work/immich --server-root ./artifacts/application/server
+```
+
+Tokyo・UTC・夏時間の夏冬と切替前後、GPS由来のzone優先、撮影日時がある既存分岐の不変、再処理での二重加算防止を確認します。`tests/Source-Preparation.ps1`は両パッチ一覧の適用順・内容変更・再利用・失敗時の復旧・手作業の変更の保護を確認します。アプリのキャッシュキーにはメタデータパッチも含み、ローカルの既存`sourceDiff`署名にも反映されます。
 
 ### GLibのWindows初期化の検証
 
@@ -71,7 +81,7 @@ GLib 2.89.3には、Windows用TLS（thread-local storage）コールバックの
 - fork、期限切れ・欠落した成果物、変更されたソースや実行attemptなど、再利用の証拠が揃わない場合は通常の検証へ戻します。ハッシュ不一致など不正・破損の疑いは自動で無視せず失敗させます
 - キャッシュはビルドを速めるためだけに使い、合格の証拠として使いません。信頼の前提は、同一リポジトリ内でレビューされmainにマージされたコードと、GitHubに結び付いた不変のrun/artifactです。forkの成果物を特権付きジョブに持ち込みません
 - 公開ジョブでは成果物内のプログラムを実行せず、ファイル名・ハッシュ・package manifestだけ検査します。検証済みZIPを再圧縮せず、manifestの実際のbuild commitも書き換えません。Release本文にmainのcommit、build commit、tree、run、artifact digestを残します
-- 静的監査は`validate`へ統合しました。以前の`static-windows-port-audit / audit`をブランチ保護の必須チェックに指定している場合は、`validate`へ変更してください（この変更でリポジトリの保護設定自体は変更しません）
+- 静的監査は`validate`で実行します。ブランチ保護の静的監査の必須チェックには`validate`を指定します。リポジトリの保護設定は自動変更しません
 
 参考: [GitHubのPR実行コミット](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request)、[成果物の共有](https://docs.github.com/en/actions/tutorials/store-and-share-data)、[特権workflowの安全性](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/)
 

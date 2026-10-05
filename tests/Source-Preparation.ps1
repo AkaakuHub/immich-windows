@@ -10,6 +10,7 @@ $origin = Join-Path $base 'origin'
 $source = Join-Path $base 'source'
 $statePath = Join-Path $root '.work/source-state.json'
 $patchPath = Join-Path $root 'patches/change.patch'
+$metadataPatchPath = Join-Path $root 'metadata-patches/date.patch'
 $pwsh = (Get-Process -Id $PID).Path
 $environment = @{}
 foreach ($name in @('GIT_CONFIG_NOSYSTEM','GIT_CONFIG_GLOBAL','GIT_ATTR_NOSYSTEM')) {
@@ -68,6 +69,8 @@ version = "7.0.0"
     Write-File (Join-Path $origin 'server/package.json') '{"version":"1.0.0","dependencies":{"sharp":"^1.0.0"}}'
     Write-File (Join-Path $origin 'server/Dockerfile') ("FROM ghcr.io/immich-app/base-server-dev:202609281550@sha256:" + ('1' * 64) + " AS builder`nFROM ghcr.io/immich-app/base-server-prod:202609281550@sha256:" + ('2' * 64) + "`n")
     Write-File (Join-Path $origin 'value.txt') "original`n"
+    Write-File (Join-Path $origin 'metadata.txt') "fallback`n"
+    Write-File (Join-Path $origin 'order.txt') "original`n"
     Invoke-Git @('init', '--quiet', $origin) | Out-Null
     Invoke-Git @('-C', $origin, 'add', '.') | Out-Null
     Invoke-Git @('-C', $origin, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'Pinned source') | Out-Null
@@ -78,10 +81,19 @@ version = "7.0.0"
     Write-Pin $commit
     Write-File (Join-Path $root 'patches/series') "change.patch`n"
     $patch = "diff --git a/value.txt b/value.txt`n--- a/value.txt`n+++ b/value.txt`n@@ -1 +1 @@`n-original`n+patchedA`n"
+    $patch += "diff --git a/order.txt b/order.txt`n--- a/order.txt`n+++ b/order.txt`n@@ -1 +1 @@`n-original`n+windows`n"
     Write-File $patchPath $patch
+    Write-File (Join-Path $root 'metadata-patches/series') "date.patch`n"
+    $metadataPatch = "diff --git a/metadata.txt b/metadata.txt`n--- a/metadata.txt`n+++ b/metadata.txt`n@@ -1 +1 @@`n-fallback`n+localTimeA`n"
+    $metadataPatch += "diff --git a/order.txt b/order.txt`n--- a/order.txt`n+++ b/order.txt`n@@ -1 +1 @@`n-windows`n+metadata`n"
+    Write-File $metadataPatchPath $metadataPatch
 
     Prepare 'Prepared Immich'
     Check ((Get-Content -Raw (Join-Path $source 'value.txt')) -ceq "patchedA`n") 'Initial patch was not applied.'
+    Check ((Get-Content -Raw (Join-Path $source 'metadata.txt')) -ceq "localTimeA`n") 'Metadata patch was not applied.'
+    Check ((Get-Content -Raw (Join-Path $source 'order.txt')) -ceq "metadata`n") 'Metadata patches did not follow Windows patches.'
+    $state = Get-Content -Raw $statePath | ConvertFrom-Json
+    Check (($state.patches -join ',') -ceq 'patches/change.patch,metadata-patches/date.patch') 'Both ordered patch stacks must be recorded.'
     $initialState = Get-Content -Raw $statePath
     Prepare 'Reusing prepared Immich'
     Check ((Get-Content -Raw $statePath) -ceq $initialState) 'Reuse rewrote source state.'
@@ -96,6 +108,17 @@ version = "7.0.0"
     Check ((Get-Item $patchPath).Length -eq $length) 'Patch mutation did not preserve length.'
     Prepare 'Prepared Immich'
     Check ((Get-Content -Raw (Join-Path $source 'value.txt')) -ceq "patchedB`n") 'Same-length, same-time patch change was reused.'
+
+    # Metadata patch bytes must invalidate the same preparation state, even when
+    # the filename, length, timestamp and Windows patch series are unchanged.
+    $metadataMtime = (Get-Item $metadataPatchPath).LastWriteTimeUtc
+    $metadataLength = (Get-Item $metadataPatchPath).Length
+    Write-File $metadataPatchPath ($metadataPatch.Replace('localTimeA', 'localTimeB'))
+    (Get-Item $metadataPatchPath).LastWriteTimeUtc = $metadataMtime
+    Check ((Get-Item $metadataPatchPath).Length -eq $metadataLength) 'Metadata mutation did not preserve length.'
+    Prepare 'Prepared Immich'
+    Check ((Get-Content -Raw (Join-Path $source 'metadata.txt')) -ceq "localTimeB`n") 'Metadata patch content change was reused.'
+    Prepare 'Reusing prepared Immich'
 
     Write-Pin $otherCommit
     Prepare 'Source does not match pinned tag/commit' -Reject
@@ -130,17 +153,34 @@ version = "7.0.0"
     Check ((Invoke-Git @('-C', $source, 'diff', '--cached', '--name-only')) -eq 'value.txt') 'Staged edits were discarded.'
     Invoke-Git @('-C', $source, 'restore', '--staged', '--', '.') | Out-Null
 
+    # User edits in the metadata-patched file are protected by the same trust proof.
+    Write-File (Join-Path $source 'metadata.txt') "user metadata edit`n"
+    Prepare 'unrecognized changes' -Reject
+    Check ((Get-Content -Raw (Join-Path $source 'metadata.txt')) -ceq "user metadata edit`n") 'A metadata-file edit was overwritten.'
+    Write-File (Join-Path $source 'metadata.txt') "localTimeB`n"
+
+    # Missing, unlisted and duplicate metadata entries fail before touching source.
+    $metadataSeriesPath = Join-Path $root 'metadata-patches/series'
+    Remove-Item -LiteralPath $metadataSeriesPath
+    Prepare 'Patch series file is missing' -Reject
+    Write-File $metadataSeriesPath "# empty list`n"
+    Prepare 'Unlisted patch files exist' -Reject
+    Write-File $metadataSeriesPath "date.patch`ndate.patch`n"
+    Prepare 'Duplicate patch entries' -Reject
+    Write-File $metadataSeriesPath "date.patch`n"
+    Prepare 'Reusing prepared Immich'
+
     # A failed replacement patch must not leave partially prepared source or
     # advertise new state; the last state remains unusable until preparation succeeds.
-    $badPatch = Join-Path $root 'patches/bad.patch'
+    $badPatch = Join-Path $root 'metadata-patches/bad.patch'
     Write-File $badPatch ($patch.Replace('-original', '-does-not-exist'))
-    Write-File (Join-Path $root 'patches/series') "change.patch`nbad.patch`n"
+    Write-File $metadataSeriesPath "date.patch`nbad.patch`n"
     Prepare 'Command failed with exit code' -Reject
     Check (@(Invoke-Git @('-C', $source, 'status', '--porcelain')).Count -eq 0) "Failed patch left source dirty.`n$preparationOutput"
     $stateAfterFailure = Get-Content -Raw $statePath
     Check ($stateAfterFailure -ceq $validState) "Failed patch changed saved state.`nBefore: $validState`nAfter: $stateAfterFailure`n$preparationOutput"
     Remove-Item -LiteralPath $badPatch
-    Write-File (Join-Path $root 'patches/series') "change.patch`n"
+    Write-File $metadataSeriesPath "date.patch`n"
     Prepare 'Prepared Immich'
     Prepare 'Reusing prepared Immich'
 
@@ -181,7 +221,7 @@ version = "7.0.0"
     Write-File (Join-Path $source 'notes.txt') 'keep this directory'
     Prepare 'Could not inspect the source commit' -Reject
     Check ((Get-Content -Raw (Join-Path $source 'notes.txt')) -ceq 'keep this directory') 'A non-Git destination was changed.'
-    Write-Host 'PASS source preparation: content identity, commit/tag pins, safe resets, local edits, patch failure recovery.'
+    Write-Host 'PASS source preparation: both ordered stacks, content identity, commit/tag pins, safe resets, local edits, patch failure recovery.'
 } finally {
     foreach ($name in $environment.Keys) {
         if ($null -eq $environment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }

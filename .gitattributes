@@ -1,6 +1,7 @@
 # Patch files must retain LF endings so git apply sees byte-stable context on Windows.
 *.patch text eol=lf
 patches/series text eol=lf
+metadata-patches/series text eol=lf
 
 # Repository metadata is kept deterministic across build hosts.
 *.json text eol=lf

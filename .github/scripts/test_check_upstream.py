@@ -324,6 +324,30 @@ class WatcherTests(unittest.TestCase):
             self.run_check()
         self.assertFalse(any(x[1] in ('git/trees', 'git/commits', 'git/refs', 'pulls') for x in self.api.writes))
 
+
+    def test_updater_can_rebase_and_remove_both_patch_stacks(self):
+        self.preflight.return_value = {
+            'patches/server/fix.patch': 'rebased Windows patch',
+            'metadata-patches/server/fix.patch': None,
+            'metadata-patches/series': '# Metadata corrections\n',
+        }
+        self.assertEqual(self.run_check(), 'dispatched')
+        entries = next(data['tree'] for _, path, data in self.api.writes if path == 'git/trees')
+        paths = {entry['path']: entry for entry in entries}
+        self.assertEqual(paths['metadata-patches/server/fix.patch']['sha'], None)
+        self.assertIn('metadata-patches/series', paths)
+        self.assertIn('patches/server/fix.patch', paths)
+
+    def test_updater_rejects_disallowed_metadata_outputs_before_any_write(self):
+        for path in ('metadata-patches/machine-learning/fix.patch', 'metadata-patches/README.md',
+                     'metadata-patches/server/../fix.patch', 'metadata-patches/server/.git/fix.patch',
+                     'metadata-patches/server/fix.patch:stream', 'metadata-patches/server/a\\b.patch'):
+            with self.subTest(path=path):
+                self.preflight.return_value = {path: 'unsafe'}
+                with self.assertRaises(ValueError):
+                    self.run_check()
+                self.assertEqual(self.api.writes, [])
+
     def test_failed_patch_preflight_creates_no_external_state(self):
         self.preflight.side_effect = ValueError('Cannot automatically apply Windows patch example.patch')
         with self.assertRaisesRegex(ValueError, 'Cannot automatically apply'):
@@ -342,6 +366,8 @@ class PatchTests(unittest.TestCase):
     def preflight(self, new_source):
         api = Mock()
         def file(path, ref, repo=None):
+            if path == 'metadata-patches/series':
+                return '# Metadata corrections\n'
             if path == 'patches/series':
                 return self.series
             if path == 'patches/server/fix.patch':
@@ -403,13 +429,104 @@ class PatchTests(unittest.TestCase):
         self.assertIn('upstream improvement', changed['patches/server/fix.patch'])
 
     def test_overlapping_conflict_names_exact_patch_and_stops(self):
-        with self.assertRaisesRegex(ValueError, 'Cannot automatically apply Windows patch server/fix.patch'):
+        with self.assertRaisesRegex(ValueError, 'Cannot automatically apply patch patches/server/fix.patch'):
             self.preflight(self.before.replace('line 7\n', 'conflicting upstream fix\n'))
 
     def test_unsafe_target_is_rejected(self):
         self.patch = self.patch.replace('server/example.ts', '../outside.ts')
         with self.assertRaisesRegex(ValueError, 'Unsafe target'):
             self.preflight(self.before)
+
+
+class CombinedPatchTests(unittest.TestCase):
+    def setUp(self):
+        self.before = ''.join(f'line {n}\n' for n in range(1, 41))
+        self.windows = self.before.replace('line 7\n', 'Windows fix\n')
+        self.both = self.windows.replace('line 24\n', 'Metadata fix\n')
+        self.series = {
+            'patches/series': '# Windows portability\nserver/fix.patch\n',
+            'metadata-patches/series': '# Metadata corrections\nserver/fix.patch\n',
+        }
+        self.patches = {
+            'patches/server/fix.patch': self.diff(self.before, self.windows),
+            'metadata-patches/server/fix.patch': self.diff(self.windows, self.both),
+        }
+        self.api = Mock()
+
+    @staticmethod
+    def diff(before, after):
+        return ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                           fromfile='a/server/example.ts', tofile='b/server/example.ts'))
+
+    def preflight(self, source):
+        def file(path, ref, repo=None):
+            if repo == check.UPSTREAM:
+                self.assertEqual(path, 'server/example.ts')
+                self.assertIn(ref, (OLD, NEW))
+                return self.before if ref == OLD else source
+            self.assertIsNone(repo)
+            self.assertEqual(ref, MAIN)
+            return (self.series | self.patches)[path]
+        self.api.file.side_effect = file
+        return check.prepare_patches(self.api, MAIN, OLD, NEW)
+
+    def test_both_stacks_keep_exact_bytes_with_same_entry_name(self):
+        self.assertEqual(self.preflight(self.before), {})
+        self.api.file.assert_any_call('patches/server/fix.patch', MAIN)
+        self.api.file.assert_any_call('metadata-patches/server/fix.patch', MAIN)
+
+    def test_stacks_apply_in_source_preparation_order_on_shared_target(self):
+        self.patches['metadata-patches/server/fix.patch'] = self.diff(
+            self.windows, self.windows.replace('Windows fix\n', 'Metadata after Windows fix\n'))
+        self.assertEqual(self.preflight(self.before), {})
+
+    def test_removal_changes_only_own_series_even_with_same_entry_name(self):
+        for root, source, comment in (
+            ('patches', self.windows, '# Windows portability\n'),
+            ('metadata-patches', self.before.replace('line 24\n', 'Metadata fix\n'), '# Metadata corrections\n'),
+        ):
+            with self.subTest(root=root):
+                self.assertEqual(self.preflight(source), {root + '/server/fix.patch': None, root + '/series': comment})
+
+    def test_upstream_incorporating_both_fixes_removes_both_entries(self):
+        self.assertEqual(self.preflight(self.both), {
+            'patches/server/fix.patch': None, 'patches/series': '# Windows portability\n',
+            'metadata-patches/server/fix.patch': None, 'metadata-patches/series': '# Metadata corrections\n',
+        })
+
+    def test_both_stacks_rebase_conflict_free_with_directory_identity(self):
+        changed = self.preflight(self.before.replace('line 4\n', 'upstream portability context\n')
+                                .replace('line 21\n', 'upstream metadata context\n'))
+        self.assertEqual(set(changed), set(self.patches))
+        self.assertIn('+Windows fix', changed['patches/server/fix.patch'])
+        self.assertIn('upstream portability context', changed['patches/server/fix.patch'])
+        self.assertIn('+Metadata fix', changed['metadata-patches/server/fix.patch'])
+        self.assertIn('upstream metadata context', changed['metadata-patches/server/fix.patch'])
+
+    def test_metadata_conflict_names_exact_patch_and_stops(self):
+        with self.assertRaisesRegex(ValueError, 'Cannot automatically apply patch metadata-patches/server/fix.patch'):
+            self.preflight(self.before.replace('line 24\n', 'conflicting upstream metadata fix\n'))
+        self.api.write.assert_not_called()
+
+    def test_duplicate_metadata_series_entry_is_rejected(self):
+        self.series['metadata-patches/series'] += 'server/fix.patch\n'
+        with self.assertRaisesRegex(ValueError, 'Duplicate entries in metadata-patches/series'):
+            self.preflight(self.before)
+
+    def test_metadata_is_restricted_to_server_targets(self):
+        self.patches['metadata-patches/server/fix.patch'] = self.patches['metadata-patches/server/fix.patch'].replace(
+            'server/example.ts', 'machine-learning/example.py')
+        with self.assertRaisesRegex(ValueError, 'Unsafe target in patch metadata-patches/server/fix.patch'):
+            self.preflight(self.before)
+
+    def test_metadata_series_cannot_escape_its_directory(self):
+        for name in ('../patches/server/fix.patch', '/server/fix.patch', 'server/./fix.patch',
+                     'server//fix.patch', 'server/.git/fix.patch', 'server/a:b.patch', 'server/a\\b.patch',
+                     'machine-learning/fix.patch'):
+            with self.subTest(name=name):
+                self.series['metadata-patches/series'] = name + '\n'
+                with self.assertRaises(ValueError):
+                    self.preflight(self.before)
 
 
 if __name__ == '__main__':

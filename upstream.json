@@ -5,5 +5,5 @@
   "channel": "stable",
   "buildArchitecture": "win-x64",
   "notes": "v3.2.4 stable source and upstream production runtime pins. Native compatibility requires the release qualification gates.",
-  "windowsRevision": 3
+  "windowsRevision": 4
 }

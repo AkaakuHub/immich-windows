@@ -223,9 +223,10 @@ def automation_changes(api, head, base):
     changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
     require('upstream.json' in changed, 'Automatic update did not change its upstream pin')
     for path in changed:
-        allowed = path in ('upstream.json', 'dependencies/versions.json', 'patches/series') or (
-            path.startswith(('patches/server/', 'patches/machine-learning/')) and path.endswith('.patch'))
-        require(allowed and all(part not in ('', '.', '..') for part in path.split('/')),
+        allowed = path in ('upstream.json', 'dependencies/versions.json', 'patches/series', 'metadata-patches/series') or (
+            path.startswith(('patches/server/', 'patches/machine-learning/', 'metadata-patches/server/')) and path.endswith('.patch'))
+        require(allowed and all(part not in ('', '.', '..', '.git') for part in path.split('/'))
+                and '\\' not in path and ':' not in path,
                 f'Automatic update changed a disallowed path: {path}')
         for tree in trees:
             require(path not in tree or tree[path][:2] == ('100644', 'blob'),

@@ -205,21 +205,22 @@ try {
     Assert-True (-not (Test-ImmichDatabasePayloadEqual $left $right)) 'Missing proof must not skip the DB backup.'
 } finally { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
 
-$seriesPath=Join-Path $root 'patches/series'
-Assert-True (Test-Path -LiteralPath $seriesPath -PathType Leaf) 'patches/series is required.'
-$series=@(Get-Content -LiteralPath $seriesPath|ForEach-Object{$_.Trim()}|Where-Object{$_ -and -not $_.StartsWith('#')})
-$listed=@($series|ForEach-Object{(Join-Path (Join-Path $root 'patches') $_)})
-$all=@(Get-ChildItem -LiteralPath (Join-Path $root 'patches') -Recurse -Filter '*.patch' -File|Select-Object -ExpandProperty FullName)
-Assert-True ($all.Count -eq $listed.Count) 'Every .patch file must be listed exactly once in patches/series.'
-foreach($file in $listed){Assert-True (Test-Path -LiteralPath $file -PathType Leaf) "Missing patch file: $file"}
-foreach($file in $all){Assert-True ($file -in $listed) "Unlisted patch file: $file"}
+foreach($patchDirectory in @('patches','metadata-patches')){
+    $patchRoot=Join-Path $root $patchDirectory
+    $seriesPath=Join-Path $patchRoot 'series'
+    Assert-True (Test-Path -LiteralPath $seriesPath -PathType Leaf) "$patchDirectory/series is required."
+    $series=@(Get-Content -LiteralPath $seriesPath|ForEach-Object{$_.Trim()}|Where-Object{$_ -and -not $_.StartsWith('#')})
+    $listed=@($series|ForEach-Object{(Join-Path $patchRoot $_)})
+    $all=@(Get-ChildItem -LiteralPath $patchRoot -Recurse -Filter '*.patch' -File|Select-Object -ExpandProperty FullName)
+    Assert-True ($all.Count -eq $listed.Count -and @($listed|Sort-Object -Unique).Count -eq $listed.Count) "Every .patch file must be listed exactly once in $patchDirectory/series."
+    foreach($file in $listed){Assert-True (Test-Path -LiteralPath $file -PathType Leaf) "Missing patch file: $file"}
+    foreach($file in $all){Assert-True ($file -in $listed) "Unlisted patch file: $file"}
 
-# Parse each patch without requiring an upstream working tree. This catches malformed
-# unified-diff hunk headers before the networked Prepare-Source CI stage.
-foreach($relative in $series){
-    $patch=Join-Path (Join-Path $root 'patches') $relative
-    $output=& git apply --numstat -- $patch 2>&1
-    Assert-True ($LASTEXITCODE -eq 0) "Malformed patch file: $relative`n$($output -join "`n")"
+    # Parse both stacks before the networked Prepare-Source CI stage.
+    foreach($patch in $listed){
+        $output=& git apply --numstat -- $patch 2>&1
+        Assert-True ($LASTEXITCODE -eq 0) "Malformed patch file: $patch`n$($output -join "`n")"
+    }
 }
 
 # This repository is a distribution/patch layer, not an Immich source fork.

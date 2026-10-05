@@ -21,25 +21,35 @@ $commit = $commit.Trim()
 $actualTag = (& git -C $Destination describe --tags --exact-match HEAD 2>$null)
 $tagMatches = $LASTEXITCODE -eq 0 -and $actualTag -eq $upstream.version
 
-$seriesPath = Join-Path $root 'patches\series'
-if (-not (Test-Path -LiteralPath $seriesPath -PathType Leaf)) { throw "Patch series file is missing: $seriesPath" }
-$series = @(
-    Get-Content -LiteralPath $seriesPath |
-        ForEach-Object { $_.Trim() } |
-        Where-Object { $_ -and -not $_.StartsWith('#') }
-)
+# Keep Windows compatibility and metadata behavior patches separate, but prepare
+# them in one ordered, content-verified source transaction.
 $patches = @()
-foreach ($relative in $series) {
-    if ($relative -match '(^|[\/])\.\.([\/]|$)') { throw "Patch series entry escapes patches/: $relative" }
-    $patch = Get-Item -LiteralPath (Join-Path (Join-Path $root 'patches') $relative) -ErrorAction Stop
-    if ($patch.Extension -ne '.patch') { throw "Patch series entry is not a .patch file: $relative" }
-    $patches += $patch
-}
-$allPatches = @(Get-ChildItem -LiteralPath (Join-Path $root 'patches') -Recurse -Filter '*.patch' -File)
-$listed = @($patches | ForEach-Object { $_.FullName.ToLowerInvariant() })
-$unlisted = @($allPatches | Where-Object { $_.FullName.ToLowerInvariant() -notin $listed })
-if ($unlisted.Count) {
-    throw "Unlisted patch files exist. Add them to patches/series or remove them:`n$($unlisted.FullName -join "`n")"
+foreach ($patchDirectory in @('patches', 'metadata-patches')) {
+    $patchRoot = Join-Path $root $patchDirectory
+    $seriesPath = Join-Path $patchRoot 'series'
+    if (-not (Test-Path -LiteralPath $seriesPath -PathType Leaf)) { throw "Patch series file is missing: $seriesPath" }
+    $series = @(
+        Get-Content -LiteralPath $seriesPath |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') }
+    )
+    $seriesPatches = @()
+    foreach ($relative in $series) {
+        if ([IO.Path]::IsPathRooted($relative) -or $relative.Contains(':') -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+            throw "Patch series entry escapes ${patchDirectory}/: $relative"
+        }
+        $patch = Get-Item -LiteralPath (Join-Path $patchRoot $relative) -ErrorAction Stop
+        if ($patch.Extension -ne '.patch') { throw "Patch series entry is not a .patch file: $relative" }
+        $seriesPatches += $patch
+    }
+    $allPatches = @(Get-ChildItem -LiteralPath $patchRoot -Recurse -Filter '*.patch' -File)
+    $listed = @($seriesPatches | ForEach-Object { $_.FullName.ToLowerInvariant() })
+    if (@($listed | Sort-Object -Unique).Count -ne $listed.Count) { throw "Duplicate patch entries in ${patchDirectory}/series." }
+    $unlisted = @($allPatches | Where-Object { $_.FullName.ToLowerInvariant() -notin $listed })
+    if ($unlisted.Count) {
+        throw "Unlisted patch files exist. Add them to ${patchDirectory}/series or remove them:`n$($unlisted.FullName -join "`n")"
+    }
+    $patches += $seriesPatches
 }
 
 $patchNames = @($patches | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\','/') })

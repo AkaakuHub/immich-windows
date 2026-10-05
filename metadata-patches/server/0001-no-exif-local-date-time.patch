@@ -1,0 +1,13 @@
+diff --git a/server/src/services/metadata.service.ts b/server/src/services/metadata.service.ts
+--- a/server/src/services/metadata.service.ts
++++ b/server/src/services/metadata.service.ts
+@@ -1050,3 +1050,8 @@
+       );
+-      dateTimeOriginal = localDateTime = earliestDate;
++      // Filesystem dates are instants. Prefer a metadata/GPS zone when present,
++      // otherwise use the configured runtime zone already resolved by Luxon.
++      const localDate = earliestDate.setZone(timeZone ?? earliestDate.zone);
++      dateTimeOriginal = earliestDate;
++      localDateTime = localDate.setZone('UTC', { keepLocalTime: true });
++      timeZone = localDate.zoneName;
+     }

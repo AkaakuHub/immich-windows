@@ -264,7 +264,7 @@ jobs:
         id: application-cache
         with:
           path: artifacts/application
-          key: application-${{ runner.os }}-${{ steps.application-key.outputs.application }}-${{ steps.application-key.outputs.upstream }}-${{ hashFiles('patches/server/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
+          key: application-${{ runner.os }}-${{ steps.application-key.outputs.application }}-${{ steps.application-key.outputs.upstream }}-${{ hashFiles('patches/server/**', 'patches/series', 'metadata-patches/server/**', 'metadata-patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: application-${{ runner.os }}-
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: ml-cache
@@ -283,6 +283,10 @@ jobs:
           $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures'))
           .\build\Enter-VsDevEnvironment.ps1
           .\build\Build-All.ps1 -SkipNativeDependencies -CustomSharpLibvipsBundle ./artifacts/native/sharp-libvips-custom -SharpFixture $fixtures
+          & ./.tools/node/node.exe ./tests/Metadata-DateFallback.cjs .work/immich --server-root artifacts/application/server
+          if ($LASTEXITCODE -ne 0) { throw 'Metadata date fallback checks failed.' }
+          & ./.tools/node/node.exe --test ./tests/Metadata-DateRepair-Core.test.cjs ./tests/Metadata-DateRepair-Gates.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Metadata date repair guard checks failed.' }
           .\build\Stage-VcRuntime.ps1
           $version = '${{ needs.plan.outputs.version }}'
           $folder = "immich-windows-$version-win-x64"
@@ -386,6 +390,14 @@ jobs:
           & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
             -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
           ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $installRoot -DataRoot $dataRoot -LeaveStopped
+          # Reuse this already migrated, stopped disposable CI installation.
+          $env:IMMICH_METADATA_REPAIR_TEST_ONLY = '1'
+          try {
+            & "$installRoot/current/runtime/node/node.exe" ./tests/Metadata-DateRepair-Integration.cjs `
+              --release-root "$installRoot/current" `
+              --password-file (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
+            if ($LASTEXITCODE -ne 0) { throw 'Installed metadata date repair checks failed.' }
+          } finally { Remove-Item Env:IMMICH_METADATA_REPAIR_TEST_ONLY -ErrorAction SilentlyContinue }
           Write-Host ('AllUsers qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
 
           # Verify the real profile before using the disposable CI profile.
