@@ -276,7 +276,8 @@ test().catch(error => {
   // A stable stage and source line locate failures without values, paths, SQL,
   // assertion diffs, connection settings, or credentials in the public log.
   const line = /Metadata-DateRepair-Integration\.cjs:(\d+):\d+/.exec(error.stack || '')?.[1];
+  const errorClass = ['Error','SyntaxError','ReferenceError','TypeError','RangeError','AssertionError'].includes(error.name) ? error.name : 'Error';
   const code = typeof error.code === 'string' && /^[a-z0-9_-]+$/i.test(error.code) ? error.code : 'test-failure';
-  process.stderr.write(`Metadata repair integration failed: ${JSON.stringify({ stage, code, line })}\n`);
+  process.stderr.write(`Metadata repair integration failed: ${JSON.stringify({ stage, code, errorClass, line })}\n`);
   process.exitCode = 1;
 });

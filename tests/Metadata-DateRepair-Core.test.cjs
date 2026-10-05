@@ -49,6 +49,7 @@ const options = { ownerId:OWNER, limit:100, pageSize:2 };
 async function prepared(adapter = fake()) { const p = await core.plan(adapter, options); return { adapter,p,approved:{approvedDigest:core.hash(p),acknowledgeHistoryAmbiguity:true} }; }
 async function rejectsCode(fn, code) { await assert.rejects(fn, e => e.code === code); }
 
+test('runtime adapter imports without starting the server', () => { const runtime = require('../runtime/metadata-date-repair/runtime.cjs'); assert.equal(typeof runtime.createAdapter, 'function'); });
 test('default command is plan, unknown and duplicate options fail closed', () => { assert.equal(parse([]).command,'plan'); assert.throws(()=>parse(['--apply'])); assert.throws(()=>parse(['plan','--limit','1','--limit','2'])); });
 test('plan is bounded, keyset-paged, read-only, with honest continuation', async () => { const a=fake(5), p=await core.plan(a,{...options,limit:3}); assert.equal(p.entries.length,3); assert.equal(p.inspected,3); assert.equal(p.exhausted,false); assert.equal(p.nextAfterId,ID(3)); assert.deepEqual(a.calls.map(v=>v.limit),[2,1]); assert.equal(a.events.includes('begin'),false); });
 test('empty candidate scope reports exhaustion without claiming entire library',async()=>{ const a=fake(0),p=await core.plan(a,options); assert.equal(p.exhausted,true); assert.equal(p.scope.ownerId,OWNER); });

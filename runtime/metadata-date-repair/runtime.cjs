@@ -17,7 +17,20 @@ async function regularPath(p) {
   return { s, real };
 }
 function statToken(s, real) { return { real: normalized(real), dev: String(s.dev), ino: String(s.ino), mode: String(s.mode), nlink: String(s.nlink), size: String(s.size), mtimeNs: String(s.mtimeNs), ctimeNs: String(s.ctimeNs), birthtimeNs: String(s.birthtimeNs) }; }
-const ASSET_FIELDS = ['id', 'ownerId', 'originalPath', 'fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'updateId', 'isEdited', 'isOff…316 tokens truncated…positories/config.repository.js', 'dist/utils/database.js', 'dist/enum.js', 'package.json'];
+const ASSET_FIELDS = ['id', 'ownerId', 'originalPath', 'fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'updateId', 'isEdited', 'isOffline', 'isExternal', 'deletedAt', 'type', 'livePhotoVideoId'];
+const EXIF_FIELDS = ['assetId', 'dateTimeOriginal', 'timeZone', 'lockedProperties', 'updatedAt', 'updateId'];
+const DATE_FIELDS = new Set(['fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'dateTimeOriginal', 'deletedAt']);
+async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly = false }) {
+  core.insist(process.platform === 'win32', 'windows-runtime-required');
+  core.insist(path.isAbsolute(releaseRoot), 'absolute-release-root-required');
+  if (connect && !usersOnly) core.insist(UUID.test(ownerId), 'owner-id-required');
+  core.insist(!usersOnly || (connect && ownerId === undefined), 'invalid-user-list-scope');
+  const release = await fs.realpath(releaseRoot);
+  const server = path.join(release, 'server');
+  const manifest = JSON.parse((await fs.readFile(path.join(release, 'manifest.json'), 'utf8')).replace(/^\uFEFF/, ''));
+  core.insist(manifest.upstreamCommit === PIN && /^v?3\.2\.4(?:\.|$)/.test(manifest.immichVersion), 'unsupported-upstream-build');
+  const req = createRequire(path.join(server, 'package.json'));
+  const runtimeFiles = ['dist/services/metadata.service.js', 'dist/repositories/metadata.repository.js', 'dist/repositories/config.repository.js', 'dist/utils/database.js', 'dist/enum.js', 'package.json'];
   const hashes = {};
   for (const file of runtimeFiles) hashes[file] = createHash('sha256').update(await fs.readFile(path.join(server, file))).digest('hex');
   const quiet = { log: console.log, info: console.info, warn: console.warn, error: console.error, debug: console.debug };
