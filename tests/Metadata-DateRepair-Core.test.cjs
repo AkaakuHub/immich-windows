@@ -17,6 +17,7 @@ function fake(count = 1) {
     get rows() { return rows; },
     async candidates(o) { calls.push(o); return [...rows.values()].filter(s => s.asset.ownerId === o.ownerId && (!o.afterId || s.asset.id > o.afterId)).slice(0,o.limit).map(v=>structuredClone(v)); },
     async snapshot(id) { return structuredClone(rows.get(id)); },
+    async snapshots(ids) { return ids.filter(id => rows.has(id)).map(id => structuredClone(rows.get(id))); },
     async sidecarsAbsent() { events.push('sidecar'); return true; },
     async stat() { events.push('stat'); return { token: { size:'42', mtimeNs:'1', ctimeNs:'2', birthtimeNs:'3', ino:'4' }, stats: { birthtimeMs: Date.parse(INSTANT), mtimeMs: Date.parse(INSTANT)+1000, mtime: new Date(Date.parse(INSTANT)+1000) } }; },
     async readMetadata(p) { events.push('metadata'); return { canonicalSourcePath: p, tags: { SourceFile: p, MIMEType:'image/png' } }; },

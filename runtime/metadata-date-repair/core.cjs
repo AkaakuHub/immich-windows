@@ -39,15 +39,18 @@ function strictTags(tags, sourcePath, parseCapture) {
   insist(!MOTION_TAGS.some(k => nonempty(tags[k])), 'motion-or-live-metadata');
 }
 async function verifySource(adapter, s) {
-  insist((await adapter.sidecarsAbsent(s.asset.originalPath)), 'sibling-sidecar');
+  const actual = iso(s.asset.fileCreatedAt);
   const start = await adapter.stat(s.asset.originalPath);
+  // Reject definite filesystem-date mismatches before opening the original for metadata.
+  const initialMillis = start.stats.birthtimeMs ? Math.min(start.stats.mtimeMs, start.stats.birthtimeMs) : start.stats.mtime.getTime();
+  insist(new Date(initialMillis).toISOString() === actual, 'stored-instant-not-filesystem-anchored');
+  insist((await adapter.sidecarsAbsent(s.asset.originalPath)), 'sibling-sidecar');
   const metadata = await adapter.readMetadata(s.asset.originalPath);
   strictTags(metadata.tags, metadata.canonicalSourcePath, adapter.firstDateTime);
   const end = await adapter.stat(s.asset.originalPath);
   insist(same(start.token, end.token), 'source-changed-during-read');
   insist(await adapter.sidecarsAbsent(s.asset.originalPath), 'sibling-sidecar');
   const result = adapter.getDates(s.asset, metadata.tags, end.stats);
-  const actual = iso(s.asset.fileCreatedAt);
   const diskMillis = end.stats.birthtimeMs ? Math.min(end.stats.mtimeMs, end.stats.birthtimeMs) : end.stats.mtime.getTime();
   insist(new Date(diskMillis).toISOString() === actual, 'stored-instant-not-filesystem-anchored');
   insist(iso(result.dateTimeOriginal) === actual && iso(s.exif.dateTimeOriginal) === actual, 'fallback-instant-differs');
@@ -68,6 +71,7 @@ async function plan(adapter, options) {
     const rows = await adapter.candidates({ ownerId: options.ownerId, afterId: cursor, limit: count });
     insist(Array.isArray(rows) && rows.length <= count, 'invalid-page');
     if (!rows.length) { output.exhausted = true; break; }
+    const pending = [];
     for (const snapshot of rows) {
       const id = snapshot.asset?.id;
       insist(UUID.test(id) && (!cursor || id > cursor) && !seen.has(id), 'invalid-keyset-order');
@@ -75,10 +79,26 @@ async function plan(adapter, options) {
       seen.add(id); cursor = id; output.inspected++;
       let reason = initialReason(snapshot);
       if (!reason) {
-        try { const evidence = await verifySource(adapter, snapshot); const current = await adapter.snapshot(id); insist(same(current, snapshot), 'snapshot-changed-during-plan'); output.entries.push({ id, snapshot, ...evidence }); }
+        try { pending.push({ id, snapshot, ...await verifySource(adapter, snapshot) }); }
         catch (e) { if (!(e instanceof Stop)) throw e; reason = e.code; }
       }
       if (reason) output.excluded.push({ id, reason });
+    }
+    if (pending.length) {
+      insist(typeof adapter.snapshots === 'function', 'batch-snapshots-required');
+      const ids = new Set(pending.map(entry => entry.id));
+      const current = await adapter.snapshots([...ids]);
+      insist(Array.isArray(current), 'invalid-snapshot-batch');
+      const byId = new Map();
+      for (const snapshot of current) {
+        const id = snapshot?.asset?.id;
+        insist(ids.has(id) && snapshot.asset.ownerId === options.ownerId && !byId.has(id), 'invalid-snapshot-batch');
+        byId.set(id, snapshot);
+      }
+      for (const entry of pending) {
+        if (same(byId.get(entry.id), entry.snapshot)) output.entries.push(entry);
+        else output.excluded.push({ id: entry.id, reason: 'snapshot-changed-during-plan' });
+      }
     }
     options.onProgress?.({ inspected: output.inspected, proposed: output.entries.length });
     if (rows.length < count) { output.exhausted = true; break; }

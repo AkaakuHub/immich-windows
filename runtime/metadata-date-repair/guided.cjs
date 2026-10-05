@@ -13,6 +13,8 @@ const messages = {
   noUsers: ['No active Immich users were found.', '有効なImmichユーザーが見つかりませんでした。'],
   scanning: ['Checking suspicious dates. Keep this window open.', '修復候補の日付を確認しています。この画面を閉じないでください。'],
   checked: ['Candidates checked', '確認した候補'],
+  elapsed: ['Elapsed', '経過'],
+  rate: ['candidates/s', '候補/秒'],
   proposed: ['Dates to repair', '修復対象'],
   excluded: ['Excluded by safety checks', '安全性の確認で除外'],
   user: ['Selected user', '選択したユーザー'],
@@ -82,8 +84,12 @@ async function runGuided({ releaseRoot, outputRoot, language = 'en' }, io, depen
     const indexFile = path.join(directory, 'plan.json');
     say('saved', directory); say('scanning');
     const common = ['--release-root', releaseRoot, '--owner-id', user.id, '--expected-timezone', timezone];
+    const scanStarted = performance.now();
     const planned = await run(['plan-all', ...common, '--out', indexFile], {
-      emit() {}, onEvent: event => { if (event.kind === 'plan-progress') say('checked', `${event.inspected}; ${text(language, 'proposed')}: ${event.proposed}`); },
+      emit() {}, onEvent: event => { if (event.kind === 'plan-progress') {
+        const seconds = (performance.now() - scanStarted) / 1000;
+        say('checked', `${event.inspected}; ${text(language, 'proposed')}: ${event.proposed}; ${text(language, 'elapsed')}: ${seconds.toFixed(1)}s; ${seconds > 0 ? (event.inspected / seconds).toFixed(1) : '0.0'} ${text(language, 'rate')}`);
+      } },
     });
     const index = JSON.parse(await fs.readFile(indexFile, 'utf8'));
     core.insist(index.format === core.INDEX_FORMAT && index.scope?.ownerId === user.id && index.identity?.timezone === timezone && core.hash(index) === planned.indexDigest, 'guided-plan-identity-mismatch');

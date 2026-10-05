@@ -118,6 +118,8 @@ async function test() {
     stage = 'installed-database-adapter';
     adapter = await createAdapter({ releaseRoot, ownerId });
     const initial = await adapter.snapshot(assetId);
+    assert.deepEqual(await adapter.snapshots([assetId, randomUUID()]), [initial], 'Batch snapshot must return only existing assets in this owner scope');
+    await assert.rejects(adapter.snapshots([assetId, assetId]), /invalid-snapshot-batch/);
     const initialFullRows = await fullRows();
     assert.equal(initial.asset.ownerId, ownerId);
     assert.deepEqual(initial.exif.lockedProperties, [], 'Normal SQL null locks mean no locks');
