@@ -15,7 +15,9 @@ const partName = n => 'plan.json.part-' + String(n).padStart(4, '0') + '.json';
 function plan({ start = 1, count = 2, after = null, exhausted = false, hashes = KNOWN_TOOL_HASHES[0] } = {}) {
   return { format: core.FORMAT, createdAt: '2026-10-05T00:00:00.000Z', identity: { ...current(), toolHashes: { ...hashes } }, historyWarning: core.HISTORY_WARNING, scope: { ownerId: OWNER, limit: Math.max(count, 1), pageSize: 2, afterId: after }, inspected: count, entries: [], excluded: Array.from({ length: count }, (_, i) => ({ id: ID(start + i), reason: 'existing-timezone' })), exhausted, nextAfterId: exhausted ? null : ID(start + count - 1) };
 }
-async function fixture(fn) { const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'date-repair-resume-')); try { await fn(directory); } finally { await fs.rm(directory, { recursive: true, force: true }); } }
+// Windows TEMP may use an 8.3 parent spelling; fixtures must pass the canonical
+// directory they created, without weakening the production anti-reparse guard.
+async function fixture(fn) { const root = await fs.realpath(os.tmpdir()); const directory = await fs.mkdtemp(path.join(root, 'date-repair-resume-')); try { await fn(directory); } finally { await fs.rm(directory, { recursive: true, force: true }); } }
 async function write(directory, number, p) { const file = partName(number); const text = JSON.stringify(p, null, 2) + '\n'; await fs.writeFile(path.join(directory, file), text); return { file, sha256: createHash('sha256').update(text).digest('hex'), planDigest: core.hash(p), inspected: p.inspected, proposed: p.entries.length }; }
 async function rejects(directory, code, extra = {}) { await assert.rejects(() => prepareResume({ directory, adapter: adapter(), ownerId: OWNER, ...extra }), error => !code || error.code === code); }
 
@@ -151,3 +153,11 @@ test('network and device resume paths are rejected before any filesystem access'
   } finally { fs.lstat = original; }
   assert.equal(calls, 0);
 });
+
+test('a directory resolving elsewhere is still rejected before reading plans', async () => fixture(async directory => {
+  const original = fs.realpath; let calls = 0;
+  fs.realpath = async value => { if (value === directory) { calls++; return directory + '-elsewhere'; } return original(value); };
+  try { await rejects(directory, 'unsafe-resume-directory'); }
+  finally { fs.realpath = original; }
+  assert.equal(calls, 1);
+}));
