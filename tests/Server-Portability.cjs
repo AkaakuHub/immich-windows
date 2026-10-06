@@ -1,5 +1,5 @@
 // Execute the patched upstream method bodies, then emit/run PostgreSQL assertions
-// for the SQL regex/LIKE expressions they actually build. No media or DB writes.
+// for their SQL expressions and migrations using temporary fixture tables.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -12,9 +12,13 @@ assert(sourceRoot, 'Usage: node tests/Server-Portability.cjs SOURCE [--sql-outpu
 const serverIndex = process.argv.indexOf('--server-root');
 const picomatch = serverIndex >= 0 ? createRequire(path.resolve(process.argv[serverIndex + 1], 'package.json'))('picomatch') : null;
 const sqlChecks = [];
+const migrationChecks = [];
 let checks = 0;
 const literal = (value) => value === null ? 'NULL' : `'${String(value).replaceAll("'", "''")}'`;
 const expression = (sql) => ({ sql, as() { return this; } });
+const sql = (parts, ...values) => expression(parts.reduce((result, part, index) => result + part + (index < values.length ? values[index]?.sql ?? literal(values[index]) : ''), ''));
+sql.ref = columnName => column(columnName);
+sql.lit = value => expression(literal(value));
 const column = (name) => expression(name.split('.').map((part) => `"${part}"`).join('.'));
 const eb = (left, op, right) => Object.assign(expression(`${typeof left === 'string' ? column(left).sql : left.sql} ${op} ${literal(right)}`), { left, op, right });
 eb.val = (value) => Object.assign(expression(literal(value)), { value });
@@ -43,11 +47,12 @@ function probe(file, names, flavor, extra = {}) {
   return new Type();
 }
 function database(rows = []) {
-  const captured = { where: [], select: null, orderBy: null };
+  const captured = { where: [], select: null, orderBy: null, updates: [] };
   const query = {
-    selectFrom() { return this; }, updateTable() { return this; },
+    selectFrom() { return this; }, updateTable(table) { captured.table = table; return this; },
+    transaction() { return { execute: callback => callback(this) }; },
     select(value) { if (typeof value === 'function') captured.select = value(eb); return this; },
-    selectAll() { return this; }, distinct() { return this; }, set() { return this; }, $call() { return this; },
+    selectAll() { return this; }, distinct() { return this; }, set(value) { captured.updates.push({ table: captured.table, values: typeof value === 'function' ? value(eb) : value }); return this; }, $call() { return this; },
     where(...args) {
       if (typeof args[0] === 'function') captured.where.push(args[0](eb));
       else if (args[0] === 'originalPath') captured.where.push(eb(...args));
@@ -175,12 +180,76 @@ function sqlCheck(label, assetPath, condition, expected) {
     }
     checks += 2;
   }
-  const sql = `\\set ON_ERROR_STOP on\nSET standard_conforming_strings = on;\nBEGIN;\nDO $portability$\nBEGIN\n${sqlChecks.join('\n')}\nEND\n$portability$;\nROLLBACK;\n`;
+  for (const flavor of [path.win32, path.posix]) {
+    const repository = probe('repositories/database.repository.ts', ['migrateFilePaths'], flavor, { sql });
+    const db = database(); repository.db = db.query;
+    const source = flavor === path.win32 ? 'D:\\old\\' : '/old/';
+    const target = flavor === path.win32 ? 'E:\\new\\' : '/new/';
+    await repository.migrateFilePaths(source, target);
+    assert.equal(db.captured.updates.length, 4);
+    for (const update of db.captured.updates) {
+      const [field, value] = Object.entries(update.values)[0];
+      const original = flavor === path.win32 ? 'D:\\old/thumbs/a.webp' : '/old/thumbs/a.webp';
+      const expected = flavor === path.win32 ? 'E:\\new\\thumbs\\a.webp' : '/new/thumbs/a.webp';
+      sqlChecks.push(`IF (SELECT ${value.sql} FROM (VALUES (${literal(original)})) AS fixture(${column(field).sql})) IS DISTINCT FROM ${literal(expected)} THEN RAISE EXCEPTION '%', ${literal(`media migration: ${flavor.sep} ${update.table}`)}; END IF;`);
+      checks++;
+    }
+  }
+  const migrationFile = 'server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts';
+  const migrationSource = fs.readFileSync(path.join(sourceRoot, migrationFile), 'utf8');
+  const migrationCode = stripTypeScriptTypes(migrationSource.replace(/^import .*;\n/gm, '').replaceAll('export ', ''));
+  const migrationQueries = [];
+  const migrationSql = (parts, ...values) => ({ async execute() { migrationQueries.push(sql(parts, ...values).sql); } });
+  const migrate = platform => new Function('sql', 'process', `${migrationCode}\nreturn up;`)(migrationSql, { platform })({});
+  await migrate('linux');
+  assert.equal(migrationQueries.length, 0, 'POSIX databases must not be rewritten');
+  await migrate('win32');
+  assert.equal(migrationQueries.length, 7);
+  const order = fs.readFileSync(path.join(sourceRoot, 'server/src/schema/migrations/ORDER'), 'utf8');
+  assert(order.includes(path.basename(migrationFile, '.ts')), 'Repair migration must be registered');
+  migrationChecks.push(`SET LOCAL search_path = pg_temp;
+CREATE TEMP TABLE asset ("originalPath" text);
+CREATE TEMP TABLE asset_file (path text);
+CREATE TEMP TABLE person ("thumbnailPath" text);
+CREATE TEMP TABLE "user" ("profileImagePath" text);
+CREATE TEMP TABLE integrity_report (id integer PRIMARY KEY, type text, path text, "assetId" integer, "fileAssetId" integer, "createdAt" timestamptz DEFAULT now(), UNIQUE(type, path));
+INSERT INTO asset VALUES ('D:/upload/library/photo.jpg');
+INSERT INTO asset_file VALUES (${literal('D:\\upload/thumbs/a.webp')});
+INSERT INTO person VALUES ('//host/share/thumbs/person.jpg');
+INSERT INTO "user" VALUES ('D:/upload/profile/avatar.jpg');
+INSERT INTO integrity_report(id,type,path,"assetId","fileAssetId") VALUES
+(1,'untracked_file','D:/upload/library/photo.jpg',NULL,NULL),
+(2,'untracked_file',${literal('D:\\upload\\library\\photo.jpg')},NULL,NULL),
+(3,'untracked_file',${literal('D:\\upload\\thumbs\\a.webp')},NULL,NULL),
+(4,'untracked_file',${literal('\\\\host\\share\\thumbs\\person.jpg')},NULL,NULL),
+(5,'untracked_file','D:/upload/orphan.jpg',NULL,NULL),
+(6,'untracked_file',${literal('D:\\upload\\orphan.jpg')},NULL,NULL),
+(7,'missing_file','D:/upload/missing.jpg',42,NULL),
+(8,'checksum_mismatch','D:/upload/library/photo.jpg',42,NULL),
+(9,'missing_file',${literal('D:\\upload\\missing.jpg')},NULL,NULL),
+(10,'untracked_file','D:/upload/other.jpg',NULL,NULL);
+${migrationQueries.join(';\n')};
+DO $repair$
+BEGIN
+IF (SELECT count(*) FROM integrity_report WHERE type='untracked_file') <> 2 THEN RAISE EXCEPTION 'False reports removed; both unresolved files must remain'; END IF;
+IF NOT EXISTS (SELECT FROM integrity_report WHERE id=7 AND "assetId"=42 AND path=${literal('D:\\upload\\missing.jpg')}) THEN RAISE EXCEPTION 'Missing report and its asset link must remain'; END IF;
+IF NOT EXISTS (SELECT FROM integrity_report WHERE id=8 AND "assetId"=42) THEN RAISE EXCEPTION 'Checksum mismatch must remain'; END IF;
+IF (SELECT count(*) FROM asset) <> 1 OR (SELECT count(*) FROM asset_file) <> 1 OR (SELECT count(*) FROM person) <> 1 OR (SELECT count(*) FROM "user") <> 1 THEN RAISE EXCEPTION 'Media references must not be removed'; END IF;
+IF (SELECT "originalPath" FROM asset) <> ${literal('D:\\upload\\library\\photo.jpg')} OR (SELECT path FROM asset_file) <> ${literal('D:\\upload\\thumbs\\a.webp')} OR (SELECT "thumbnailPath" FROM person) <> ${literal('\\\\host\\share\\thumbs\\person.jpg')} OR (SELECT "profileImagePath" FROM "user") <> ${literal('D:\\upload\\profile\\avatar.jpg')} THEN RAISE EXCEPTION 'All media path columns must use native separators'; END IF;
+END $repair$;
+CREATE TEMP TABLE first_repair AS SELECT * FROM integrity_report;
+${migrationQueries.join(';\n')};
+DO $repeat$
+BEGIN
+IF EXISTS ((SELECT * FROM integrity_report EXCEPT SELECT * FROM first_repair) UNION ALL (SELECT * FROM first_repair EXCEPT SELECT * FROM integrity_report)) THEN RAISE EXCEPTION 'Repeated repair must be idempotent'; END IF;
+END $repeat$;`);
+  checks += 8;
+  const queryScript = `\\set ON_ERROR_STOP on\nSET standard_conforming_strings = on;\nBEGIN;\nDO $portability$\nBEGIN\n${sqlChecks.join('\n')}\nEND\n$portability$;\n${migrationChecks.join('\n')}\nROLLBACK;\n`;
   const outputIndex = process.argv.indexOf('--sql-output');
-  if (outputIndex >= 0) fs.writeFileSync(process.argv[outputIndex + 1], sql);
+  if (outputIndex >= 0) fs.writeFileSync(process.argv[outputIndex + 1], queryScript);
   const psqlIndex = process.argv.indexOf('--psql');
   if (psqlIndex >= 0) {
-    const result = spawnSync(process.argv[psqlIndex + 1], ['-X', '--no-password', '-v', 'ON_ERROR_STOP=1'], { input: sql, encoding: 'utf8' });
+    const result = spawnSync(process.argv[psqlIndex + 1], ['-X', '--no-password', '-v', 'ON_ERROR_STOP=1'], { input: queryScript, encoding: 'utf8' });
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     console.log(`PostgreSQL portability assertions passed: ${sqlChecks.length}`);

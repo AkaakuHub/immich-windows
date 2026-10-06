@@ -1,37 +1,114 @@
 From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: make media-location migration Windows-safe
+Subject: [PATCH] server: canonicalize Windows media paths and repair integrity reports
 
-Allow both POSIX and Windows trailing separators and escape backslashes in the
-PostgreSQL regexp replacement string. Also bind the source regular expression
-as a literal instead of interpolating it into raw SQL.
----
- server/src/repositories/database.repository.ts | 12 +++++++-----
- 1 file changed, 7 insertions(+), 5 deletions(-)
+Normalize migrated paths and existing Windows database paths to native separators.
+Remove only reports for referenced files and merge duplicate reports without
+deleting media files.
 
 diff --git a/server/src/repositories/database.repository.ts b/server/src/repositories/database.repository.ts
 --- a/server/src/repositories/database.repository.ts
 +++ b/server/src/repositories/database.repository.ts
-@@ -413,16 +413,18 @@
+@@ -411,41 +411,42 @@
+   }
+
    async migrateFilePaths(sourceFolder: string, targetFolder: string): Promise<void> {
 -    // remove trailing slashes
 -    if (sourceFolder.endsWith('/')) {
-+    // remove a trailing path separator on either POSIX or Windows
 +    if (sourceFolder.endsWith('/') || sourceFolder.endsWith('\\')) {
        sourceFolder = sourceFolder.slice(0, -1);
      }
- 
+
 -    if (targetFolder.endsWith('/')) {
 +    if (targetFolder.endsWith('/') || targetFolder.endsWith('\\')) {
        targetFolder = targetFolder.slice(0, -1);
      }
- 
+
      // escaping regex special characters with a backslash
      const sourceRegex = '^' + sourceFolder.replaceAll(/[-[\]{}()*+?.,\\^$|#\s]/g, String.raw`\$&`);
 -    const source = sql.raw(`'${sourceRegex}'`);
 -    const target = sql.lit(targetFolder);
 +    const source = sql.lit(sourceRegex);
-+    // PostgreSQL regexp replacement strings use backslashes for backreferences.
-+    // Double Windows separators so they are written back as literal backslashes.
 +    const target = sql.lit(targetFolder.replaceAll('\\', String.raw`\\`));
- 
++    const migratedPath = (column: string) => {
++      const expression = sql<string>`regexp_replace(${sql.ref(column)}, ${source}, ${target})`;
++      return process.platform === 'win32' ? sql<string>`replace(${expression}, '/', ${'\\'})` : expression;
++    };
+
      await this.db.transaction().execute(async (tx) => {
+       await tx
+         .updateTable('asset')
+-        .set((eb) => ({
+-          originalPath: eb.fn('REGEXP_REPLACE', ['originalPath', source, target]),
+-        }))
++        .set({ originalPath: migratedPath('originalPath') })
+         .execute();
+
+       await tx
+         .updateTable('asset_file')
+-        .set((eb) => ({ path: eb.fn('REGEXP_REPLACE', ['path', source, target]) }))
++        .set({ path: migratedPath('path') })
+         .execute();
+
+       await tx
+         .updateTable('person')
+-        .set((eb) => ({ thumbnailPath: eb.fn('REGEXP_REPLACE', ['thumbnailPath', source, target]) }))
++        .set({ thumbnailPath: migratedPath('thumbnailPath') })
+         .execute();
+
+       await tx
+         .updateTable('user')
+-        .set((eb) => ({ profileImagePath: eb.fn('REGEXP_REPLACE', ['profileImagePath', source, target]) }))
++        .set({ profileImagePath: migratedPath('profileImagePath') })
+         .execute();
+     });
+   }
+diff --git a/server/src/schema/migrations/ORDER b/server/src/schema/migrations/ORDER
+--- a/server/src/schema/migrations/ORDER
++++ b/server/src/schema/migrations/ORDER
+@@ -94,3 +94,4 @@
+ 1786972746372-AssetOcrSyncReset
+ 1787148183729-ClusterGroups
+ 1787148183730-DeleteMismatchedMemoryAssets
++1787148183731-NormalizeWindowsMediaPaths
+diff --git a/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
+new file mode 100644
+--- /dev/null
++++ b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
+@@ -0,0 +1,37 @@
++import { Kysely, sql } from 'kysely';
++import { DB } from 'src/schema';
++
++export async function up(db: Kysely<DB>): Promise<void> {
++  if (process.platform !== 'win32') {
++    return;
++  }
++
++  await sql`UPDATE asset SET "originalPath" = replace("originalPath", '/', chr(92))
++    WHERE strpos("originalPath", '/') > 0`.execute(db);
++  await sql`UPDATE asset_file SET path = replace(path, '/', chr(92))
++    WHERE strpos(path, '/') > 0`.execute(db);
++  await sql`UPDATE person SET "thumbnailPath" = replace("thumbnailPath", '/', chr(92))
++    WHERE strpos("thumbnailPath", '/') > 0`.execute(db);
++  await sql`UPDATE "user" SET "profileImagePath" = replace("profileImagePath", '/', chr(92))
++    WHERE strpos("profileImagePath", '/') > 0`.execute(db);
++
++  await sql`DELETE FROM integrity_report AS report
++    WHERE report.type = 'untracked_file' AND replace(report.path, '/', chr(92)) IN (
++      SELECT "originalPath" FROM asset
++      UNION SELECT path FROM asset_file
++      UNION SELECT "thumbnailPath" FROM person
++    )`.execute(db);
++
++  await sql`DELETE FROM integrity_report WHERE id IN (
++    SELECT id FROM (
++      SELECT id, row_number() OVER (
++        PARTITION BY type, replace(path, '/', chr(92))
++        ORDER BY ("assetId" IS NOT NULL OR "fileAssetId" IS NOT NULL) DESC, "createdAt" DESC, id
++      ) AS position FROM integrity_report
++    ) AS duplicates WHERE position > 1
++  )`.execute(db);
++  await sql`UPDATE integrity_report SET path = replace(path, '/', chr(92))
++    WHERE strpos(path, '/') > 0`.execute(db);
++}
++
++export async function down(): Promise<void> {}
