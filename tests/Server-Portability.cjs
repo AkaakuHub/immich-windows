@@ -197,14 +197,18 @@ function sqlCheck(label, assetPath, condition, expected) {
   }
   const migrationFile = 'server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts';
   const migrationSource = fs.readFileSync(path.join(sourceRoot, migrationFile), 'utf8');
-  const migrationCode = stripTypeScriptTypes(migrationSource.replace(/^import .*;\n/gm, '').replaceAll('export ', ''));
+  const migrationCode = source => stripTypeScriptTypes(source.replace(/^import .*;\r?\n/gm, '').replaceAll('export ', ''));
   const migrationQueries = [];
   const migrationSql = (parts, ...values) => ({ async execute() { migrationQueries.push(sql(parts, ...values).sql); } });
-  const migrate = platform => new Function('sql', 'process', `${migrationCode}\nreturn up;`)(migrationSql, { platform })({});
+  const migrate = (platform, source = migrationSource) => new Function('sql', 'process', `${migrationCode(source)}\nreturn up;`)(migrationSql, { platform })({});
   await migrate('linux');
   assert.equal(migrationQueries.length, 0, 'POSIX databases must not be rewritten');
   await migrate('win32');
   assert.equal(migrationQueries.length, 7);
+  const expectedQueries = [...migrationQueries];
+  migrationQueries.length = 0;
+  await migrate('win32', migrationSource.replace(/\r?\n/g, '\r\n'));
+  assert.deepEqual(migrationQueries, expectedQueries, 'Windows checkout line endings must execute the same migration');
   const order = fs.readFileSync(path.join(sourceRoot, 'server/src/schema/migrations/ORDER'), 'utf8');
   assert(order.includes(path.basename(migrationFile, '.ts')), 'Repair migration must be registered');
   migrationChecks.push(`SET LOCAL search_path = pg_temp;
