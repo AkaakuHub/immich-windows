@@ -135,6 +135,48 @@ class OfflineTestCase(unittest.TestCase):
                     (self.directory / 'output').read_text().splitlines())
 
 
+class EventEncodingTests(OfflineTestCase):
+    def setUp(self):
+        super().setUp()
+        self.event = {
+            'pull_request': {'number': 17, 'head': {'sha': HEAD}, 'base': {'sha': BASE},
+                             'title': 'スマート検索の修正'},
+            'inputs': {'component': 'all', 'note': '日本語の入力'},
+        }
+        self.event_path = self.directory / 'event.json'
+        payload = json.dumps(self.event, ensure_ascii=False).encode('utf-8')
+        self.event_path.write_bytes(payload)
+        with self.assertRaises(UnicodeDecodeError):
+            payload.decode('cp1252')
+        os.environ.update(GITHUB_EVENT_PATH=str(self.event_path), GITHUB_EVENT_NAME='pull_request',
+                          GITHUB_SHA=SOURCE)
+        read_text = Path.read_text
+
+        def legacy_default(path, encoding=None, errors=None):
+            return read_text(path, encoding=encoding or 'cp1252', errors=errors)
+
+        self.enterContext(mock.patch.object(Path, 'read_text', legacy_default))
+
+    def test_record_reads_utf8_event_and_preserves_source_and_asset_evidence(self):
+        self.git.side_effect = lambda *args: {
+            ('status', '--porcelain', '--untracked-files=no'): '',
+            ('rev-parse', 'HEAD'): SOURCE,
+            ('rev-parse', 'HEAD^{tree}'): TREE,
+        }[args]
+        for name in release.filenames(VERSION):
+            (self.directory / name).write_bytes(name.encode('ascii'))
+        release.record_bundle(VERSION, self.directory)
+        record = json.loads((self.directory / 'qualification.json').read_text(encoding='utf-8'))
+        self.assertEqual((record['sourceCommit'], record['sourceTree']), (SOURCE, TREE))
+        self.assertEqual((record['pullRequest'], record['headCommit'], record['baseCommit']),
+                         (17, HEAD, BASE))
+        self.assertEqual(record['assets'], {
+            name: hashlib.sha256(name.encode('ascii')).hexdigest() for name in release.filenames(VERSION)})
+
+    def test_dispatch_inputs_reads_utf8_event_with_non_ascii_content(self):
+        self.assertEqual(release.dispatch_inputs(), self.event['inputs'])
+
+
 class BundleTests(OfflineTestCase):
     def check_bundle(self, entries):
         archive = self.directory / 'bundle.zip'
@@ -839,6 +881,22 @@ class NativeReuseTests(OfflineTestCase):
         self.pe_command.assert_called_once()
         self.git.assert_not_called()  # Current PR tree/version intentionally differ from the base.
         self.assertIn('Assert-WindowsPeTlsDirectory', self.pe_command.call_args.args[0][-1])
+
+    def test_native_bootstrap_reads_utf8_pr_event_with_windows_default_encoding(self):
+        self.install_native()
+        event_path = Path(os.environ['GITHUB_EVENT_PATH'])
+        event = json.loads(event_path.read_text(encoding='utf-8'))
+        event['pull_request']['title'] = 'スマート検索の修正'
+        event_path.write_bytes(json.dumps(event, ensure_ascii=False).encode('utf-8'))
+        read_text = Path.read_text
+
+        def legacy_default(path, encoding=None, errors=None):
+            return read_text(path, encoding=encoding or 'cp1252', errors=errors)
+
+        with mock.patch.object(Path, 'read_text', legacy_default):
+            release.prepare_native()
+        self.assertEqual(self.outputs()['reused'], 'true')
+        self.assertEqual(self.downloaded_ids(), ['301', '300'])
 
     def test_main_seed_uses_plan_identity_without_downloading_qualification_again(self):
         values, _ = self.install_native()

@@ -43,14 +43,25 @@ diff --git a/machine-learning/immich_ml/models/facial_recognition/recognition.py
 diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immich_ml/sessions/ort.py
 --- a/machine-learning/immich_ml/sessions/ort.py
 +++ b/machine-learning/immich_ml/sessions/ort.py
-@@ -1,5 +1,6 @@
+@@ -1,6 +1,9 @@
  from __future__ import annotations
 
++import locale
 +import sys
  from collections.abc import Sequence
++from contextlib import nullcontext
  from pathlib import Path
  from threading import Lock
-@@ -56,14 +57,36 @@
+ from typing import Any
+@@ -13,6 +16,7 @@
+ from immich_ml.schemas import ModelPrecision, SessionNode
+
+ from ..config import log, settings
++from .directml import directml_model
+
+ MigraphxInputSignature = tuple[tuple[str, str, tuple[int, ...]], ...]
+
+@@ -56,14 +60,43 @@
      ):
          self.model_path = Path(model_path)
          self.providers = providers if providers is not None else self._providers_default
@@ -62,18 +73,31 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 +        self._run_lock = Lock() if directml else None
          self.provider_options = provider_options if provider_options is not None else self._provider_options_default
          self.sess_options = sess_options if sess_options is not None else self._sess_options_default
+-        self.session = ort.InferenceSession(
+-            self.model_path.as_posix(),
+-            providers=self.providers,
+-            provider_options=self.provider_options,
+-            sess_options=self.sess_options,
+-        )
 +        if directml:
 +            # Apply constraints even when the caller supplies its own SessionOptions.
 +            self.sess_options.enable_mem_pattern = False
 +            self.sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 +            self.sess_options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
-         self.session = ort.InferenceSession(
-             self.model_path.as_posix(),
-             providers=self.providers,
-             provider_options=self.provider_options,
-             sess_options=self.sess_options,
-+            **({"enable_fallback": False} if sys.platform == "win32" else {}),
-         )
++            self.sess_options.add_session_config_entry("ep.dml.disable_graph_fusion", "1")
++            self.provider_options = [{**options, "disable_metacommands": "true"} for options in self.provider_options]
++        with directml_model(self.model_path) if directml else nullcontext(self.model_path) as model:
++            try:
++                self.session = ort.InferenceSession(
++                    model.as_posix(),
++                    providers=self.providers,
++                    provider_options=self.provider_options,
++                    sess_options=self.sess_options,
++                    **({"enable_fallback": False} if sys.platform == "win32" else {}),
++                )
++            except UnicodeDecodeError as error:
++                message = error.object.decode(locale.getencoding(), errors="replace")
++                raise RuntimeError(f"ONNX Runtime session initialization failed: {message}") from error
 +        if "DmlExecutionProvider" in self.providers:
 +            # ORT registers CPU EP implicitly; the strict session option above
 +            # rejects CPU-assigned graph nodes, not CPU provider registration.
@@ -87,7 +111,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 
      def get_inputs(self) -> Sequence[SessionNode]:
          inputs: Sequence[SessionNode] = self.session.get_inputs()
-@@ -83,6 +106,10 @@
+@@ -83,6 +116,10 @@
          input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
          run_options: Any = None,
      ) -> list[NDArray[np.float32]]:
@@ -98,7 +122,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
          if "MIGraphXExecutionProvider" in self.providers:
              model_key = self.model_path.resolve().as_posix()
              input_key = (model_key, _migraphx_input_signature(input_feed))
-@@ -113,7 +140,15 @@
+@@ -113,7 +150,15 @@
      def _providers_default(self) -> list[str]:
          available_providers = set(ort.get_available_providers())
          log.debug(f"Available ORT providers: {available_providers}")
@@ -115,7 +139,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 
      @property
      def provider_options(self) -> list[dict[str, Any]]:
-@@ -131,6 +166,8 @@
+@@ -131,6 +176,8 @@
              match provider:
                  case "CPUExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested"}
@@ -124,3 +148,201 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
                  case "CUDAExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested", "device_id": settings.device_id}
                  case "MIGraphXExecutionProvider":
+diff --git a/machine-learning/immich_ml/sessions/directml.py b/machine-learning/immich_ml/sessions/directml.py
+new file mode 100644
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/directml.py
+@@ -0,0 +1,106 @@
++from collections.abc import Iterator
++from contextlib import contextmanager
++from pathlib import Path
++from tempfile import NamedTemporaryFile
++
++import onnx
++from onnx import TensorProto, helper
++
++from .onnx_external import read_external_model, set_external_data
++
++MAX_EMBEDDING_BYTES = 96 * 1024 * 1024
++
++
++def _split_embedding(model: onnx.ModelProto, node: onnx.NodeProto, tensor: TensorProto, index_type: int) -> None:
++    graph = model.graph
++    rows, width = tensor.dims
++    chunk_rows = MAX_EMBEDDING_BYTES // (width * 4)
++    if chunk_rows == 0:
++        raise ValueError("Embedding row exceeds the DirectML chunk size")
++    data = {entry.key: entry.value for entry in tensor.external_data}
++    offset = int(data.get("offset", "0"))
++    prefix = f"{node.output[0]}_directml"
++    graph.initializer.extend([
++        helper.make_tensor(prefix + "_zero", TensorProto.FLOAT, [], [0.0]),
++        helper.make_tensor(prefix + "_axis", TensorProto.INT64, [1], [-1]),
++        helper.make_tensor(prefix + "_rows", index_type, [], [rows]),
++        helper.make_tensor(prefix + "_index_zero", index_type, [], [0]),
++    ])
++    nodes = [
++        helper.make_node("Less", [node.input[1], prefix + "_index_zero"], [prefix + "_negative"]),
++        helper.make_node("Add", [node.input[1], prefix + "_rows"], [prefix + "_positive"]),
++        helper.make_node("Where", [prefix + "_negative", prefix + "_positive", node.input[1]], [prefix + "_tokens"]),
++    ]
++    outputs = []
++    for start in range(0, rows, chunk_rows):
++        count = min(chunk_rows, rows - start)
++        chunk = f"{prefix}_{start}"
++        shard = TensorProto()
++        shard.CopyFrom(tensor)
++        shard.name = chunk + "_weight"
++        shard.dims[:] = [count, width]
++        set_external_data(shard, data["location"], offset + start * width * 4, count * width * 4)
++        graph.initializer.append(shard)
++        for name, value in (("start", start), ("end", start + count), ("min", 0), ("max", count - 1)):
++            graph.initializer.append(helper.make_tensor(chunk + "_" + name, index_type, [], [value]))
++        operations = [
++            ("Sub", [prefix + "_tokens", chunk + "_start"], "offset"),
++            ("Clip", [chunk + "_offset", chunk + "_min", chunk + "_max"], "indices"),
++            ("Gather", [shard.name, chunk + "_indices"], "gather"),
++            ("GreaterOrEqual", [prefix + "_tokens", chunk + "_start"], "lower"),
++            ("Less", [prefix + "_tokens", chunk + "_end"], "upper"),
++            ("And", [chunk + "_lower", chunk + "_upper"], "mask"),
++            ("Unsqueeze", [chunk + "_mask", prefix + "_axis"], "expanded"),
++            ("Where", [chunk + "_expanded", chunk + "_gather", prefix + "_zero"], "output"),
++        ]
++        for operation, inputs, output in operations:
++            nodes.append(helper.make_node(operation, inputs, [chunk + "_" + output]))
++        outputs.append(chunk + "_output")
++    nodes.append(helper.make_node("Sum", outputs, list(node.output), name=node.name))
++    position = list(graph.node).index(node)
++    graph.node.remove(node)
++    for index, replacement in enumerate(nodes):
++        graph.node.insert(position + index, replacement)
++    graph.initializer.remove(tensor)
++
++
++@contextmanager
++def directml_model(source: Path) -> Iterator[Path]:
++    model = read_external_model(source)
++    graph = model.graph
++    index_types = {value.name: value.type.tensor_type.elem_type for value in [*graph.input, *graph.value_info]}
++    changed = False
++    for tensor in list(graph.initializer):
++        if tensor.data_type != TensorProto.FLOAT or len(tensor.dims) != 2 or not tensor.external_data:
++            continue
++        rows, width = tensor.dims
++        if rows * width * 4 <= MAX_EMBEDDING_BYTES:
++            continue
++        consumers = [node for node in graph.node if tensor.name in node.input]
++        if len(consumers) != 1:
++            continue
++        node = consumers[0]
++        axis = next((attribute.i for attribute in node.attribute if attribute.name == "axis"), 0)
++        index_type = index_types.get(node.input[1]) if len(node.input) == 2 else None
++        if node.domain or node.op_type != "Gather" or axis != 0 or node.input[0] != tensor.name:
++            continue
++        if index_type not in (TensorProto.INT32, TensorProto.INT64):
++            continue
++        _split_embedding(model, node, tensor, index_type)
++        changed = True
++    if not changed:
++        yield source
++        return
++    # Use the source directory so ONNX's relative external-data references stay valid.
++    with NamedTemporaryFile(prefix=".directml-", suffix=".onnx", dir=source.parent, delete=False) as stream:
++        prepared = Path(stream.name)
++        try:
++            stream.write(model.SerializeToString())
++        except BaseException:
++            stream.close()
++            prepared.unlink()
++            raise
++    try:
++        yield prepared
++    finally:
++        prepared.unlink()
+diff --git a/machine-learning/immich_ml/sessions/onnx_external.py b/machine-learning/immich_ml/sessions/onnx_external.py
+new file mode 100644
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/onnx_external.py
+@@ -0,0 +1,82 @@
++from collections.abc import Iterator
++from pathlib import Path
++from typing import BinaryIO
++
++import onnx
++from onnx import TensorProto
++
++
++def _varint(stream: BinaryIO) -> int:
++    value = 0
++    for shift in range(0, 70, 7):
++        byte = stream.read(1)
++        if not byte:
++            raise ValueError("Truncated ONNX protobuf")
++        value |= (byte[0] & 127) << shift
++        if byte[0] < 128:
++            return value
++    raise ValueError("Invalid ONNX protobuf varint")
++
++
++def _fields(stream: BinaryIO, end: int) -> Iterator[tuple[int, int, int, int]]:
++    while stream.tell() < end:
++        start = stream.tell()
++        tag = _varint(stream)
++        field, wire = tag >> 3, tag & 7
++        if wire == 2:
++            length = _varint(stream)
++            position = stream.tell()
++        elif wire == 0:
++            position = stream.tell()
++            _varint(stream)
++            length = stream.tell() - position
++        elif wire in (1, 5):
++            position, length = stream.tell(), 8 if wire == 1 else 4
++        else:
++            raise ValueError(f"Unsupported ONNX protobuf wire type: {wire}")
++        if field == 0 or position + length > end:
++            raise ValueError("Invalid ONNX protobuf field boundary")
++        yield field, start, position, length
++        stream.seek(position + length)
++
++
++def _message_field(stream: BinaryIO, start: int, position: int, length: int) -> bytes:
++    stream.seek(start)
++    return stream.read(position + length - start)
++
++
++def set_external_data(tensor: TensorProto, location: str, offset: int, length: int) -> None:
++    tensor.ClearField("raw_data")
++    tensor.ClearField("external_data")
++    tensor.data_location = TensorProto.EXTERNAL
++    for key, value in (("location", location), ("offset", str(offset)), ("length", str(length))):
++        entry = tensor.external_data.add()
++        entry.key, entry.value = key, value
++
++
++def read_external_model(source: Path) -> onnx.ModelProto:
++    # Keep raw initializer bytes in the original file instead of materializing a gigabyte-sized protobuf.
++    model, graph = onnx.ModelProto(), onnx.GraphProto()
++    with source.open("rb") as stream:
++        for field, start, position, length in _fields(stream, source.stat().st_size):
++            if field != 7:
++                model.MergeFromString(_message_field(stream, start, position, length))
++                continue
++            for graph_field, graph_start, graph_position, graph_length in _fields(stream, position + length):
++                if graph_field != 5:
++                    graph.MergeFromString(_message_field(stream, graph_start, graph_position, graph_length))
++                    continue
++                tensor = onnx.TensorProto()
++                raw: tuple[int, int] | None = None
++                for tensor_field, tensor_start, tensor_position, tensor_length in _fields(
++                    stream, graph_position + graph_length
++                ):
++                    if tensor_field == 9:
++                        raw = tensor_position, tensor_length
++                    else:
++                        tensor.MergeFromString(_message_field(stream, tensor_start, tensor_position, tensor_length))
++                if raw is not None:
++                    set_external_data(tensor, source.name, *raw)
++                graph.initializer.append(tensor)
++    model.graph.CopyFrom(graph)
++    return model

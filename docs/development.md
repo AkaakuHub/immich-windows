@@ -73,9 +73,18 @@ GLib 2.89.3には、Windows用TLS（thread-local storage）コールバックの
 
 ネイティブビルドの入力ハッシュにパッチを含め、修正前のGLibをキャッシュから再利用しません。生成したDLLのPE TLSディレクトリを検査し、Sharpの実画像変換とインストール後の検証ではGLibのCRITICALを失敗として扱います。終了コードだけで合格にしません。
 
+### 同じPR内のReleaseツール変更だけを検証する場合
+
+同一リポジトリの同じPR・同じbaseに、有効な完全検証済み成果物がある場合だけ、変更されていないWindows検証を再利用します。Gitの全ファイルのpath・mode・type・blobを比較し、例外は配布されない `docs/development.md` と `.github/scripts/` の `qualified_release.py`、`publish_qualified.py`、対応する `test_qualified_release.py`、`test_publish_qualified.py` だけです。
+
+- workflow、再利用判定自身、インストーラー、全Windowsテスト、ビルドスクリプト、パッチ、依存pin、配布ドキュメント、未知のファイルの変更は完全検証を必要とします
+- GitHubの同一workflow/run/attemptと必須ジョブの成功、元のPR merge commit、artifact ID・SHA-256、配布ファイルのハッシュを照合します。失敗・実行中の新しいrunを古い成功で隠しません。成果物が欠落・期限切れなら完全検証へ戻します
+- 再利用時も現在のPython Releaseツール回帰テストは実行します。ビルド、Windows静的検証、両スコープの導入・更新などは既存の合格証拠を参照し、実行を繰り返しません。summaryには実際に検証した元のcommitとrunを残します
+- 新しいcommitが実機検証済みだったとは記録せず、新しいqualified成果物も作りません。mainへの公開は下記の完全なtree一致の境界を維持します。このPR専用の省略runをReleaseの合格証拠として使いません
+
 ### PRからmainへの成果物の再利用
 
-- PRの実際のcheckout（GitHubが作るmerge commit）と、4つの配布ファイルのSHA-256を全テスト成功後に記録します。自動更新はmain上の信頼済みスクリプトでPR番号とhead/baseを確認してから、その固定merge commitを検証します。成果物は14日保持します
+- PRの実際のcheckout（GitHubが作るmerge commit）と、4つの配布ファイルのSHA-256を、パッケージ作成後・導入テスト前に準備します。これは合格記録ではありません。全テスト成功後、checkoutと配布ファイルが変わっていないことを再確認して初めて成果物をアップロードします。自動更新はmain上の信頼済みスクリプトでPR番号とhead/baseを確認してから、その固定merge commitを検証します。成果物は14日保持します
 - mainの対象コミットにマージされた同一リポジトリのPR、正しいworkflow/run/attempt、必須ジョブの成功、GitHubが返すartifact IDとSHA-256を確認します。自動更新の完了処理は、マージ前にも同じ証拠を検査します。スキップされたテストを成功扱いしません
 - 記録されたcommitをGitHubのGitオブジェクトで検証し、PRのbase/headを親に持つことと、実際にテストされたGit treeがmainと完全一致することを確認します。squashでcommit SHAが変わっても、treeが同じなら再実行しません
 - fork、期限切れ・欠落した成果物、変更されたソースや実行attemptなど、再利用の証拠が揃わない場合は通常の検証へ戻します。ハッシュ不一致など不正・破損の疑いは自動で無視せず失敗させます
