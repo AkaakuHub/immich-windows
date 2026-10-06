@@ -17,7 +17,7 @@ try {
   @{Name='ffmpeg-fixture.zip';Files=@{'ffmpeg-fixture/bin/ffmpeg.exe'='ffmpeg';'ffmpeg-fixture/bin/ffprobe.exe'='ffprobe'}},
   @{Name='valkey.zip';Files=@{'valkey/ValkeyService.exe'='valkey';'valkey/valkey-server.exe'='server';'valkey/valkey-cli.exe'='cli'}},
   @{Name='uv-0.12.18-uv-fixture.zip';Files=@{'uv.exe'='uv'}},
-  @{Name='immich-windows-v3.2.2.2-native-dependencies.zip';Files=@{'dependencies/postgres-extensions/vector/vector.dll'='native';'unused/large.dll'='must not extract'}}
+  @{Name='immich-windows-v3.2.2.2-native-dependencies.zip';Files=@{'dependencies/postgres-extensions/vector/vector.dll'='native';'dependencies/sharp/lib/resumed.dll'='unchanged installed DLL';'dependencies/sharp/lib/missing.dll'='missing DLL';'dependencies/sharp/versions.json'='{}';'unused/large.dll'='must not extract'}}
  )
  foreach ($archive in $archives) {
   $source=Join-Path $base $archive.Name
@@ -30,6 +30,11 @@ try {
  };nativeDependencyFiles=@{};nativeDependenciesSha256=(Get-FileHash (Join-Path $cache $archives[-1].Name)).Hash}
  if ($VerifyFfmpegChecksum -or $RejectFfmpegChecksum) { $manifest.dependencies.ffmpeg.sha256 = if ($RejectFfmpegChecksum) { '0' * 64 } else { (Get-FileHash -Algorithm SHA256 (Join-Path $cache 'ffmpeg-fixture.zip')).Hash } }
  $manifest.nativeDependencyFiles[$nativePath]=(Get-FileHash (Join-Path (Join-Path $base $archives[-1].Name) $nativePath)).Hash
+ foreach ($name in @('dependencies/sharp/lib/resumed.dll','dependencies/sharp/lib/missing.dll','dependencies/sharp/versions.json')) {
+  $manifest.nativeDependencyFiles[$name]=(Get-FileHash (Join-Path (Join-Path $base $archives[-1].Name) $name)).Hash
+ }
+ Write-Fixture (Join-Path $release 'server/node_modules/@img/sharp-win32-x64/lib/resumed.dll') 'unchanged installed DLL'
+ Write-Fixture (Join-Path $release 'dependencies/sharp/versions.json') '{}'
  Write-Fixture (Join-Path $release manifest.json) ($manifest|ConvertTo-Json -Depth 10)
  Write-Fixture (Join-Path $release 'runtime/Common.psm1') (Get-Content -Raw (Join-Path $repo 'runtime/Common.psm1'))
  Write-Fixture (Join-Path $release 'installer/Install-RuntimeDependencies.ps1') (Get-Content -Raw (Join-Path $repo 'packaging/Install-RuntimeDependencies.ps1'))
@@ -63,6 +68,7 @@ try {
   [CmdletBinding()]param([Parameter(ValueFromPipeline,Position=0)]$Path,[string]$LiteralPath,[Parameter(Position=1)][string]$Destination,[switch]$Recurse,[switch]$Force)
   process {
    $source=if ($LiteralPath) {$LiteralPath} else {[string]$Path}
+   if ($source -match 'sharp-win32-x64') { throw 'Completed native injection was copied back into staging.' }
    if ($source -match 'runtime-extract') {
     if (-not $ForceNativeCrossDeviceError) { throw 'Disposable extraction was copied instead of promoted.' }
     $promotionCopies.Add($source)
@@ -116,6 +122,8 @@ try {
  foreach ($pair in @(@('runtime/node/node_modules/npm/index.js','package'),@('runtime/ffmpeg/ffmpeg.exe','ffmpeg'),@('dependencies/valkey/ValkeyService.exe','valkey'),@($nativePath,'native'))) {
   Check ((Get-Content -Raw (Join-Path $release $pair[0])) -ceq $pair[1]) "Promoted payload differs: $($pair[0])"
  }
+ Check (-not (Test-Path (Join-Path $release 'dependencies/sharp/lib/resumed.dll'))) 'Completed DLL was copied or extracted again.'
+ Check ((Get-Content -Raw (Join-Path $release 'dependencies/sharp/lib/missing.dll')) -ceq 'missing DLL') 'Missing DLL was not staged selectively.'
  Check ((Get-Content -Raw (Join-Path $root 'tools/uv/0.12.18/uv.exe')) -ceq 'uv') 'uv extraction was not promoted.'
  Check (@(Get-ChildItem (Join-Path $root 'cache/runtime-extract') -Force).Count -eq 0) 'Disposable extraction trees remained.'
  foreach ($archive in $archives) { Check (Test-Path (Join-Path $cache $archive.Name)) 'Reusable download archive was removed.' }

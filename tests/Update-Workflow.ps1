@@ -31,7 +31,7 @@ if ($env:IMMICH_TEST_FAIL -eq 'install-exit') { exit 7 }
 New-Item -ItemType $(if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }) (Join-Path $InstallRoot 'current') -Target $candidate | Out-Null
 '@
 try {
- foreach ($mode in @('success','cleanup-fail','tray-stop-fail','tray-start-fail','same-payload','same-payload-start','foreign-context','changed-manifest','callback-replay','skip-controller','classify-fail','stop-mutates','prepare','prepare-exit','stop-exit','backup','backup-exit','install','install-exit','start','start-exit','smoke','smoke-exit')) {
+ foreach ($mode in @('success','sharp-cleanup-fail','cleanup-fail','tray-stop-fail','tray-start-fail','same-payload','same-payload-start','foreign-context','changed-manifest','callback-replay','skip-controller','classify-fail','stop-mutates','prepare','prepare-exit','stop-exit','backup','backup-exit','install','install-exit','start','start-exit','smoke','smoke-exit')) {
   $case=Join-Path $base $mode
   $root=Join-Path $case install
   $data=Join-Path $case data
@@ -54,6 +54,9 @@ try {
   Set-Content "$old/runtime/launchers/Stop-Immich.ps1" 'param($EnvFile,$InstallRoot,$DataRoot); Add-Content $env:IMMICH_TEST_EVENTS stop; if ($env:IMMICH_TEST_FAIL -eq "stop-mutates") { Set-Content (Join-Path (Get-CurrentReleaseTarget $InstallRoot) changed-during-stop) changed }; if ($env:IMMICH_TEST_FAIL -eq "stop-exit") { exit 7 }'
   Copy-Item "$old/runtime/launchers/Stop-Immich.ps1" "$pkg/runtime/launchers/Stop-Immich.ps1"
   Set-Content "$pkg/tests/Smoke-Windows.ps1" 'param($InstallRoot,$DataRoot,$PostgresRoot); Add-Content $env:IMMICH_TEST_EVENTS smoke; if ($env:IMMICH_TEST_FAIL -eq "smoke") { throw "Injected smoke failure" }; if ($env:IMMICH_TEST_FAIL -eq "smoke-exit") { exit 7 }'
+  if ($mode -eq 'sharp-cleanup-fail') {
+   Add-Content "$pkg/tests/Smoke-Windows.ps1" 'New-Item -ItemType Directory (Join-Path $InstallRoot "current/.dependency-backups/sharp") -Force | Out-Null; $global:IMMICH_TEST_SHARP_LOCK=[IO.File]::Open((Join-Path $InstallRoot "current/.dependency-backups/sharp/locked.dll"),[IO.FileMode]::Create,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)'
+  }
   Set-Content "$pkg/migration/New-DatabaseBackup.ps1" 'param($EnvFile,$PostgresRoot); Add-Content $env:IMMICH_TEST_EVENTS backup; if ($env:IMMICH_TEST_FAIL -eq "backup") { throw "Injected backup failure" }; if ($env:IMMICH_TEST_FAIL -eq "backup-exit") { exit 7 }; $path=Join-Path (Split-Path $EnvFile) backup.dump; Set-Content $path dump; return $path'
   '{"schemaVersion":1,"immichVersion":"v3.2.2"}'|Set-Content "$old/manifest.json"
   '{"schemaVersion":2,"immichVersion":"v3.2.2","windowsRevision":1,"packageVersion":"v3.2.2.1"}'|Set-Content "$pkg/manifest.json"
@@ -62,12 +65,13 @@ try {
   $thrown=$false
   $global:LASTEXITCODE=13
   try { & "$pkg/installer/Update.ps1" -PackageRoot $pkg -InstallRoot $root -DataRoot $data -Scope AllUsers } catch { $thrown=$true; Write-Host $_.Exception.Message }
+  if ($mode -eq 'sharp-cleanup-fail' -and $global:IMMICH_TEST_SHARP_LOCK) { $global:IMMICH_TEST_SHARP_LOCK.Dispose(); $global:IMMICH_TEST_SHARP_LOCK=$null }
   $state=Get-Content -Raw "$data/state/upgrade-recovery.json"|ConvertFrom-Json
   $events=@(Get-Content $env:IMMICH_TEST_EVENTS)
   $counts=@(Get-Content $env:IMMICH_TEST_COUNTS)
   if (@($counts|Where-Object {$_ -eq 'install'}).Count -ne 1) { throw 'Repeated installer invocation.' }
   if (@($counts|Where-Object {$_ -eq 'compare'}).Count -gt 1) { throw 'Repeated DB payload comparison.' }
-  if ($mode -in @('success','stop-mutates','cleanup-fail','tray-stop-fail','tray-start-fail')) {
+  if ($mode -in @('success','sharp-cleanup-fail','stop-mutates','cleanup-fail','tray-stop-fail','tray-start-fail')) {
    if ($thrown -or $LASTEXITCODE -ne 0 -or $state.status -ne 'qualified' -or ($events -join ',') -ne 'prepare,stop,backup,install,start,smoke') { throw "Success case failed: $($events -join ',') $($state.status)" }
   } elseif ($mode -eq 'same-payload') {
    if ($thrown -or $state.status -ne 'qualified' -or $state.databaseBackup -or ($events -join ',') -ne 'prepare,stop,install,start,smoke') { throw 'Identical payload update performed an unnecessary DB dump.' }
@@ -82,7 +86,7 @@ try {
   }
   if (($counts -contains 'cleanup') -ne ($mode -in @('success','same-payload','stop-mutates','cleanup-fail','tray-start-fail'))) { throw "Wrong cleanup timing: $mode" }
   $trayEvents=@($counts | Where-Object {$_ -in @('tray-stop','cleanup','tray-start')}) -join ','
-  $expectedTray=if ($state.status -ne 'qualified') { '' } elseif ($mode -eq 'tray-stop-fail') { 'tray-stop' } else { 'tray-stop,cleanup,tray-start' }
+  $expectedTray=if ($state.status -ne 'qualified') { '' } elseif ($mode -eq 'tray-stop-fail') { 'tray-stop' } elseif ($mode -eq 'sharp-cleanup-fail') { 'tray-stop,tray-start' } else { 'tray-stop,cleanup,tray-start' }
   if ($trayEvents -ne $expectedTray) { throw "Tray lifecycle order was incorrect for ${mode}: $trayEvents" }
   Write-Host "PASS update state machine: $mode"
  }

@@ -111,51 +111,45 @@ try {
     New-Item -ItemType HardLink -Path (Join-Path $lib 'last.dll') -Target (Join-Path $sharpStore 'last.dll') | Out-Null
     $installedVersions = Join-Path (Split-Path -Parent $lib) 'versions.json'
     New-Item -ItemType HardLink -Path $installedVersions -Target (Join-Path $sharpStore 'versions.json') | Out-Null
+    $inventory['dependencies/sharp/versions.json']=(Get-FileHash (Join-Path $nodeRelease 'dependencies/sharp/versions.json')).Hash
     Write-Fixture (Join-Path $nodeRelease 'manifest.json') (@{dependencies=@{node=@{version='24.15.0'};pnpm=@{version='10.0.0'}};nativeDependencyFiles=$inventory}|ConvertTo-Json -Depth 6)
-    $completion=@{node='24.15.0';pnpm='10.0.0';server=(Get-ImmichDependencyInputHash $nodeRelease server);cli=(Get-ImmichDependencyInputHash $nodeRelease cli)}
-    Write-Fixture (Join-Path $nodeRelease '.node-dependencies-installed.json') ($completion|ConvertTo-Json)
     $nodeInstaller=Join-Path $PSScriptRoot '../runtime/launchers/Install-NodeDependencies.ps1'
+    $fakeNode=Join-Path $nodeRelease 'runtime/node/node.exe'
+    Write-Fixture (Join-Path $nodeInstall 'tools/pnpm/10.0.0/node_modules/pnpm/bin/pnpm.cjs') 'fixture manager'
+    $pnpmState=@{Calls=0}
+    $fakePnpm={ $pnpmState.Calls++; $global:LASTEXITCODE=0 }.GetNewClosure()
+    Set-Item "function:global:$fakeNode" $fakePnpm
+    try {
     & {
-        $copyState=@{Fail=$true;Calls=[Collections.Generic.List[string]]::new()}
-        function Copy-Item {
-            param([string]$LiteralPath,[string]$Destination,[switch]$Force)
-            $copyState.Calls.Add((Split-Path -Leaf $LiteralPath))
-            if ($copyState.Fail -and $LiteralPath -like '*last.dll') {
-                [IO.File]::WriteAllText($Destination,'partial transfer')
-                throw 'Injected Sharp copy failure.'
-            }
-            Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
-        }
-        Reject { & $nodeInstaller -ReleaseRoot $nodeRelease -InstallRoot $nodeInstall }
-        Check (@($copyState.Calls | Where-Object { $_ -eq 'same.dll' }).Count -eq 0) 'Rewrote an identical Sharp DLL.'
-        Check (Test-Path (Join-Path $stage 'changed.dll')) 'A partial injection consumed reusable staging.'
-        Check (Test-Path (Join-Path $stage 'last.dll')) 'A partial injection lost the remaining staged DLL.'
-        Check ((Get-Content -Raw (Join-Path $sharpStore 'changed.dll')) -ceq 'original store DLL') 'Sharp DLL injection modified the pnpm store.'
-        Check ((Get-Content -Raw (Join-Path $lib 'last.dll')) -ceq 'original last DLL') 'A failed copy partially overwrote the installed DLL.'
-        Check ((Get-Content -Raw (Join-Path $sharpStore 'versions.json')) -ceq '{"vips":"original-store"}') 'Failed injection modified shared Sharp metadata.'
-        Check (@(Get-ChildItem -LiteralPath $lib -Filter '.sharp-replacement-*' -Force).Count -eq 0) 'Failed injection left a temporary replacement.'
-        $copyState.Fail=$false
+        $changedIdentity=if ($IsWindows) { [regex]::Match((& fsutil file queryfileid (Join-Path $stage 'changed.dll') | Out-String),'0x[0-9a-fA-F]+').Value }
         if ($IsWindows) {
-            # An in-use destination must fail publication, never fall back to a
-            # write-through copy or lose the retained retry source.
-            $locked = [IO.File]::Open((Join-Path $lib 'last.dll'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+            $locked=[IO.File]::Open((Join-Path $lib 'last.dll'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
             try { Reject { & $nodeInstaller -ReleaseRoot $nodeRelease -InstallRoot $nodeInstall } }
             finally { $locked.Dispose() }
-            Check ((Get-Content -Raw (Join-Path $lib 'last.dll')) -ceq 'original last DLL') 'Failed publication replaced the old DLL.'
+            Check (-not (Test-Path (Join-Path $stage 'changed.dll'))) 'Completed DLL was copied instead of moved.'
             Check (Test-Path (Join-Path $stage 'last.dll')) 'Failed publication consumed retry staging.'
-            Check (@(Get-ChildItem -LiteralPath $lib -Filter '.sharp-replacement-*' -Force).Count -eq 0) 'Failed publication left a temporary replacement.'
+            Check ((Get-Content -Raw (Join-Path $lib 'last.dll')) -ceq 'original last DLL') 'Failed publication replaced the old DLL.'
+            Check ((Get-Content -Raw (Join-Path $sharpStore 'changed.dll')) -ceq 'original store DLL') 'Moved DLL modified the pnpm store.'
         }
         & $nodeInstaller -ReleaseRoot $nodeRelease -InstallRoot $nodeInstall
+        Check ($pnpmState.Calls -eq 2) 'A failed native injection repeated completed pnpm installs.'
         foreach ($name in @('same.dll','changed.dll','last.dll')) {
             Check ((Get-Content -Raw (Join-Path $lib $name)) -ceq "expected $name") 'Sharp retry did not install the complete DLL set.'
         }
-        Check (@($copyState.Calls | Where-Object { $_ -eq 'changed.dll' }).Count -eq 1) 'Retry rewrote a previously completed DLL.'
+        if ($IsWindows) {
+            $installedIdentity=[regex]::Match((& fsutil file queryfileid (Join-Path $lib 'changed.dll') | Out-String),'0x[0-9a-fA-F]+').Value
+            Check ($installedIdentity.Length -gt 0 -and $installedIdentity -ceq $changedIdentity) 'Sharp injection copied a DLL instead of moving its file record.'
+        }
         Check (-not (Test-Path (Join-Path $lib 'obsolete.dll'))) 'Retained a stale Sharp DLL.'
         Check ((Get-Content -Raw (Join-Path $lib 'sharp.node')) -ceq 'preserved binding') 'Removed the Sharp Node binding.'
         Check ((Get-Content -Raw (Join-Path $sharpStore 'changed.dll')) -ceq 'original store DLL') 'Retry modified the pnpm DLL store.'
         Check ((Get-Content -Raw (Join-Path $sharpStore 'last.dll')) -ceq 'original last DLL') 'Retry modified the pnpm last-DLL store.'
         Check ((Get-Content -Raw (Join-Path $sharpStore 'versions.json')) -ceq '{"vips":"original-store"}') 'Sharp metadata injection modified the pnpm store.'
         Check ((Get-Content -Raw $installedVersions) -ceq '{"vips":"fixture"}') 'Sharp metadata was not replaced.'
+        [void][IO.Directory]::CreateDirectory($stage)
+        & $nodeInstaller -ReleaseRoot $nodeRelease -InstallRoot $nodeInstall
+        Check (-not (Test-Path $stage)) 'Completed native metadata prevented staging cleanup retry.'
+        Check ($pnpmState.Calls -eq 2) 'Staging cleanup retry repeated pnpm installs.'
         Write-Fixture (Join-Path $lib 'changed.dll') 'later candidate change'
         Write-Fixture $installedVersions '{"vips":"later-candidate"}'
         Check ((Get-Content -Raw (Join-Path $sharpStore 'changed.dll')) -ceq 'original store DLL') 'Injected DLL retained a hardlink to the store.'
@@ -163,6 +157,7 @@ try {
         Check (@(Get-ChildItem -LiteralPath (Split-Path -Parent $lib) -Filter '.sharp-replacement-*' -Recurse -Force).Count -eq 0) 'Successful injection left a temporary replacement.'
         Check (-not (Test-Path $stage)) 'Successful injection retained staging.'
     }
+    } finally { Remove-Item "function:global:$fakeNode" }
     Check ((Get-ImmichProgressText copy ja-JP) -eq (Get-ImmichProgressText copy ja_JP)) 'Japanese regional tags differ.'
     Check ((Get-ImmichProgressText copy fr-FR) -eq (Get-ImmichProgressText copy en-US)) 'Unsupported locale must use English.'
     $state=Start-ImmichProgress -Key copy -Detail 'progress fixture' 6>$null
