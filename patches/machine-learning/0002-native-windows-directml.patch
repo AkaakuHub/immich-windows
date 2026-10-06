@@ -40,7 +40,20 @@ diff --git a/machine-learning/immich_ml/models/facial_recognition/recognition.py
              and "MIGraphXExecutionProvider" not in providers
              and "OpenVINOExecutionProvider" not in providers
          ):
+diff --git a/machine-learning/immich_ml/schemas.py b/machine-learning/immich_ml/schemas.py
+--- a/machine-learning/immich_ml/schemas.py
++++ b/machine-learning/immich_ml/schemas.py
+@@ -57,7 +57,7 @@
+     def name(self) -> str: ...
+
+     @property
+-    def shape(self) -> tuple[int, ...]: ...
++    def shape(self) -> tuple[int | str | None, ...]: ...
+
+
+ class ModelSession(Protocol):
 diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immich_ml/sessions/ort.py
+index 95a4078..9a8b87c 100644
 --- a/machine-learning/immich_ml/sessions/ort.py
 +++ b/machine-learning/immich_ml/sessions/ort.py
 @@ -1,6 +1,9 @@
@@ -53,15 +66,25 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
  from pathlib import Path
  from threading import Lock
  from typing import Any
-@@ -13,6 +16,7 @@
+@@ -13,6 +16,8 @@ from immich_ml.models.constants import SUPPORTED_PROVIDERS
  from immich_ml.schemas import ModelPrecision, SessionNode
 
  from ..config import log, settings
 +from .directml import directml_model
++from .directml_dynamic import DirectMLDynamicSession, InputShapes, dynamic_session
 
  MigraphxInputSignature = tuple[tuple[str, str, tuple[int, ...]], ...]
 
-@@ -56,14 +60,43 @@
+@@ -45,7 +50,7 @@ def _migraphx_input_signature(input_feed: dict[str, NDArray[Any]]) -> MigraphxIn
+
+
+ class OrtSession:
+-    session: ort.InferenceSession
++    session: ort.InferenceSession | DirectMLDynamicSession
+
+     def __init__(
+         self,
+@@ -56,14 +61,48 @@ class OrtSession:
      ):
          self.model_path = Path(model_path)
          self.providers = providers if providers is not None else self._providers_default
@@ -86,9 +109,14 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 +            self.sess_options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
 +            self.sess_options.add_session_config_entry("ep.dml.disable_graph_fusion", "1")
 +            self.provider_options = [{**options, "disable_metacommands": "true"} for options in self.provider_options]
-+        with directml_model(self.model_path) if directml else nullcontext(self.model_path) as model:
++        prepared_session = dynamic_session(self.model_path, self._create_session) if directml else None
++        self.session = prepared_session if prepared_session is not None else self._create_session()
++
++    def _create_session(self, input_shapes: InputShapes | None = None) -> ort.InferenceSession:
++        directml = "DmlExecutionProvider" in self.providers
++        with directml_model(self.model_path, input_shapes) if directml else nullcontext(self.model_path) as model:
 +            try:
-+                self.session = ort.InferenceSession(
++                session = ort.InferenceSession(
 +                    model.as_posix(),
 +                    providers=self.providers,
 +                    provider_options=self.provider_options,
@@ -101,17 +129,26 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 +        if "DmlExecutionProvider" in self.providers:
 +            # ORT registers CPU EP implicitly; the strict session option above
 +            # rejects CPU-assigned graph nodes, not CPU provider registration.
-+            registered_providers = self.session.get_providers()
++            registered_providers = session.get_providers()
 +            if registered_providers not in (
 +                ["DmlExecutionProvider"],
 +                ["DmlExecutionProvider", "CPUExecutionProvider"],
 +            ):
 +                raise RuntimeError(f"DirectML session initialization failed; registered providers: {registered_providers}")
-+
++        return session
 
      def get_inputs(self) -> Sequence[SessionNode]:
          inputs: Sequence[SessionNode] = self.session.get_inputs()
-@@ -83,6 +116,10 @@
+@@ -74,6 +113,8 @@ class OrtSession:
+         return outputs
+
+     def get_metadata(self) -> dict[str, str]:
++        if isinstance(self.session, DirectMLDynamicSession):
++            return self.session.metadata
+         metadata: dict[str, str] = self.session.get_modelmeta().custom_metadata_map
+         return metadata
+
+@@ -83,6 +124,10 @@ class OrtSession:
          input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
          run_options: Any = None,
      ) -> list[NDArray[np.float32]]:
@@ -122,7 +159,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
          if "MIGraphXExecutionProvider" in self.providers:
              model_key = self.model_path.resolve().as_posix()
              input_key = (model_key, _migraphx_input_signature(input_feed))
-@@ -113,7 +150,15 @@
+@@ -113,7 +158,15 @@ class OrtSession:
      def _providers_default(self) -> list[str]:
          available_providers = set(ort.get_available_providers())
          log.debug(f"Available ORT providers: {available_providers}")
@@ -139,7 +176,7 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
 
      @property
      def provider_options(self) -> list[dict[str, Any]]:
-@@ -131,6 +176,8 @@
+@@ -131,6 +184,8 @@ class OrtSession:
              match provider:
                  case "CPUExecutionProvider":
                      options = {"arena_extend_strategy": "kSameAsRequested"}
@@ -152,7 +189,7 @@ diff --git a/machine-learning/immich_ml/sessions/directml.py b/machine-learning/
 new file mode 100644
 --- /dev/null
 +++ b/machine-learning/immich_ml/sessions/directml.py
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,125 @@
 +from collections.abc import Iterator
 +from contextlib import contextmanager
 +from pathlib import Path
@@ -160,6 +197,7 @@ new file mode 100644
 +
 +import onnx
 +from onnx import TensorProto, helper
++from onnx.external_data_helper import load_external_data_for_tensor
 +
 +from .onnx_external import read_external_model, set_external_data
 +
@@ -220,11 +258,29 @@ new file mode 100644
 +
 +
 +@contextmanager
-+def directml_model(source: Path) -> Iterator[Path]:
++def directml_model(source: Path, input_shapes: dict[str, tuple[int, ...]] | None = None) -> Iterator[Path]:
 +    model = read_external_model(source)
 +    graph = model.graph
 +    index_types = {value.name: value.type.tensor_type.elem_type for value in [*graph.input, *graph.value_info]}
 +    changed = False
++    if input_shapes is not None:
++        for tensor in graph.initializer:
++            data = {entry.key: entry.value for entry in tensor.external_data}
++            if tensor.external_data and "length" in data and int(data["length"]) <= 1024:
++                if int(data["length"]) == 0:
++                    tensor.raw_data = b""
++                else:
++                    load_external_data_for_tensor(tensor, str(source.parent))
++                tensor.data_location = TensorProto.DEFAULT
++                tensor.ClearField("external_data")
++        for value in graph.input:
++            dimensions = value.type.tensor_type.shape.dim
++            for dimension, size in zip(dimensions, input_shapes[value.name], strict=True):
++                if size <= 0 or (dimension.HasField("dim_value") and dimension.dim_value != size):
++                    raise ValueError(f"Invalid input shape for {value.name}")
++                dimension.ClearField("dim_param")
++                dimension.dim_value = size
++        changed = True
 +    for tensor in list(graph.initializer):
 +        if tensor.data_type != TensorProto.FLOAT or len(tensor.dims) != 2 or not tensor.external_data:
 +            continue
@@ -259,6 +315,83 @@ new file mode 100644
 +        yield prepared
 +    finally:
 +        prepared.unlink()
+diff --git a/machine-learning/immich_ml/sessions/directml_dynamic.py b/machine-learning/immich_ml/sessions/directml_dynamic.py
+new file mode 100644
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/directml_dynamic.py
+@@ -0,0 +1,72 @@
++from collections.abc import Callable, Sequence
++from dataclasses import dataclass
++from pathlib import Path
++
++import numpy as np
++import onnx
++import onnxruntime as ort
++from numpy.typing import NDArray
++
++from .onnx_external import read_external_model
++
++InputShapes = dict[str, tuple[int, ...]]
++
++
++@dataclass
++class ModelNode:
++    name: str
++    shape: tuple[int | str | None, ...]
++
++
++def _nodes(values: Sequence[onnx.ValueInfoProto]) -> list[ModelNode]:
++    return [
++        ModelNode(value.name, tuple(
++            dimension.dim_value if dimension.HasField("dim_value") else dimension.dim_param or None
++            for dimension in value.type.tensor_type.shape.dim
++        ))
++        for value in values
++    ]
++
++
++class DirectMLDynamicSession:
++    def __init__(self, model: onnx.ModelProto, create_session: Callable[[InputShapes], ort.InferenceSession]):
++        self.inputs = _nodes(model.graph.input)
++        self.outputs = _nodes(model.graph.output)
++        self.metadata = {entry.key: entry.value for entry in model.metadata_props}
++        self.create_session = create_session
++        self.session: ort.InferenceSession | None = None
++        self.input_shapes: InputShapes | None = None
++
++    def run(
++        self,
++        output_names: list[str] | None,
++        input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
++        run_options: ort.RunOptions | None = None,
++    ) -> list[NDArray[np.float32]]:
++        shapes = {name: tuple(value.shape) for name, value in input_feed.items()}
++        if set(shapes) != {node.name for node in self.inputs}:
++            raise ValueError("DirectML input names do not match the model")
++        if self.input_shapes != shapes:
++            self.session = None
++            self.input_shapes = None
++            session = self.create_session(shapes)
++            self.session, self.input_shapes = session, shapes
++        assert self.session is not None
++        return self.session.run(output_names, input_feed, run_options)
++
++    def get_inputs(self) -> list[ModelNode]:
++        return self.inputs
++
++    def get_outputs(self) -> list[ModelNode]:
++        return self.outputs
++
++
++def dynamic_session(
++    source: Path, create_session: Callable[[InputShapes], ort.InferenceSession]
++) -> DirectMLDynamicSession | None:
++    model = read_external_model(source)
++    if all(
++        dimension.HasField("dim_value") for value in model.graph.input for dimension in value.type.tensor_type.shape.dim
++    ):
++        return None
++    return DirectMLDynamicSession(model, create_session)
 diff --git a/machine-learning/immich_ml/sessions/onnx_external.py b/machine-learning/immich_ml/sessions/onnx_external.py
 new file mode 100644
 --- /dev/null
