@@ -211,6 +211,8 @@ $trayStopped=$false
 try {
     Stop-ImmichTray -InstallRoot $InstallRoot -ReleasePath $state.previousRelease
     $trayStopped=$true
+    $nativeBackup=Join-Path $candidateRelease '.dependency-backups/sharp'
+    if (Test-Path -LiteralPath $nativeBackup) { Remove-Item -LiteralPath $nativeBackup -Recurse -Force }
     . (Join-Path $PSScriptRoot 'Remove-ObsoleteReleases.ps1')
     Remove-ImmichObsoleteReleases -InstallRoot $InstallRoot -DataRoot $DataRoot -CurrentReleasePath $state.candidateRelease -PreviousReleasePath $state.previousRelease -EnvFile $envFile | Out-Null
 } catch { Write-Warning "The update is healthy, but previous release cleanup could not finish: $($_.Exception.Message)" }

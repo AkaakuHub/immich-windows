@@ -10,8 +10,9 @@ $current=Join-Path $base 'current'
 $standaloneNode=$null
 try {
     $old=Join-Path $base 'releases/v3.2.2.1';$new=Join-Path $base 'releases/v3.2.2.2'
-    $manifest=@{target='windows-x64-native';dependencies=@{node=@{version='24.15.0';asset='node.zip'};pnpm=@{version='11.22.0'}};nativeDependencyFiles=@{'dependencies/sharp/lib/custom.dll'=('a'*64);'dependencies/sharp/versions.json'=('b'*64)};nativeDependencyMetadata=@{'dependencies/sharp/versions.json'='e30='}}
+    $manifest=@{target='windows-x64-native';dependencies=@{node=@{version='24.15.0';asset='node.zip'};pnpm=@{version='11.22.0'}};nativeDependencyFiles=@{'dependencies/sharp/lib/custom.dll'=('a'*64);'dependencies/sharp/versions.json'=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('{}')))};nativeDependencyMetadata=@{'dependencies/sharp/versions.json'='e30='}}
     $manifestText=$manifest|ConvertTo-Json -Depth 6
+    Write-Fixture (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/versions.json') '{}'
     foreach ($root in @($old,$new)) {
         Write-Fixture (Join-Path $root 'manifest.json') $manifestText
         foreach ($project in @('server','cli')) {
@@ -33,7 +34,7 @@ try {
     Write-Fixture (Join-Path $new 'server/pnpm-lock.yaml') 'same'
     $manifest.nativeDependencyFiles['dependencies/sharp/lib/custom.dll']='c'*64
     Write-Fixture (Join-Path $new 'manifest.json') ($manifest|ConvertTo-Json -Depth 6)
-    Check (-not (Test-ImmichNodeProjectReusable $old $new server)) 'Changed Sharp stack was reused.'
+    Check (Test-ImmichNodeProjectReusable $old $new server) 'A Sharp-only change reinstalled unchanged Node dependencies.'
     Check (Test-ImmichNodeProjectReusable $old $new cli) 'Sharp changes invalidated the independent CLI.'
     Write-Fixture (Join-Path $new 'manifest.json') $manifestText
     $linkType=if($IsWindows){'Junction'}else{'SymbolicLink'}
@@ -87,7 +88,80 @@ try {
         Check ($arguments -contains '--frozen-lockfile') 'pnpm lockfile enforcement was removed.'
         Check ($arguments -contains (Join-Path $base 'cache/pnpm-store')) 'pnpm did not use the existing shared store.'
     }
-    Write-Host 'PASS Node dependencies: unchanged trees deferred; changed lock/Sharp rejected; standalone uses existing pnpm store without reading current'
+    [IO.Directory]::Delete($current)
+    New-Item -ItemType $linkType -Path $current -Target $old | Out-Null
+    $changedPlan=[Collections.Generic.List[object]]::new()
+    $manifest.nativeDependencyFiles['dependencies/sharp/lib/custom.dll']='c'*64
+    Write-Fixture (Join-Path $new 'manifest.json') ($manifest|ConvertTo-Json -Depth 6)
+    $payload='new native bytes'
+    $manifest.nativeDependencyFiles['dependencies/sharp/lib/custom.dll']=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($payload)))
+    Write-Fixture (Join-Path $new 'manifest.json') ($manifest|ConvertTo-Json -Depth 6)
+    Write-Fixture (Join-Path $new 'dependencies/sharp/lib/custom.dll') $payload
+    Write-Fixture (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/custom.dll') 'old native bytes'
+    Add-ImmichDependencyReuse $changedPlan $old $new 'runtime/node' Node
+    Add-ImmichDependencyReuse $changedPlan $old $new 'server/node_modules' Server
+    $changedPlan[-1] | Add-Member -NotePropertyName dependencyInputHash -NotePropertyValue $state.server
+    & (Join-Path $PSScriptRoot '../runtime/launchers/Install-NodeDependencies.ps1') -ReleaseRoot $new -InstallRoot $base -DependencyReusePlan $changedPlan
+    Check ($changedPlan[1].sharpFiles.Count -eq 1) 'A Sharp-only update did not record exactly the changed DLL.'
+    Check ((Get-Content -Raw (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/custom.dll')) -ceq 'old native bytes') 'Preparation changed the running DLL.'
+    $nativeEntry=$changedPlan[1].sharpFiles[0]
+    $nativePath=$nativeEntry.relativePath
+    $nativeEntry.relativePath='dependencies/sharp/lib/../outside.dll'
+    $rejected=$false
+    try { Move-ImmichReusedDependencies $changedPlan $old $new } catch { $rejected=$true }
+    Check ($rejected -and (Test-Path (Join-Path $old 'runtime/node'))) 'Invalid Sharp path moved dependencies before validation.'
+    $nativeEntry.relativePath=$nativePath
+    $linked=Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/linked'
+    New-Item -ItemType $linkType -Path $linked -Target $base | Out-Null
+    $changedPlan[1].sharpFiles+=@([pscustomobject]@{relativePath='dependencies/sharp/lib/linked/new.dll';sha256=('a'*64);hadTarget=$false})
+    $rejected=$false
+    try { Move-ImmichReusedDependencies $changedPlan $old $new } catch { $rejected=$true }
+    Check ($rejected -and (Test-Path (Join-Path $old 'runtime/node'))) 'Linked Sharp path moved dependencies before validation.'
+    [IO.Directory]::Delete($linked)
+    $changedPlan[1].sharpFiles=@($nativeEntry)
+    Move-ImmichReusedDependencies $changedPlan $old $new
+    Check ((Get-Content -Raw (Join-Path $new 'server/node_modules/@img/sharp-win32-x64/lib/custom.dll')) -ceq $payload) 'Changed DLL was not moved after shutdown.'
+    Check (-not (Test-Path (Join-Path $new 'dependencies/sharp/lib/custom.dll'))) 'Changed DLL was copied instead of moved.'
+    $saved=$changedPlan.ToArray()|ConvertTo-Json -Depth 8|ConvertFrom-Json -AsHashtable
+    Move-ImmichReusedDependencies $saved $old $new -Restore
+    Move-ImmichReusedDependencies $saved $old $new -Restore
+    Check ((Get-Content -Raw (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/custom.dll')) -ceq 'old native bytes') 'Recovery did not restore the previous DLL.'
+    Check ((Get-Content -Raw (Join-Path $new 'dependencies/sharp/lib/custom.dll')) -ceq $payload) 'Recovery lost the changed DLL for retry.'
+    Write-Fixture (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/obsolete.dll') 'old obsolete'
+    Write-Fixture (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/versions.json') 'old metadata'
+    foreach ($path in @('lib/added.dll','versions.json')) {
+        $staged=Join-Path $new "dependencies/sharp/$path"
+        Write-Fixture $staged "new $path"
+        $changedPlan[1].sharpFiles+=@([pscustomobject]@{relativePath="dependencies/sharp/$path";sha256=(Get-FileHash $staged).Hash;hadTarget=($path -eq 'versions.json')})
+    }
+    $changedPlan[1].sharpFiles+=@([pscustomobject]@{relativePath='dependencies/sharp/lib/obsolete.dll';sha256=$null;hadTarget=$true})
+    $saved=$changedPlan.ToArray()|ConvertTo-Json -Depth 8|ConvertFrom-Json -AsHashtable
+    if ($IsWindows) {
+        $locked=[IO.File]::Open((Join-Path $new 'dependencies/sharp/versions.json'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
+            $rejected=$false
+            try { Move-ImmichReusedDependencies $changedPlan $old $new } catch { $rejected=$true }
+            Check $rejected 'Locked staging did not fail the transfer.'
+            Move-ImmichReusedDependencies $saved $old $new -Restore
+        } finally { $locked.Dispose() }
+        Check ((Get-Content -Raw (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/versions.json')) -ceq 'old metadata') 'Failure after backing up metadata lost the old file.'
+    }
+    Move-ImmichReusedDependencies $changedPlan $old $new
+    Check (-not (Test-Path (Join-Path $new 'server/node_modules/@img/sharp-win32-x64/lib/obsolete.dll'))) 'Sharp transfer retained obsolete DLLs.'
+    Move-ImmichReusedDependencies $saved $old $new -Restore
+    Move-ImmichReusedDependencies $saved $old $new -Restore
+    Check ((Get-Content -Raw (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/obsolete.dll')) -ceq 'old obsolete') 'Recovery lost a removed DLL.'
+    Check (-not (Test-Path (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/added.dll'))) 'Recovery retained a new DLL in the old runtime.'
+    Check ((Get-Content -Raw (Join-Path $new 'dependencies/sharp/lib/added.dll')) -ceq 'new lib/added.dll') 'Recovery lost new DLL staging.'
+    Write-Fixture (Join-Path $old 'manifest.json') (Get-Content -Raw (Join-Path $new 'manifest.json'))
+    Remove-Item (Join-Path $old 'server/node_modules/@img/sharp-win32-x64/lib/custom.dll')
+    Remove-Item (Join-Path $new 'dependencies/sharp/versions.json'),(Join-Path $new 'dependencies/sharp/lib/added.dll')
+    & (Join-Path $PSScriptRoot '../runtime/launchers/Install-NodeDependencies.ps1') -ReleaseRoot $new -InstallRoot $base -DependencyReusePlan $changedPlan
+    Check ($changedPlan[1].sharpFiles.Count -eq 1 -and -not $changedPlan[1].sharpFiles[0].hadTarget) 'Equal manifests discarded staging for a missing installed DLL.'
+    Move-ImmichReusedDependencies $changedPlan $old $new
+    Check ((Get-Content -Raw (Join-Path $new 'server/node_modules/@img/sharp-win32-x64/lib/custom.dll')) -ceq $payload) 'Missing DLL was not repaired during dependency transfer.'
+    Move-ImmichReusedDependencies $changedPlan $old $new -Restore
+    Write-Host 'PASS Node dependencies: unchanged trees deferred; changed lock rejected; Sharp-only changes transferred; standalone uses existing pnpm store without reading current'
 } finally {
     if ($standaloneNode) { Remove-Item "function:global:$standaloneNode" -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $current) { [IO.Directory]::Delete($current) }

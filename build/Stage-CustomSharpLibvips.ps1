@@ -78,56 +78,78 @@ function Get-LibvipsImports([string]$Path) {
         if ($inLibvips -and $line -match '^\s+\d+\s+([A-Za-z_?@][^\s]*)\s*$') { $Matches[1] }
     }
 }
-$coreDll = Join-Path $bundleLib 'libvips-42.dll'
-$coreExports = @(Get-DllExports $coreDll | Sort-Object -Unique)
-$glibExports = @(Get-DllExports (Join-Path $bundleLib 'libglib-2.0-0.dll'))
-$gobjectExports = @(Get-DllExports (Join-Path $bundleLib 'libgobject-2.0-0.dll'))
-$externalProviders = @{}
-foreach ($name in $glibExports) { $externalProviders[$name] = 'libglib-2.0-0.dll' }
-foreach ($name in $gobjectExports) { if (-not $externalProviders.ContainsKey($name)) { $externalProviders[$name] = 'libgobject-2.0-0.dll' } }
-$importFiles = @($cppRuntime[0].FullName,$sharpAddon[0].FullName) + @((Get-ChildItem -LiteralPath $targetLib -Filter '*.dll' -File -Recurse | ForEach-Object FullName)) + @($dlls | ForEach-Object FullName)
-$libvipsImports = @($importFiles | ForEach-Object { Get-LibvipsImports $_ } | Sort-Object -Unique)
-$missingExports = @($libvipsImports | Where-Object { $_ -notin $coreExports })
-$unmappedExports = @($missingExports | Where-Object { -not $externalProviders.ContainsKey($_) })
-if ($unmappedExports.Count) { throw "Custom libvips proxy cannot forward imports: $($unmappedExports -join ', ')" }
-$forwarderRoot = Join-Path (Get-RepositoryRoot) '.work\sharp-libvips-forwarder'
-if (Test-Path -LiteralPath $forwarderRoot) { Remove-Item -LiteralPath $forwarderRoot -Recurse -Force }
-New-Item -ItemType Directory -Path $forwarderRoot -Force | Out-Null
-$proxyLines = [System.Collections.Generic.List[string]]::new()
-$proxyLines.Add('LIBRARY libvips-42.dll')
-$proxyLines.Add('EXPORTS')
-foreach ($name in $coreExports) { $proxyLines.Add("  $name=libvips-core.dll.$name") }
-foreach ($name in $missingExports) { $proxyLines.Add("  $name=$($externalProviders[$name]).$name") }
-$proxyDef = Join-Path $forwarderRoot 'libvips-42.def'
-[System.IO.File]::WriteAllLines($proxyDef,$proxyLines,[System.Text.Encoding]::ASCII)
-$importLibraries = [System.Collections.Generic.List[string]]::new()
-$importDefs = @(
-    @{ Module='libvips-core.dll'; Names=$coreExports },
-    @{ Module='libglib-2.0-0.dll'; Names=@($missingExports | Where-Object { $externalProviders[$_] -eq 'libglib-2.0-0.dll' }) },
-    @{ Module='libgobject-2.0-0.dll'; Names=@($missingExports | Where-Object { $externalProviders[$_] -eq 'libgobject-2.0-0.dll' }) }
-)
-foreach ($item in $importDefs) {
-    if (-not $item.Names.Count) { continue }
-    $stem = [IO.Path]::GetFileNameWithoutExtension($item.Module)
-    $defPath = Join-Path $forwarderRoot "$stem-import.def"
-    $libPath = Join-Path $forwarderRoot "$stem-import.lib"
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add("LIBRARY $($item.Module)")
-    $lines.Add('EXPORTS')
-    foreach ($name in $item.Names) { $lines.Add("  $name") }
-    [System.IO.File]::WriteAllLines($defPath,$lines,[System.Text.Encoding]::ASCII)
-    & $lib /nologo "/def:$defPath" "/out:$libPath" /machine:x64
-    if ($LASTEXITCODE -ne 0) { throw "MSVC could not create the $($item.Module) import library." }
-    $importLibraries.Add($libPath)
+$forwarderCache=Join-Path $root 'artifacts/native/sharp-libvips-forwarder'
+$cacheDll=Join-Path $forwarderCache 'libvips-42.dll'
+$cacheState=Join-Path $forwarderCache 'inputs.json'
+$forwarderInputs=[ordered]@{
+    builder=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
+    tools=@($cl,$lib,$link | ForEach-Object { (Get-Item -LiteralPath $_).VersionInfo.FileVersion })
+    files=@(@($cppRuntime[0],$sharpAddon[0])+@($dlls) | Sort-Object Name | ForEach-Object { $_.Name+'='+(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
 }
-$emptySource = Join-Path $forwarderRoot 'empty.c'
-$emptyObject = Join-Path $forwarderRoot 'empty.obj'
-Set-Content -LiteralPath $emptySource -Encoding ascii -Value 'int immich_vips_forwarder_anchor(void) { return 0; }'
-& $cl /nologo /c /TC "/Fo$emptyObject" $emptySource
-if ($LASTEXITCODE -ne 0) { throw 'MSVC could not compile the libvips forwarder anchor.' }
-$proxyDll = Join-Path $forwarderRoot 'libvips-42.dll'
-& $link /nologo /dll /noentry /machine:x64 "/def:$proxyDef" "/out:$proxyDll" $emptyObject @($importLibraries)
-if ($LASTEXITCODE -ne 0) { throw 'MSVC could not link the libvips Windows ABI forwarder.' }
+$inputJson=$forwarderInputs|ConvertTo-Json -Depth 5 -Compress
+$cached=$null
+if (Test-Path -LiteralPath $cacheState -PathType Leaf) { $cached=Read-JsonFile $cacheState }
+if ($cached -and $cached.inputs -ceq $inputJson -and (Test-Path -LiteralPath $cacheDll -PathType Leaf) -and
+    (Get-FileHash -LiteralPath $cacheDll -Algorithm SHA256).Hash -ceq $cached.sha256) {
+    $proxyDll=$cacheDll
+    Write-Host 'Reusing unchanged Sharp/libvips forwarder; no compiler or linker invocation.'
+} else {
+    $coreDll = Join-Path $bundleLib 'libvips-42.dll'
+    $coreExports = @(Get-DllExports $coreDll | Sort-Object -Unique)
+    $glibExports = @(Get-DllExports (Join-Path $bundleLib 'libglib-2.0-0.dll'))
+    $gobjectExports = @(Get-DllExports (Join-Path $bundleLib 'libgobject-2.0-0.dll'))
+    $externalProviders = @{}
+    foreach ($name in $glibExports) { $externalProviders[$name] = 'libglib-2.0-0.dll' }
+    foreach ($name in $gobjectExports) { if (-not $externalProviders.ContainsKey($name)) { $externalProviders[$name] = 'libgobject-2.0-0.dll' } }
+    $importFiles = @($cppRuntime[0].FullName,$sharpAddon[0].FullName) + @($dlls | ForEach-Object FullName)
+    $libvipsImports = @($importFiles | ForEach-Object { Get-LibvipsImports $_ } | Sort-Object -Unique)
+    $missingExports = @($libvipsImports | Where-Object { $_ -notin $coreExports })
+    $unmappedExports = @($missingExports | Where-Object { -not $externalProviders.ContainsKey($_) })
+    if ($unmappedExports.Count) { throw "Custom libvips proxy cannot forward imports: $($unmappedExports -join ', ')" }
+    $forwarderRoot = Join-Path (Get-RepositoryRoot) '.work\sharp-libvips-forwarder'
+    if (Test-Path -LiteralPath $forwarderRoot) { Remove-Item -LiteralPath $forwarderRoot -Recurse -Force }
+    New-Item -ItemType Directory -Path $forwarderRoot -Force | Out-Null
+    $proxyLines = [System.Collections.Generic.List[string]]::new()
+    $proxyLines.Add('LIBRARY libvips-42.dll')
+    $proxyLines.Add('EXPORTS')
+    foreach ($name in $coreExports) { $proxyLines.Add("  $name=libvips-core.dll.$name") }
+    foreach ($name in $missingExports) { $proxyLines.Add("  $name=$($externalProviders[$name]).$name") }
+    $proxyDef = Join-Path $forwarderRoot 'libvips-42.def'
+    [System.IO.File]::WriteAllLines($proxyDef,$proxyLines,[System.Text.Encoding]::ASCII)
+    $importLibraries = [System.Collections.Generic.List[string]]::new()
+    $importDefs = @(
+        @{ Module='libvips-core.dll'; Names=$coreExports },
+        @{ Module='libglib-2.0-0.dll'; Names=@($missingExports | Where-Object { $externalProviders[$_] -eq 'libglib-2.0-0.dll' }) },
+        @{ Module='libgobject-2.0-0.dll'; Names=@($missingExports | Where-Object { $externalProviders[$_] -eq 'libgobject-2.0-0.dll' }) }
+    )
+    foreach ($item in $importDefs) {
+        if (-not $item.Names.Count) { continue }
+        $stem = [IO.Path]::GetFileNameWithoutExtension($item.Module)
+        $defPath = Join-Path $forwarderRoot "$stem-import.def"
+        $libPath = Join-Path $forwarderRoot "$stem-import.lib"
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $lines.Add("LIBRARY $($item.Module)")
+        $lines.Add('EXPORTS')
+        foreach ($name in $item.Names) { $lines.Add("  $name") }
+        [System.IO.File]::WriteAllLines($defPath,$lines,[System.Text.Encoding]::ASCII)
+        & $lib /nologo "/def:$defPath" "/out:$libPath" /machine:x64
+        if ($LASTEXITCODE -ne 0) { throw "MSVC could not create the $($item.Module) import library." }
+        $importLibraries.Add($libPath)
+    }
+    $emptySource = Join-Path $forwarderRoot 'empty.c'
+    $emptyObject = Join-Path $forwarderRoot 'empty.obj'
+    Set-Content -LiteralPath $emptySource -Encoding ascii -Value 'int immich_vips_forwarder_anchor(void) { return 0; }'
+    & $cl /nologo /c /TC "/Fo$emptyObject" $emptySource
+    if ($LASTEXITCODE -ne 0) { throw 'MSVC could not compile the libvips forwarder anchor.' }
+    $proxyDll = Join-Path $forwarderRoot 'libvips-42.dll'
+    & $link /nologo /dll /noentry /machine:x64 "/def:$proxyDef" "/out:$proxyDll" $emptyObject @($importLibraries)
+    if ($LASTEXITCODE -ne 0) { throw 'MSVC could not link the libvips Windows ABI forwarder.' }
+    [void][IO.Directory]::CreateDirectory($forwarderCache)
+    [IO.File]::Move($proxyDll,$cacheDll,$true)
+    $proxyDll=$cacheDll
+    @{inputs=$inputJson;sha256=(Get-FileHash -LiteralPath $cacheDll -Algorithm SHA256).Hash} |
+        ConvertTo-Json | Set-Content -LiteralPath $cacheState -Encoding utf8
+}
 foreach ($package in $packages) {
     $targetLib = Join-Path $package.FullName 'lib'
     Get-ChildItem -LiteralPath $targetLib -Filter '*.dll' -File -Recurse | Where-Object FullName -ne $cppRuntime[0].FullName | Remove-Item -Force

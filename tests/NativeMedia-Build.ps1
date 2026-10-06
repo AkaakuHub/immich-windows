@@ -117,6 +117,57 @@ try{
     $pin.version='1.23.3; injected'
     Reject {Update-PinnedLibheifRecipe -Path $recipePath -Pin $pin} 'Invalid libheif version accepted.'
 
+    $stageSource=Get-Content -Raw (Join-Path $repo 'build/Stage-CustomSharpLibvips.ps1')
+    $cacheStart=$stageSource.IndexOf('$forwarderCache=')
+    $cacheEnd=$stageSource.IndexOf('foreach ($package in $packages)', $cacheStart)
+    Check ($cacheStart -ge 0 -and $cacheEnd -gt $cacheStart) 'Missing forwarder cache stage.'
+    $stageScriptPath=Join-Path $repo 'build/Stage-CustomSharpLibvips.ps1'
+    $cacheCode=$stageSource.Substring($cacheStart,$cacheEnd-$cacheStart).Replace('$PSCommandPath','$stageScriptPath')
+    & {
+        $root=Join-Path $base 'forwarder-test'
+        $bundleLib=Join-Path $root 'bundle/lib'
+        foreach ($name in @('libvips-42.dll','libglib-2.0-0.dll','libgobject-2.0-0.dll')) { Write-File (Join-Path $bundleLib $name) "native $name" }
+        $dlls=@(Get-ChildItem $bundleLib -File)
+        $cppPath=Join-Path $root 'binding/cpp.dll';$addonPath=Join-Path $root 'binding/sharp.node'
+        Write-File $cppPath cpp;Write-File $addonPath addon
+        $cppRuntime=@(Get-Item $cppPath);$sharpAddon=@(Get-Item $addonPath)
+        $cl=Join-Path $root 'tools/cl.exe';$lib=Join-Path $root 'tools/lib.exe';$link=Join-Path $root 'tools/link.exe'
+        foreach ($tool in @($cl,$lib,$link)) { Write-File $tool 'fixture tool' }
+        $state=@{Calls=0}
+        $compileStub={
+            $state.Calls++
+            foreach ($arg in @($args | ForEach-Object { $_ })) {
+                if ([string]$arg -match '^/(?:out:|Fo)(.+)$') {
+                    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Matches[1]))
+                    [IO.File]::WriteAllText($Matches[1],('generated '+$state.Calls))
+                }
+            }
+            $global:LASTEXITCODE=0
+        }.GetNewClosure()
+        function Get-RepositoryRoot { $root }
+        function Read-JsonFile([string]$Path) { Get-Content -Raw $Path | ConvertFrom-Json }
+        function Get-DllExports { @('vips_fixture') }
+        function Get-LibvipsImports { @('vips_fixture') }
+        foreach ($tool in @($cl,$lib,$link)) { Set-Item "function:global:$tool" $compileStub }
+        try {
+            Invoke-Expression $cacheCode
+            $firstHash=(Get-FileHash $proxyDll).Hash
+            $firstCalls=$state.Calls
+            Check ($firstCalls -gt 0) 'First forwarder did not build.'
+            Invoke-Expression $cacheCode
+            Check ($state.Calls -eq $firstCalls -and (Get-FileHash $proxyDll).Hash -ceq $firstHash) 'Unchanged forwarder was rebuilt.'
+            (Get-Item $addonPath).LastWriteTimeUtc=[datetime]'2000-01-01Z'
+            Invoke-Expression $cacheCode
+            Check ($state.Calls -eq $firstCalls) 'File timestamps rebuilt the forwarder.'
+            Write-File $addonPath 'changed addon bytes'
+            Invoke-Expression $cacheCode
+            Check ($state.Calls -gt $firstCalls) 'Changed addon reused the old forwarder.'
+            $afterChange=$state.Calls
+            Write-File $proxyDll 'corrupted cache DLL'
+            Invoke-Expression $cacheCode
+            Check ($state.Calls -gt $afterChange) 'Corrupted forwarder cache was reused.'
+        } finally { foreach ($tool in @($cl,$lib,$link)) { Remove-Item "function:global:$tool" } }
+    }
     Check ($builder.Contains('build/patches/glib-3-win32-tls-directory.patch')) 'TLS patch does not use the MXE glib-[0-9]* discovery naming.'
     Check ($builder.Contains('$targetCacheId="immich-mxe-$($v.target)-$($nativeIdentity.nativeBuildInputsSha256)"')) 'BuildKit installed-library cache lacks the content digest.'
     Check ($builder.Contains('Assert-WindowsPeTlsDirectory -Path')) 'Native output is not checked for a TLS directory.'

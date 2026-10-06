@@ -51,6 +51,21 @@ sharp.versions = {sharp:'fixture',vips:'fixture'}; module.exports = sharp;
             self.assertNotEqual(failure.returncode, 0)
             self.assertIn('decode failure', failure.stderr)
 
+    def test_forwarder_cache_is_independent_of_application_patches(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/build-windows.yml').read_text(encoding='utf-8'))
+        steps = workflow['jobs']['assemble']['steps']
+        restore = {step['id']: step for step in steps if step.get('id', '').endswith('-cache')}
+        self.assertEqual(restore['application-cache']['with']['path'], 'artifacts/application')
+        cache = restore['forwarder-cache']['with']
+        self.assertEqual(cache['path'], 'artifacts/native/sharp-libvips-forwarder')
+        self.assertIn("hashFiles('build/Stage-CustomSharpLibvips.ps1')", cache['key'])
+        self.assertNotIn('patches/server', cache['key'])
+        save = [step for step in steps if step.get('with', {}).get('path') == cache['path'] and 'cache/save@' in step.get('uses', '')]
+        self.assertEqual(len(save), 1)
+        self.assertEqual(save[0]['if'], "steps.forwarder-cache.outputs.cache-hit != 'true'")
+        self.assertEqual(save[0]['with']['key'], '${{ steps.forwarder-cache.outputs.cache-primary-key }}')
+
     def test_workflow_runs_each_upgrade_lifecycle_and_unique_fixture_probe_once(self):
         workflow = (ROOT / '.github/workflows/build-windows.yml').read_text(encoding='utf-8')
         lines = [line for line in workflow.splitlines() if './tests/actions/Test-RevisionUpgrade.ps1' in line]

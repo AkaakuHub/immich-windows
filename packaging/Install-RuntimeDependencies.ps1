@@ -186,39 +186,23 @@ $nativeChecked=0
 $nativeTotal=@($inventoryProperty.Value.PSObject.Properties).Count
 $missing = [System.Collections.Generic.List[string]]::new()
 $reused = 0
-# Only share results across the two read-only checks in this invocation. Later
-# installation phases still verify their own inputs; no persistent hash cache.
-$checkedNativeHashes=@{}
-function Get-CheckedNativeHash([string]$Path) {
-    $key=[IO.Path]::GetFullPath($Path)
-    if (-not $checkedNativeHashes.ContainsKey($key)) { $checkedNativeHashes[$key]=(Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash }
-    return $checkedNativeHashes[$key]
-}
-# Sharp injection replaces a complete DLL set, so staging must never contain only a changed subset.
-$sharpNeedsStage = Test-Path -LiteralPath (Join-Path $ReleaseRoot 'dependencies\sharp\lib')
-foreach ($entry in ($inventoryProperty.Value.PSObject.Properties | Where-Object { -not $serverDeferred -and $_.Name.StartsWith('dependencies/sharp/') })) {
-    $path = Join-Path $ReleaseRoot $entry.Name.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
-        (Get-CheckedNativeHash $path) -ine $entry.Value) { $sharpNeedsStage=$true }
-}
 foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
     Update-ImmichProgress -State $nativeProgress -Completed $nativeChecked -Total $nativeTotal
     $nativeChecked++
     $relative = [string]$entry.Name
-    if ($serverDeferred -and $relative.StartsWith('dependencies/sharp/')) { continue }
+    if ($serverDeferred -and $relative.StartsWith('dependencies/sharp/') -and
+        $reuseManifest.nativeDependencyFiles.PSObject.Properties[$relative] -and
+        [string]$reuseManifest.nativeDependencyFiles.PSObject.Properties[$relative].Value -ieq [string]$entry.Value -and
+        (Test-Path -LiteralPath (Join-Path $reuseSource $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')) -PathType Leaf)) { continue }
     if ($relative -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or $relative.Contains('\')) { throw "Invalid native payload path: $relative" }
     $installedRelative = $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
     $target = Join-Path $ReleaseRoot $relative
     $candidatePaths = @($target,(Join-Path $ReleaseRoot $installedRelative)) | Select-Object -Unique
     $ready = $false
     foreach ($path in $candidatePaths) {
-        if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Get-CheckedNativeHash $path) -ieq $entry.Value) { $ready=$true; break }
+        if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -ieq $entry.Value) { $ready=$true; break }
     }
     if ($ready) {
-        if ($sharpNeedsStage -and $relative.StartsWith('dependencies/sharp/') -and $path -ne $target) {
-            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-            Copy-Item -LiteralPath $path -Destination $target -Force
-        }
         continue
     }
     $metadataProperty=$manifest.PSObject.Properties['nativeDependencyMetadata']

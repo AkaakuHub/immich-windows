@@ -201,6 +201,38 @@ try {
         Assert-True (-not (Test-ImmichDatabasePayloadEqual $left $right)) "DB-facing change must require backup: $name"
         Set-Content $path 'identical payload'
     }
+    $hashCalls=[Collections.Generic.List[string]]::new()
+    $commonModule=(Get-Command Test-ImmichDatabasePayloadEqual).Module
+    & $commonModule {
+        param($Calls)
+        $script:dbPolicyHashCalls=$Calls
+        function script:Get-FileHash {
+            param([string]$LiteralPath,[string]$Algorithm)
+            $script:dbPolicyHashCalls.Add($LiteralPath)
+            Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm
+        }
+    } $hashCalls
+    try {
+        $added=Join-Path $right 'server/dist/new-migration.js'
+        Set-Content $added 'new migration'
+        Assert-True (-not (Test-ImmichDatabasePayloadEqual $left $right)) 'Added migration did not require a backup.'
+        Assert-True ($hashCalls.Count -eq 0) 'Different file inventories hashed payloads unnecessarily.'
+        Remove-Item $added
+        Set-Content (Join-Path $right 'server/dist/main.js') 'changed database-facing payload'
+        Assert-True (-not (Test-ImmichDatabasePayloadEqual $left $right)) 'Different file sizes did not require a backup.'
+        Assert-True ($hashCalls.Count -eq 0) 'Different file sizes hashed payloads unnecessarily.'
+        Set-Content (Join-Path $right 'server/dist/main.js') 'identical payloae'
+        foreach ($directory in @($left,$right)) { Set-Content (Join-Path $directory 'runtime/node/node.exe') ('large unchanged executable' * 100) }
+        Assert-True (-not (Test-ImmichDatabasePayloadEqual $left $right)) 'Same-size changed server bytes did not require a backup.'
+        Assert-True (@($hashCalls | Where-Object {$_ -like '*node.exe'}).Count -eq 0) 'Comparison read the large executable after finding a small changed file.'
+        Set-Content (Join-Path $right 'server/dist/main.js') 'identical payload'
+        $hashCalls.Clear()
+        $reuse=@([pscustomobject]@{source=(Join-Path $left 'runtime/node');destination=(Join-Path $right 'runtime/node')})
+        Assert-True (Test-ImmichDatabasePayloadEqual $left $right -DependencyReusePlan $reuse) 'Deferred Node reuse changed the backup decision.'
+        Assert-True (@($hashCalls | Where-Object {$_ -like '*node.exe'}).Count -eq 0) 'The same physical executable was hashed unnecessarily.'
+    } finally {
+        & $commonModule { Remove-Item function:script:Get-FileHash; Remove-Variable dbPolicyHashCalls -Scope Script }
+    }
     Remove-Item (Join-Path $right 'server/pnpm-lock.yaml')
     Assert-True (-not (Test-ImmichDatabasePayloadEqual $left $right)) 'Missing proof must not skip the DB backup.'
 } finally { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
