@@ -207,5 +207,81 @@ class EmbeddingModelTests(unittest.TestCase):
         self.assertEqual(model.graph.initializer[0].data_location, self.onnx.TensorProto.EXTERNAL)
 
 
+@unittest.skipUnless(MODEL_SOURCE, "Requires the prepared ML source and ONNX dependencies")
+class DynamicModelTests(unittest.TestCase):
+    def setUp(self):
+        EmbeddingModelTests.setUp(self)
+        from immich_ml.sessions.directml_dynamic import dynamic_session
+
+        self.prepare = dynamic_session
+        self.created_shapes = []
+        self.original = self.source.read_bytes()
+
+    def create_session(self, shapes):
+        self.created_shapes.append(shapes)
+        with self.directml.directml_model(self.source, shapes) as prepared:
+            self.onnx.checker.check_model(str(prepared))
+            return self.ort.InferenceSession(str(prepared), providers=[CPU], enable_fallback=False)
+
+    def test_shape_changes_preserve_results_and_reuse_only_matching_session(self):
+        session = self.prepare(self.source, self.create_session)
+        self.assertEqual(session.get_inputs()[0].shape, (1, None))
+        for values in ([[0, 18]], [[1, 3]], [[0, 5, 18]], [[18, 0]]):
+            tokens = self.np.array(values, dtype=self.np.int32)
+            output = session.run(None, {"tokens": tokens})[0]
+            self.np.testing.assert_array_equal(output, self.weights[tokens])
+        self.assertEqual(self.created_shapes, [
+            {"tokens": (1, 2)}, {"tokens": (1, 3)}, {"tokens": (1, 2)},
+        ])
+        self.assertEqual(self.source.read_bytes(), self.original)
+        self.assertEqual(list(self.root.iterdir()), [self.source])
+
+    def test_fixed_dimension_and_input_name_mismatches_fail(self):
+        session = self.prepare(self.source, self.create_session)
+        with self.assertRaisesRegex(ValueError, "input names"):
+            session.run(None, {"wrong": self.np.zeros((1, 2), dtype=self.np.int32)})
+        self.assertEqual(self.created_shapes, [])
+        with self.assertRaisesRegex(ValueError, "Invalid input shape"):
+            session.run(None, {"tokens": self.np.zeros((2, 2), dtype=self.np.int32)})
+
+    def test_initialization_failure_does_not_retry_or_keep_previous_shape(self):
+        failure = RuntimeError("DirectML initialization failed")
+        factory = Mock(side_effect=failure)
+        session = self.prepare(self.source, factory)
+        with self.assertRaises(RuntimeError) as caught:
+            session.run(None, {"tokens": self.np.zeros((1, 2), dtype=self.np.int32)})
+        self.assertIs(caught.exception, failure)
+        factory.assert_called_once_with({"tokens": (1, 2)})
+        self.assertIsNone(session.session)
+        self.assertIsNone(session.input_shapes)
+
+    def test_static_models_keep_eager_session_creation(self):
+        self.model.graph.input[0].type.tensor_type.shape.dim[1].dim_value = 3
+        self.onnx.save_model(self.model, self.source)
+        factory = Mock()
+        self.assertIsNone(self.prepare(self.source, factory))
+        factory.assert_not_called()
+
+    def test_small_and_empty_resize_constants_are_available_to_shape_inference(self):
+        helper, tensor = self.onnx.helper, self.onnx.TensorProto
+        graph = helper.make_graph(
+            [helper.make_node("Resize", ["image", "roi", "", "sizes"], ["output"], mode="nearest")],
+            "resize-test", [helper.make_tensor_value_info("image", tensor.FLOAT, [None, None])],
+            [helper.make_tensor_value_info("output", tensor.FLOAT, [2, 2])],
+            [helper.make_tensor("roi", tensor.FLOAT, [0], []),
+             self.onnx.numpy_helper.from_array(self.np.array([2, 2], dtype=self.np.int64), "sizes")],
+        )
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=8)
+        model.metadata_props.add(key="character", value="a\nb")
+        self.onnx.save_model(model, self.source)
+        session = self.prepare(self.source, self.create_session)
+        self.assertEqual(session.metadata, {"character": "a\nb"})
+        image = self.np.arange(16, dtype=self.np.float32).reshape(4, 4)
+        reference = self.ort.InferenceSession(str(self.source), providers=[CPU])
+        self.np.testing.assert_array_equal(
+            session.run(None, {"image": image})[0], reference.run(None, {"image": image})[0],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

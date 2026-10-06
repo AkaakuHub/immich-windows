@@ -274,9 +274,10 @@ factory = Mock()
 ort = SimpleNamespace(InferenceSession=factory, SessionOptions=Options, ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=seq, ORT_PARALLEL=parallel), get_available_providers=lambda: ['CPUExecutionProvider','DmlExecutionProvider'])
 platform = SimpleNamespace(platform='win32')
 supported = ['CUDAExecutionProvider', 'MIGraphXExecutionProvider', 'OpenVINOExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']
-prepare_model = Mock(side_effect=nullcontext)
+prepare_model = Mock(side_effect=lambda source, input_shapes: nullcontext(source))
 globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported,
-                locale=locale, nullcontext=nullcontext, directml_model=prepare_model)
+                locale=locale, nullcontext=nullcontext, directml_model=prepare_model,
+                dynamic_session=Mock(return_value=None), DirectMLDynamicSession=type('DynamicSession', (), {}))
 exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), globals_)
 Session=globals_['OrtSession']
 def fresh(providers=None, options=None, registered=None):
@@ -298,7 +299,7 @@ assert kw['provider_options']==[{'device_id':'2', 'disable_metacommands':'true'}
 assert kw['sess_options'].enable_mem_pattern is False
 assert kw['sess_options'].execution_mode is seq
 assert kw['sess_options'].entries=={'session.disable_cpu_ep_fallback':'1', 'ep.dml.disable_graph_fusion':'1'}
-prepare_model.assert_called_once_with(Path('model.onnx'))
+prepare_model.assert_called_once_with(Path('model.onnx'), None)
 fresh(registered=['DmlExecutionProvider'])
 for registered in ([], ['CPUExecutionProvider'], ['CPUExecutionProvider', 'DmlExecutionProvider'],
                    ['DmlExecutionProvider', 'UnexpectedExecutionProvider']):
