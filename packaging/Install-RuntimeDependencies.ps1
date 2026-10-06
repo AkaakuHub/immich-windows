@@ -205,7 +205,10 @@ foreach ($entry in $inventoryProperty.Value.PSObject.Properties) {
     Update-ImmichProgress -State $nativeProgress -Completed $nativeChecked -Total $nativeTotal
     $nativeChecked++
     $relative = [string]$entry.Name
-    if ($serverDeferred -and $relative.StartsWith('dependencies/sharp/')) { continue }
+    if ($serverDeferred -and $relative.StartsWith('dependencies/sharp/') -and
+        $reuseManifest.nativeDependencyFiles.PSObject.Properties[$relative] -and
+        [string]$reuseManifest.nativeDependencyFiles.PSObject.Properties[$relative].Value -ieq [string]$entry.Value -and
+        (Test-Path -LiteralPath (Join-Path $reuseSource $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')) -PathType Leaf)) { continue }
     if ($relative -match '(^/|^[A-Za-z]:|(^|/)\.\.(/|$))' -or $relative.Contains('\')) { throw "Invalid native payload path: $relative" }
     $installedRelative = $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
     $target = Join-Path $ReleaseRoot $relative

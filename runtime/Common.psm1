@@ -847,7 +847,6 @@ function Test-ImmichNodeProjectReusable {
             -not (Test-ImmichDependencyPinEqual $previous $candidate 'node') -or
             -not (Test-ImmichDependencyPinEqual $previous $candidate 'pnpm') -or
             -not (Test-Path -LiteralPath (Join-Path $PreviousRelease "$Project/node_modules") -PathType Container)) { return $false }
-        if ($Project -eq 'server' -and -not (Test-ImmichSharpInputsEqual $previous $candidate)) { return $false }
         if (-not (Test-ImmichNodeProjectComplete $PreviousRelease $Project)) { return $false }
         $expected=if ($null -ne $Inputs -and $Inputs.Contains($Project)) { [string]$Inputs[$Project] } else { Get-ImmichDependencyInputHash $CandidateRelease $Project }
         $matches=(Get-ImmichDependencyInputHash $PreviousRelease $Project) -ceq $expected -and
@@ -936,6 +935,54 @@ function Add-ImmichDependencyReuse {
     $Plan.Add($entry)
     Write-Host "Keeping installed $Label for transfer after shutdown (no scan, copy, or download)."
 }
+function Move-ImmichSharpDependencies {
+    param($Entry,[string]$CandidateRelease,[switch]$Restore)
+    $hasFiles=if ($Entry -is [Collections.IDictionary]) { $Entry.Contains('sharpFiles') } else { $null -ne $Entry.PSObject.Properties['sharpFiles'] }
+    if (-not $hasFiles) { return }
+    if ($Entry.relativePath -cne 'server/node_modules') { throw 'Sharp changes require the server dependency transfer.' }
+    $files=@($Entry.sharpFiles)
+    if ($Restore) { [array]::Reverse($files) }
+    foreach ($file in $files) {
+        $relative=[string]$file.relativePath
+        if ($relative -cnotmatch '^dependencies/sharp/(?:versions\.json|lib/(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\.dll)$' -or $relative -match '(^|/)\.\.(/|$)') { throw 'Invalid Sharp transfer path.' }
+        if ($file.sha256 -and [string]$file.sha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw 'Invalid Sharp transfer checksum.' }
+        $source=Join-Path $CandidateRelease $relative
+        $target=Join-Path $CandidateRelease $relative.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
+        $backup=Join-Path $CandidateRelease $relative.Replace('dependencies/sharp/','.dependency-backups/sharp/')
+        foreach ($path in @($source,$target,$backup)) {
+            $cursor=Split-Path -Parent $path
+            while ($cursor -and $cursor.StartsWith($CandidateRelease,[StringComparison]::OrdinalIgnoreCase)) {
+                $item=Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+                if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Linked Sharp transfer directory.' }
+                $cursor=Split-Path -Parent $cursor
+            }
+        }
+        if ($Restore) {
+            if (Test-Path -LiteralPath $backup -PathType Leaf) {
+                if ($file.sha256 -and (Test-Path -LiteralPath $target -PathType Leaf) -and -not (Test-Path -LiteralPath $source)) {
+                    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $source))
+                    [IO.File]::Move($target,$source)
+                }
+                [IO.File]::Move($backup,$target)
+            } elseif (-not $file.hadTarget -and $file.sha256 -and -not (Test-Path -LiteralPath $source) -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                [void][IO.Directory]::CreateDirectory((Split-Path -Parent $source))
+                [IO.File]::Move($target,$source)
+            }
+            continue
+        }
+        if (Test-Path -LiteralPath $backup) { throw 'Sharp transfer backup already exists.' }
+        if ($file.sha256 -and (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $file.sha256)) { throw 'Staged Sharp transfer checksum mismatch.' }
+        if ([bool](Test-Path -LiteralPath $target -PathType Leaf) -ne [bool]$file.hadTarget) { throw 'Installed Sharp transfer path changed.' }
+        if ($file.hadTarget) {
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $backup))
+            [IO.File]::Move($target,$backup)
+        }
+        if ($file.sha256) {
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $target))
+            [IO.File]::Move($source,$target)
+        }
+    }
+}
 function Move-ImmichReusedDependencies {
     param($DependencyReusePlan,[string]$PreviousRelease,[string]$CandidateRelease,[switch]$Restore)
     # Check every bounded plan entry before changing any directory. Directory.Move
@@ -944,6 +991,7 @@ function Move-ImmichReusedDependencies {
     $entries=@($DependencyReusePlan | ForEach-Object { $_ })
     if ($Restore) { [array]::Reverse($entries) }
     foreach ($entry in $entries) {
+        if ($Restore) { Move-ImmichSharpDependencies -Entry $entry -CandidateRelease $CandidateRelease -Restore }
         $source=if ($Restore) { [string]$entry.destination } else { [string]$entry.source }
         $destination=if ($Restore) { [string]$entry.source } else { [string]$entry.destination }
         $sourceExists=Test-Path -LiteralPath $source -PathType Container
@@ -952,6 +1000,7 @@ function Move-ImmichReusedDependencies {
         if (-not $sourceExists -or $destinationExists) { throw "Dependency transfer has ambiguous or missing paths: $($entry.label)" }
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
         [IO.Directory]::Move($source,$destination)
+        if (-not $Restore) { Move-ImmichSharpDependencies -Entry $entry -CandidateRelease $CandidateRelease }
         Write-Host "$(if ($Restore) {'Restored'} else {'Moved'}) unchanged $($entry.label)."
     }
 }

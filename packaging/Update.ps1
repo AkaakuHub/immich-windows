@@ -184,6 +184,8 @@ try {
     $state.status='qualified'
     $state.completedAtUtc=[DateTime]::UtcNow.ToString('o')
     Save-UpgradeState
+    $nativeBackup=Join-Path $candidateRelease '.dependency-backups/sharp'
+    if (Test-Path -LiteralPath $nativeBackup) { Remove-Item -LiteralPath $nativeBackup -Recurse -Force }
     Write-Host "Upgrade qualified: $($state.previousVersion) -> $($state.candidateVersion)"
     if ($state.databaseBackup) { Write-Host "Database backup retained at: $($state.databaseBackup)" }
 } catch {

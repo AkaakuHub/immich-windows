@@ -50,6 +50,32 @@ foreach ($project in @('server','cli')) {
             -not $plannedInputs.ContainsKey($project)) {
             throw "Planned $project Node dependency reuse no longer matches this update."
         }
+        if ($project -eq 'server') {
+            $transfer=@($DependencyReusePlan | Where-Object relativePath -eq 'server/node_modules')[0]
+            $sharpFiles=[Collections.Generic.List[object]]::new()
+            $previousManifest=Get-Content -Raw (Join-Path $source 'manifest.json') | ConvertFrom-Json
+            $sharpUnchanged=Test-ImmichSharpInputsEqual $previousManifest $manifest
+            foreach ($file in $manifest.nativeDependencyFiles.PSObject.Properties | Where-Object {$_.Name.StartsWith('dependencies/sharp/')}) {
+                $staged=Join-Path $ReleaseRoot $file.Name
+                if ($sharpUnchanged -or -not (Test-Path -LiteralPath $staged -PathType Leaf)) { continue }
+                if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -ine $file.Value) { throw 'Staged Sharp checksum mismatch.' }
+                $old=Join-Path $source $file.Name.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
+                $sharpFiles.Add([pscustomobject]@{relativePath=$file.Name;sha256=[string]$file.Value;hadTarget=(Test-Path -LiteralPath $old -PathType Leaf)})
+            }
+            $previousManifest=Get-Content -Raw (Join-Path $source 'manifest.json') | ConvertFrom-Json
+            foreach ($file in $previousManifest.nativeDependencyFiles.PSObject.Properties | Where-Object {$_.Name.StartsWith('dependencies/sharp/lib/')}) {
+                if (-not $manifest.nativeDependencyFiles.PSObject.Properties[$file.Name]) {
+                    $old=Join-Path $source $file.Name.Replace('dependencies/sharp/','server/node_modules/@img/sharp-win32-x64/')
+                    $sharpFiles.Add([pscustomobject]@{relativePath=$file.Name;sha256=$null;hadTarget=(Test-Path -LiteralPath $old -PathType Leaf)})
+                }
+            }
+            if ($sharpUnchanged) {
+                foreach ($path in @($customSharp,(Join-Path (Split-Path -Parent $customSharp) 'versions.json'))) {
+                    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+                }
+            }
+            $transfer | Add-Member -NotePropertyName sharpFiles -NotePropertyValue $sharpFiles.ToArray() -Force
+        }
         $skip[$project] = $true
         continue
     }
@@ -135,13 +161,7 @@ try {
         if (-not $skip[$projectName]) { Install-ProjectDependencies $project }
     }
 
-    if ($deferred['server']) {
-        # A resumed preparation may still contain redundant candidate staging.
-        # The complete unchanged installed tree will be transferred after stop.
-        foreach ($path in @($customSharp,(Join-Path (Split-Path -Parent $customSharp) 'versions.json'))) {
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
-        }
-    } elseif (Test-Path -LiteralPath $customSharp -PathType Container) {
+    if (-not $deferred['server'] -and (Test-Path -LiteralPath $customSharp -PathType Container)) {
         $sharpLib = Join-Path $ReleaseRoot 'server\node_modules\@img\sharp-win32-x64\lib'
         if (-not (Test-Path -LiteralPath $sharpLib -PathType Container)) { throw "Installed Sharp runtime is missing: $sharpLib" }
         foreach ($dll in (Get-ChildItem -LiteralPath $sharpLib -Filter '*.dll' -File -Recurse)) {
