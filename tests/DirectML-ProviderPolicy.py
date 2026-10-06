@@ -1,4 +1,4 @@
-"""Dependency-free regressions for the embedded selected-provider smoke probe.
+"""Regressions for provider policy and optional ONNX embedding transformations.
 
 Mocks model ORT's registered providers, not GPU execution. Real DirectML
 inference still requires the packaged Windows smoke test on suitable hardware.
@@ -6,6 +6,7 @@ inference still requires the packaged Windows smoke test on suitable hardware.
 
 import io
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -14,6 +15,7 @@ from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parent.parent
+MODEL_SOURCE = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 PROBE = (ROOT / "tests/Smoke-Windows.ps1").read_text(encoding="utf-8").split("$ortProbe=@'\n", 1)[1].split("\n'@", 1)[0]
 DML, CPU = "DmlExecutionProvider", "CPUExecutionProvider"
 
@@ -63,9 +65,11 @@ class SmokePolicyTests(unittest.TestCase):
                 self.session.run.assert_called_once()
                 options = self.factory.call_args.kwargs
                 self.assertEqual(options["providers"], [DML])
-                self.assertEqual(options["provider_options"], [{"device_id": "2"}])
+                self.assertEqual(options["provider_options"], [{"device_id": "2", "disable_metacommands": "true"}])
                 self.assertIs(options["enable_fallback"], False)
-                self.assertEqual(options["sess_options"].entries, {"session.disable_cpu_ep_fallback": "1"})
+                self.assertEqual(options["sess_options"].entries, {
+                    "session.disable_cpu_ep_fallback": "1", "ep.dml.disable_graph_fusion": "1",
+                })
                 self.assertIs(options["sess_options"].enable_mem_pattern, False)
                 self.assertEqual(options["sess_options"].execution_mode, "sequential")
 
@@ -116,6 +120,91 @@ class SmokePolicyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_probe([CPU])
         self.factory.assert_not_called()
+
+
+@unittest.skipUnless(MODEL_SOURCE, "Requires the prepared or packaged ML source and its ONNX dependencies")
+class EmbeddingModelTests(unittest.TestCase):
+    def setUp(self):
+        import numpy as np
+        import onnx
+        import onnxruntime as ort
+
+        sys.path.insert(0, str(MODEL_SOURCE))
+        from immich_ml.sessions import directml, onnx_external
+
+        self.addCleanup(sys.path.remove, str(MODEL_SOURCE))
+        self.np, self.onnx, self.ort = np, onnx, ort
+        self.directml, self.reader = directml, onnx_external
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.source = self.root / "model.onnx"
+        self.weights = np.arange(19 * 4, dtype=np.float32).reshape(19, 4) - 30
+        tensor = onnx.numpy_helper.from_array(self.weights, name="embedding")
+        graph = onnx.helper.make_graph(
+            [onnx.helper.make_node("Gather", ["embedding", "tokens"], ["vectors"], axis=0)], "embedding-test",
+            [onnx.helper.make_tensor_value_info("tokens", onnx.TensorProto.INT32, [1, None])],
+            [onnx.helper.make_tensor_value_info("vectors", onnx.TensorProto.FLOAT, [1, None, 4])], [tensor],
+        )
+        self.model = onnx.helper.make_model(graph, opset_imports=[onnx.helper.make_opsetid("", 17)], ir_version=8)
+        self.onnx.save_model(self.model, self.source)
+
+    def compare(self):
+        before = self.source.read_bytes()
+        tokens = self.np.array([[0, 5, 6, 11, 12, 17, 18, -1, -19]], dtype=self.np.int32)
+        with patch.object(self.directml, "MAX_EMBEDDING_BYTES", 96):
+            with self.directml.directml_model(self.source) as prepared:
+                self.assertNotEqual(prepared, self.source)
+                self.onnx.checker.check_model(str(prepared))
+                model = self.onnx.load_model(prepared, load_external_data=False)
+                self.assertTrue(all(not tensor.raw_data for tensor in model.graph.initializer))
+                reference = self.ort.InferenceSession(str(self.source), providers=[CPU])
+                session = self.ort.InferenceSession(str(prepared), providers=[CPU])
+                self.np.testing.assert_array_equal(
+                    session.run(None, {"tokens": tokens})[0], reference.run(None, {"tokens": tokens})[0],
+                )
+                self.np.testing.assert_array_equal(session.run(None, {"tokens": tokens})[0], self.weights[tokens])
+            self.assertFalse(prepared.exists())
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_shard_boundaries_last_partial_shard_and_negative_indices_preserve_weights(self):
+        self.compare()
+
+    def test_existing_external_weights_are_referenced_without_copying(self):
+        self.onnx.save_model(self.model, self.source, save_as_external_data=True,
+                             all_tensors_to_one_file=True, location="weights.bin", size_threshold=0)
+        before = (self.root / "weights.bin").read_bytes()
+        self.compare()
+        self.assertEqual((self.root / "weights.bin").read_bytes(), before)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["model.onnx", "weights.bin"])
+
+    def test_small_model_uses_original_file(self):
+        with self.directml.directml_model(self.source) as prepared:
+            self.assertEqual(prepared, self.source)
+        self.assertEqual(list(self.root.iterdir()), [self.source])
+
+    def test_generated_header_is_removed_when_session_creation_fails(self):
+        with patch.object(self.directml, "MAX_EMBEDDING_BYTES", 96):
+            with self.assertRaisesRegex(RuntimeError, "session failure"):
+                with self.directml.directml_model(self.source) as prepared:
+                    self.assertTrue(prepared.exists())
+                    raise RuntimeError("session failure")
+        self.assertEqual(list(self.root.iterdir()), [self.source])
+
+    def test_reader_does_not_read_raw_initializer_payload(self):
+        payload = self.source.read_bytes()
+        raw = self.model.graph.initializer[0].raw_data
+
+        class ObservedStream(io.BytesIO):
+            def read(stream, size=-1):
+                result = super().read(size)
+                self.assertNotIn(raw, result)
+                return result
+
+        with patch.object(Path, "open", return_value=ObservedStream(payload)):
+            model = self.reader.read_external_model(self.source)
+        self.assertFalse(model.graph.initializer[0].raw_data)
+        self.assertEqual(model.graph.initializer[0].data_location, self.onnx.TensorProto.EXTERNAL)
 
 
 if __name__ == "__main__":

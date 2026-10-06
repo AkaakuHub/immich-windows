@@ -245,8 +245,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Selected-provider smoke policy tests failed.' 
 if ($SourceRoot) {
     $policyTest = @'
 import ast
+import locale
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
@@ -272,7 +274,9 @@ factory = Mock()
 ort = SimpleNamespace(InferenceSession=factory, SessionOptions=Options, ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=seq, ORT_PARALLEL=parallel), get_available_providers=lambda: ['CPUExecutionProvider','DmlExecutionProvider'])
 platform = SimpleNamespace(platform='win32')
 supported = ['CUDAExecutionProvider', 'MIGraphXExecutionProvider', 'OpenVINOExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']
-globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported)
+prepare_model = Mock(side_effect=nullcontext)
+globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported,
+                locale=locale, nullcontext=nullcontext, directml_model=prepare_model)
 exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), globals_)
 Session=globals_['OrtSession']
 def fresh(providers=None, options=None, registered=None):
@@ -290,10 +294,11 @@ s=fresh()
 kw=factory.call_args.kwargs
 assert kw['enable_fallback'] is False
 assert kw['providers']==['DmlExecutionProvider']
-assert kw['provider_options']==[{'device_id':'2'}]
+assert kw['provider_options']==[{'device_id':'2', 'disable_metacommands':'true'}]
 assert kw['sess_options'].enable_mem_pattern is False
 assert kw['sess_options'].execution_mode is seq
-assert kw['sess_options'].entries=={'session.disable_cpu_ep_fallback':'1'}
+assert kw['sess_options'].entries=={'session.disable_cpu_ep_fallback':'1', 'ep.dml.disable_graph_fusion':'1'}
+prepare_model.assert_called_once_with(Path('model.onnx'))
 fresh(registered=['DmlExecutionProvider'])
 for registered in ([], ['CPUExecutionProvider'], ['CPUExecutionProvider', 'DmlExecutionProvider'],
                    ['DmlExecutionProvider', 'UnexpectedExecutionProvider']):
@@ -302,6 +307,7 @@ for registered in ([], ['CPUExecutionProvider'], ['CPUExecutionProvider', 'DmlEx
 custom=Options();s=fresh(options=custom)
 assert custom.enable_mem_pattern is False and custom.execution_mode is seq
 assert custom.entries['session.disable_cpu_ep_fallback']=='1'
+assert custom.entries['ep.dml.disable_graph_fusion']=='1'
 raises(lambda: fresh(['CPUExecutionProvider']), ValueError)
 raises(lambda: fresh(['DmlExecutionProvider','CPUExecutionProvider']), ValueError)
 ort.get_available_providers=lambda:['CPUExecutionProvider']
@@ -311,6 +317,18 @@ ort.get_available_providers=lambda:['CPUExecutionProvider','DmlExecutionProvider
 factory.reset_mock();factory.side_effect=RuntimeError('provider init failure')
 raises(lambda:Session('model.onnx'),RuntimeError)
 assert factory.call_count==1 and factory.call_args.kwargs['enable_fallback'] is False
+factory.reset_mock();native_message='DXGI_ERROR_DEVICE_RESET: グラフィックスデバイスがリセットされました'
+native_bytes=native_message.encode('cp932')
+factory.side_effect=UnicodeDecodeError('utf-8',native_bytes,0,1,'invalid start byte')
+globals_['locale']=SimpleNamespace(getencoding=lambda:'cp932')
+try:
+    Session('model.onnx')
+except RuntimeError as error:
+    assert native_message in str(error)
+    assert isinstance(error.__cause__,UnicodeDecodeError)
+else:
+    raise AssertionError('Expected the native ORT error to remain readable')
+assert factory.call_count==1
 s=fresh();s.session.run.side_effect=RuntimeError('execution failure')
 raises(lambda:s.run(None,{}),RuntimeError)
 assert factory.call_count==1 and s.session.run.call_count==1
@@ -326,9 +344,11 @@ s.session.run.side_effect=run
 with ThreadPoolExecutor(max_workers=4) as pool:
     list(pool.map(lambda _:s.run(None,{}),range(8)))
 assert peak==1
+prepare_model.reset_mock()
 settings.accelerator='cpu';s=fresh()
 assert s.providers==['CPUExecutionProvider'] and s._run_lock is None
 assert s.sess_options.enable_mem_pattern is True and not s.sess_options.entries
+prepare_model.assert_not_called()
 settings.accelerator='directml'
 factory.reset_mock(return_value=True,side_effect=True)
 factory.return_value.get_providers.return_value=['CPUExecutionProvider']

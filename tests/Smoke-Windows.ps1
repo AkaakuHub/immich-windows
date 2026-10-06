@@ -126,6 +126,7 @@ if accelerator == "directml":
     options.enable_mem_pattern = False
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+    options.add_session_config_entry("ep.dml.disable_graph_fusion", "1")
 graph = helper.make_graph(
     [helper.make_node("Add", ["x", "x"], ["y"])], "provider-probe",
     [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 2])],
@@ -134,7 +135,7 @@ graph = helper.make_graph(
 model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8)
 session = ort.InferenceSession(
     model.SerializeToString(), sess_options=options, providers=[selected],
-    provider_options=[{"device_id": device}] if accelerator == "directml" else [{}], enable_fallback=False,
+    provider_options=[{"device_id": device, "disable_metacommands": "true"}] if accelerator == "directml" else [{}], enable_fallback=False,
 )
 # ORT registers CPU EP implicitly even when CPU node fallback is disabled.
 # The strict session option above rejects CPU-assigned graph nodes at creation.
@@ -150,6 +151,8 @@ $accelerator = if ($envs['MACHINE_LEARNING_ACCELERATOR']) { [string]$envs['MACHI
 $device = if ($envs['MACHINE_LEARNING_DEVICE_ID']) { [string]$envs['MACHINE_LEARNING_DEVICE_ID'] } else { '0' }
 & $python.FullName -c $ortProbe ([string]$manifest.dependencies.onnxruntimeDirectml.version) $accelerator $device
 if($LASTEXITCODE -ne 0){throw 'ONNX Runtime selected-provider inference probe failed.'}
+& $python.FullName (Join-Path $PSScriptRoot 'DirectML-ProviderPolicy.py') (Join-Path $current 'machine-learning/app')
+if($LASTEXITCODE -ne 0){throw 'DirectML model transformation regressions failed.'}
 
 $statfsProbe=@'
 const fs = require('node:fs/promises');
