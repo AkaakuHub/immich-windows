@@ -283,9 +283,14 @@ jobs:
         id: build-downloads
         with:
           path: .cache
-          key: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
+          key: build-downloads-corepack-v1-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
+          # Reuse the matching archive cache once when seeding Corepack.
+          restore-keys: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
       - name: Build and qualify Windows package
         shell: pwsh
+        env:
+          # Keep the pinned pnpm package in the existing download cache.
+          COREPACK_HOME: ${{ github.workspace }}/.cache/corepack
         run: |
           $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures'))
           .\build\Enter-VsDevEnvironment.ps1
