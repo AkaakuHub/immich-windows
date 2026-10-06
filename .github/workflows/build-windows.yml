@@ -68,28 +68,42 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - name: Install strict workflow parser
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - name: Select existing qualification or a fresh build
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           COMPONENT: ${{ inputs.component }}
         run: python .github/scripts/qualified_release.py plan
-      - name: Reuse unchanged same-PR qualification inputs
+      - name: Reuse unchanged Windows qualification inputs
         id: test-reuse
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_ONLY: ${{ steps.plan.outputs.publish == 'false' && steps.plan.outputs.reuse != 'true' }}
         run: python .github/scripts/reuse_qualification.py plan
+  ci-tools:
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
+          persist-credentials: false
+      - name: Install strict workflow parser
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
+      - name: Test current CI scripts and workflow contracts
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
   validate:
     needs: plan
-    if: needs.plan.outputs.reuse != 'true'
+    if: needs.plan.outputs.reuse != 'true' && needs.plan.outputs.test_reuse != 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.plan.outputs.checkout || github.sha }}
           persist-credentials: false
-      - name: Test artifact promotion and rejection policies
-        run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Verify pins, patches, update policy and dependency reuse once
         if: needs.plan.outputs.test_reuse != 'true'
         shell: pwsh
@@ -237,6 +251,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: migration-tools
+          compression-level: 0
           path: dist/*-migration-tools.zip
           if-no-files-found: error
   assemble:
@@ -283,9 +298,14 @@ jobs:
         id: build-downloads
         with:
           path: .cache
-          key: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
+          key: build-downloads-corepack-v1-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
+          # Reuse the matching archive cache once when seeding Corepack.
+          restore-keys: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
       - name: Build and qualify Windows package
         shell: pwsh
+        env:
+          # Keep the pinned pnpm package in the existing download cache.
+          COREPACK_HOME: ${{ github.workspace }}/.cache/corepack
         run: |
           $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures'))
           .\build\Enter-VsDevEnvironment.ps1
@@ -511,6 +531,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qualified-windows-package-v1
+          compression-level: 0
           path: |
             dist/*-win-x64.zip
             dist/*-native-dependencies.zip
@@ -520,8 +541,8 @@ jobs:
           retention-days: 14
           if-no-files-found: error
   publish:
-    needs: [plan, assemble]
-    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/main' && needs.plan.result == 'success' && needs.plan.outputs.publish == 'true' && (needs.plan.outputs.reuse == 'true' || needs.assemble.result == 'success') }}
+    needs: [plan, ci-tools, assemble]
+    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/main' && needs.plan.result == 'success' && needs.ci-tools.result == 'success' && needs.plan.outputs.publish == 'true' && (needs.plan.outputs.reuse == 'true' || needs.assemble.result == 'success') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
