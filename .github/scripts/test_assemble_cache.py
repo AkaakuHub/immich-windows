@@ -62,8 +62,8 @@ class AssembleCacheTests(unittest.TestCase):
     def test_no_bulk_tools_or_profile_cache_is_added(self):
         restores = [step for step in STEPS if 'uses: actions/cache/restore@' in step]
         saves = [step for step in STEPS if 'uses: actions/cache/save@' in step]
-        self.assertEqual(len(restores), 5)
-        self.assertEqual(len(saves), 5)
+        self.assertEqual(len(restores), 6)
+        self.assertEqual(len(saves), 6)
         for step in restores + saves:
             self.assertNotIn('.tools', step)
             self.assertNotIn('LOCALAPPDATA', step)

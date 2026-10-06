@@ -282,12 +282,20 @@ jobs:
           ./build/Write-AppBuildCacheKeys.ps1 -OutputPath $env:GITHUB_OUTPUT
           $upstream = Get-Content -Raw -LiteralPath upstream.json | ConvertFrom-Json
           "upstream=$($upstream.version)-$($upstream.commit)" >> $env:GITHUB_OUTPUT
+          $sharp = (Get-Content -Raw dependencies/versions.json | ConvertFrom-Json).sharp.version
+          $native = Get-Content -Raw artifacts/native/sharp-libvips-custom/immich-windows-libvips.json | ConvertFrom-Json
+          "forwarder=$sharp-$($native.nativeBuildInputsSha256)-$env:ImageVersion" >> $env:GITHUB_OUTPUT
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: application-cache
         with:
           path: artifacts/application
           key: application-${{ runner.os }}-${{ steps.application-key.outputs.application }}-${{ steps.application-key.outputs.upstream }}-${{ hashFiles('patches/server/**', 'patches/series', 'metadata-patches/server/**', 'metadata-patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-Immich.ps1', 'build/Fetch-Geodata.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: application-${{ runner.os }}-
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: forwarder-cache
+        with:
+          path: artifacts/native/sharp-libvips-forwarder
+          key: sharp-forwarder-${{ runner.os }}-${{ steps.application-key.outputs.forwarder }}-${{ hashFiles('build/Stage-CustomSharpLibvips.ps1') }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: ml-cache
         with:
@@ -334,6 +342,11 @@ jobs:
         with:
           path: artifacts/application
           key: ${{ steps.application-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: steps.forwarder-cache.outputs.cache-hit != 'true'
+        with:
+          path: artifacts/native/sharp-libvips-forwarder
+          key: ${{ steps.forwarder-cache.outputs.cache-primary-key }}
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.ml-cache.outputs.cache-hit != 'true'
         with:
