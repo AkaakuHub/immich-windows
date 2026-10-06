@@ -81,6 +81,7 @@ foreach ($name in @(
 if (Test-Path (Join-Path $root 'migration')) { Copy-Directory (Join-Path $root 'migration') (Join-Path $Destination 'migration') }
 New-Item -ItemType Directory -Path (Join-Path $Destination 'tests') -Force | Out-Null
 Copy-Item (Join-Path $root 'tests\Smoke-Windows.ps1') (Join-Path $Destination 'tests\Smoke-Windows.ps1')
+Copy-Item (Join-Path $root 'tests\DirectML-ProviderPolicy.py') (Join-Path $Destination 'tests\DirectML-ProviderPolicy.py')
 Copy-Item (Join-Path $root 'config\immich.env.example') (Join-Path $Destination 'immich.env.example') -Force
 $installCmd = (Get-Content -Raw -LiteralPath (Join-Path $root 'packaging\Install.cmd')).Replace('__IMMICH_VERSION__', $packageVersion)
 Write-Utf8NoBom -Path (Join-Path $root 'dist\Install.cmd') -Content $installCmd
