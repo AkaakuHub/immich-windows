@@ -56,6 +56,7 @@ jobs:
       pull-requests: read
     outputs:
       version: ${{ steps.plan.outputs.version }}
+      test_reuse: ${{ steps.test-reuse.outputs.test_reuse }}
       checkout: ${{ steps.plan.outputs.checkout }}
       publish: ${{ steps.plan.outputs.publish }}
       reuse: ${{ steps.plan.outputs.reuse }}
@@ -73,6 +74,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COMPONENT: ${{ inputs.component }}
         run: python .github/scripts/qualified_release.py plan
+      - name: Reuse unchanged same-PR qualification inputs
+        id: test-reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/reuse_qualification.py plan
   validate:
     needs: plan
     if: needs.plan.outputs.reuse != 'true'
@@ -85,6 +91,7 @@ jobs:
       - name: Test artifact promotion and rejection policies
         run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Verify pins, patches, update policy and dependency reuse once
+        if: needs.plan.outputs.test_reuse != 'true'
         shell: pwsh
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'immich-upstream'
@@ -106,7 +113,7 @@ jobs:
           if ($failed.Count) { throw "Validation failed: $($failed -join ', ')" }
   codec:
     needs: [plan, validate]
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec'
+    if: needs.plan.outputs.test_reuse != 'true' && (github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'codec')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
@@ -180,7 +187,7 @@ jobs:
           key: ${{ steps.codec-cache.outputs.cache-primary-key }}
   postgres:
     needs: [plan, validate]
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'postgres'
+    if: needs.plan.outputs.test_reuse != 'true' && (github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all' || inputs.component == 'postgres')
     runs-on: windows-2025
     timeout-minutes: 180
     steps:
@@ -297,6 +304,11 @@ jobs:
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-MigrationToolsArchive.ps1
+      - name: Stage source metadata and asset hashes before installation tests
+        env:
+          QUALIFICATION_SOURCE: ${{ needs.plan.outputs.checkout || github.sha }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python .github/scripts/qualified_release.py record --version "$env:VERSION"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.application-cache.outputs.cache-hit != 'true'
         with:
@@ -386,10 +398,7 @@ jobs:
             -InstallRoot $installRoot -DataRoot $dataRoot -MediaRoot $mediaRoot `
             -DatabasePassword $password -DatabaseName 'immich_ci_allusers' -PostgresRoot 'C:\Program Files\PostgreSQL\18'
           $fixtures = @(Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE '.cache/media-fixtures') -File -Recurse | Select-Object -ExpandProperty FullName)
-          ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -BaselinePackageRoot $baselineRoot -InstallRoot $installRoot -DataRoot $dataRoot -Scope AllUsers
-          & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $installRoot -DataRoot $dataRoot `
-            -PostgresRoot 'C:\Program Files\PostgreSQL\18' -SharpFixture $fixtures
-          ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $installRoot -DataRoot $dataRoot -LeaveStopped
+          ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -BaselinePackageRoot $baselineRoot -InstallRoot $installRoot -DataRoot $dataRoot -Scope AllUsers -SharpFixture $fixtures -TestMachineLearningLifecycle
           # Reuse this already migrated, stopped disposable CI installation.
           $env:IMMICH_METADATA_REPAIR_TEST_ONLY = '1'
           try {
@@ -438,9 +447,7 @@ jobs:
             New-Item -ItemType Junction -Path "$userRoot/cache" -Target "$installRoot/cache" | Out-Null
             & "$baselineRoot/installer/Install.ps1" -PackageRoot $baselineRoot -Scope CurrentUser `
               -InstallRoot $userRoot -DataRoot $userData -EnvFile "$dataRoot/immich.env" -DatabaseName 'immich_ci_currentuser'
-            ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -BaselinePackageRoot $baselineRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser
-            & "$packageRoot/tests/Smoke-Windows.ps1" -InstallRoot $userRoot -DataRoot $userData -SharpFixture $fixtures
-            ./tests/actions/Test-MachineLearningLifecycle.ps1 -InstallRoot $userRoot -DataRoot $userData -LeaveStopped
+            ./tests/actions/Test-RevisionUpgrade.ps1 -PackageRoot $packageRoot -BaselinePackageRoot $baselineRoot -InstallRoot $userRoot -DataRoot $userData -Scope CurrentUser -SharpFixture $fixtures -TestMachineLearningLifecycle
             Write-Host ('CurrentUser qualification passed in {0:n1}s' -f $scopeTimer.Elapsed.TotalSeconds)
           } finally {
             $env:LOCALAPPDATA = $originalLocalAppData
@@ -499,11 +506,8 @@ jobs:
             ${{ runner.temp }}/immich-install/cache/uv
             ${{ runner.temp }}/immich-install/cache/pnpm-store
           key: ${{ steps.runtime-downloads.outputs.cache-primary-key }}
-      - name: Record the actual tested checkout and asset hashes
-        env:
-          QUALIFICATION_SOURCE: ${{ needs.plan.outputs.checkout || github.sha }}
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: python .github/scripts/qualified_release.py record --version "$env:VERSION"
+      - name: Verify tested source and staged asset hashes remained unchanged
+        run: python .github/scripts/reuse_qualification.py finish
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qualified-windows-package-v1

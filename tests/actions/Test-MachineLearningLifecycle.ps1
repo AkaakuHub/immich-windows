@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$DataRoot,
     [ValidateRange(10,180)][int]$TimeoutSeconds = 60,
-    [switch]$LeaveStopped
+    [switch]$LeaveStopped,
+    [switch]$UseRunningConfiguration
 )
 
 # Exercise the real installed launch/stop paths, with no model downloads or 300s wait.
@@ -67,10 +68,16 @@ function Assert-SupervisorStable {
 
 $stopped = $false
 try {
-    & $stop @launchArgs
-    foreach ($key in $testEnv.Keys) { $settings[$key] = $testEnv[$key] }
-    Write-EnvFile -Path $envFile -Values $settings
-    & $start @launchArgs
+    if ($UseRunningConfiguration) {
+        foreach ($key in $testEnv.Keys) {
+            if ([string]$settings[$key] -cne $testEnv[$key]) { throw "Running lifecycle fixture is not configured: $key" }
+        }
+    } else {
+        & $stop @launchArgs
+        foreach ($key in $testEnv.Keys) { $settings[$key] = $testEnv[$key] }
+        Write-EnvFile -Path $envFile -Values $settings
+        & $start @launchArgs
+    }
     $supervisor = Get-MlSupervisor
     $serviceProcessId = if ($scope -eq 'AllUsers') {
         (Get-CimInstance Win32_Service -Filter "Name='ImmichMachineLearning'").ProcessId

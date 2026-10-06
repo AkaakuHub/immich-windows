@@ -45,6 +45,27 @@ try {
     Check ($errors.Count -eq 0) 'Lifecycle fixture does not parse.'
     $outerTry = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] })[-1]
     $statements = $outerTry.Body.Statements
+    $prepareLifecycle = [scriptblock]::Create($statements[0].Extent.Text)
+    foreach ($mode in @('standalone','running','wrong-ttl','wrong-poll','wrong-workers')) {
+        & {
+            param($Mode)
+            $events = [Collections.Generic.List[string]]::new()
+            $UseRunningConfiguration = $Mode -ne 'standalone'
+            $testEnv = @{ MACHINE_LEARNING_MODEL_TTL='1'; MACHINE_LEARNING_MODEL_TTL_POLL_S='1'; MACHINE_LEARNING_WORKERS='1' }
+            $settings = @{} + $testEnv
+            if ($Mode -eq 'wrong-ttl') { $settings.MACHINE_LEARNING_MODEL_TTL='300' }
+            if ($Mode -eq 'wrong-poll') { $settings.MACHINE_LEARNING_MODEL_TTL_POLL_S='10' }
+            if ($Mode -eq 'wrong-workers') { $settings.MACHINE_LEARNING_WORKERS='2' }
+            $launchArgs = @{}; $envFile = 'unused-fixture.env'
+            $stop = { $events.Add('stop') }; $start = { $events.Add('start') }
+            function Write-EnvFile { param($Path,$Values) $events.Add('write') }
+            $rejected = $false
+            try { & $prepareLifecycle } catch { $rejected = $true }
+            Check ($rejected -eq $Mode.StartsWith('wrong-')) 'Running lifecycle accepted mismatched fixture settings.'
+            $expected = if ($Mode -eq 'standalone') { 'stop,write,start' } else { '' }
+            Check (($events -join ',') -ceq $expected) 'Lifecycle repeated startup or changed standalone preparation.'
+        } $mode
+    }
     $logCheckIndex = 0
     while ($statements[$logCheckIndex].Extent.Text -notlike '$stderr =*') { $logCheckIndex++ }
     $checkLogs = [scriptblock]::Create($statements[$logCheckIndex].Extent.Text + "`n" + $statements[$logCheckIndex + 1].Extent.Text)
@@ -58,6 +79,19 @@ try {
     }
     $restore = $outerTry.Finally.Statements[0].Finally.Extent.Text
     $restore = [scriptblock]::Create($restore.Substring(1, $restore.Length - 2))
+    $upgradeAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'actions/Test-RevisionUpgrade.ps1'), [ref]$tokens, [ref]$errors)
+    Check ($errors.Count -eq 0) 'Revision upgrade fixture does not parse.'
+    $upgradeTry = @($upgradeAst.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] })[-1]
+    $restoreUpgrade = $upgradeTry.Finally.Extent.Text
+    $restoreUpgrade = [scriptblock]::Create($restoreUpgrade.Substring(1, $restoreUpgrade.Length - 2))
+    & {
+        $envFile = Join-Path $root 'upgrade-lifecycle.env'
+        $lifecycleOriginalEnv = [Text.Encoding]::UTF8.GetBytes("original settings`r`n")
+        $lifecycleProcessEnv = @{}
+        [IO.File]::WriteAllText($envFile, 'temporary short TTL')
+        & $restoreUpgrade
+        Check ([Convert]::ToBase64String([IO.File]::ReadAllBytes($envFile)) -ceq [Convert]::ToBase64String($lifecycleOriginalEnv)) 'Upgrade fixture did not restore exact pre-lifecycle env bytes.'
+    }
     foreach ($leaveStopped in @($false,$true)) {
         & {
             param($LeaveStopped)

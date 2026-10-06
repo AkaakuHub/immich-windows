@@ -267,7 +267,7 @@ def automatic_candidate(api, number, head, base, *, merged=False):
 
 def dispatch_inputs():
     path = os.environ.get('GITHUB_EVENT_PATH')
-    return json.loads(Path(path).read_text()).get('inputs', {}) if path else {}
+    return json.loads(Path(path).read_text(encoding='utf-8')).get('inputs', {}) if path else {}
 
 
 def plan_automatic(api, inputs, values):
@@ -400,7 +400,7 @@ def validate_provenance(record, run, jobs, artifact, source, target_tree, repo, 
 
 def record_bundle(version, directory):
     require(not git('status', '--porcelain', '--untracked-files=no'), 'Tracked source changed during qualification')
-    event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+    event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
     pr = event.get('pull_request', {})
     record = dict(schemaVersion=1, repository=os.environ['GITHUB_REPOSITORY'], version=version,
                   runId=int(os.environ['GITHUB_RUN_ID']), runAttempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
@@ -699,7 +699,7 @@ def prepare_native():
                         'Selected qualification artifact changed before cache seeding')
                 artifact = download_native(api, run, bundle)
             else:
-                event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+                event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
                 if os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch':
                     inputs = event.get('inputs', {})
                     number = positive_id(inputs.get('upstream_pr'), 'upstream PR')

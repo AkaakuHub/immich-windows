@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory)][string]$InstallRoot,
     [Parameter(Mandatory)][string]$DataRoot,
     [Parameter(Mandatory)][ValidateSet('AllUsers','CurrentUser')][string]$Scope,
-    [Parameter(Mandatory)][string]$BaselinePackageRoot
+    [Parameter(Mandatory)][string]$BaselinePackageRoot,
+    [string[]]$SharpFixture = @(),
+    [switch]$TestMachineLearningLifecycle
 )
 # Only for disposable GitHub Actions installs of a SHA-256 verified prior release.
 $ErrorActionPreference='Stop'
@@ -46,6 +48,19 @@ $envs=Read-EnvFile $envFile
 $envs['IMMICH_WINDOWS_TEST_PRESERVE']='value=with spaces'
 $envs['IMMICH_HOST']='127.0.0.1'
 Write-EnvFile -Path $envFile -Values $envs
+$lifecycleOriginalEnv = if ($TestMachineLearningLifecycle) { [IO.File]::ReadAllBytes($envFile) } else { $null }
+$lifecycleProcessEnv = @{}
+try {
+if ($TestMachineLearningLifecycle) {
+    # The real updater will start a fresh worker with these disposable settings.
+    # Its smoke only pings ML; it does not mark the worker as prediction-used.
+    $lifecycleSettings = Read-EnvFile $envFile
+    foreach ($key in @('MACHINE_LEARNING_MODEL_TTL','MACHINE_LEARNING_MODEL_TTL_POLL_S','MACHINE_LEARNING_WORKERS')) {
+        $lifecycleProcessEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+        $lifecycleSettings[$key] = '1'
+    }
+    Write-EnvFile -Path $envFile -Values $lifecycleSettings
+}
 # The baseline has already started and migrated its own separate disposable DB.
 Wait-HttpOk -Uri "http://127.0.0.1:$($envs['IMMICH_PORT'])/api/server/ping" -TimeoutSeconds 10
 
@@ -102,3 +117,16 @@ Write-Host "Running $Scope installation: $previousVersion -> $candidateVersion u
 Assert-TrayRegistration
 if (-not (Test-Path -LiteralPath $unrelated)) { throw 'Legacy menu cleanup removed a user-owned shortcut.' }
 Remove-Item -LiteralPath $unrelated
+if ($SharpFixture.Count) {
+    & (Join-Path $PSScriptRoot 'Test-InstalledMediaFixtures.ps1') -ReleaseRoot $updated -Fixture $SharpFixture
+}
+if ($TestMachineLearningLifecycle) {
+    & (Join-Path $PSScriptRoot 'Test-MachineLearningLifecycle.ps1') -InstallRoot $InstallRoot -DataRoot $DataRoot -UseRunningConfiguration -LeaveStopped
+}
+} finally {
+    if ($null -ne $lifecycleOriginalEnv) { [IO.File]::WriteAllBytes($envFile, $lifecycleOriginalEnv) }
+    foreach ($key in $lifecycleProcessEnv.Keys) {
+        if ($null -eq $lifecycleProcessEnv[$key]) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($key, $lifecycleProcessEnv[$key], 'Process') }
+    }
+}
