@@ -17,7 +17,7 @@ param(
     [ValidateRange(1,65535)][int]$ServerPort = 2283,
     [ValidateRange(1,65535)][int]$MachineLearningPort = 3003,
     [ValidateSet('cpu','directml')][string]$MachineLearningAccelerator = 'cpu',
-    [int]$MachineLearningDeviceId = 0,
+    [string]$MachineLearningDeviceInstanceId,
     [ValidateSet('BundledValkey','External')][string]$RedisMode = 'BundledValkey',
     [string]$RedisHost = '127.0.0.1',
     [int]$RedisPort = 6379,
@@ -163,9 +163,9 @@ $PostgresRoot = if ($PSBoundParameters.ContainsKey('PostgresRoot')) { $PostgresR
 $ServerPort = if ($PSBoundParameters.ContainsKey('ServerPort')) { $ServerPort } elseif ($sourceEnv['IMMICH_PORT']) { [int]$sourceEnv['IMMICH_PORT'] } else { $ServerPort }
 $MachineLearningPort = if ($PSBoundParameters.ContainsKey('MachineLearningPort')) { $MachineLearningPort } elseif ($sourceEnv['IMMICH_PORT_ML']) { [int]$sourceEnv['IMMICH_PORT_ML'] } else { $MachineLearningPort }
 $MachineLearningAccelerator = if ($PSBoundParameters.ContainsKey('MachineLearningAccelerator')) { $MachineLearningAccelerator } elseif ($sourceEnv['MACHINE_LEARNING_ACCELERATOR']) { [string]$sourceEnv['MACHINE_LEARNING_ACCELERATOR'] } else { $MachineLearningAccelerator }
-$MachineLearningDeviceId = if ($PSBoundParameters.ContainsKey('MachineLearningDeviceId')) { $MachineLearningDeviceId } elseif ($sourceEnv['MACHINE_LEARNING_DEVICE_ID']) { [int]$sourceEnv['MACHINE_LEARNING_DEVICE_ID'] } else { $MachineLearningDeviceId }
+$MachineLearningDeviceInstanceId = if ($PSBoundParameters.ContainsKey('MachineLearningDeviceInstanceId')) { $MachineLearningDeviceInstanceId } elseif ($sourceEnv['IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID']) { [string]$sourceEnv['IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID'] } else { $MachineLearningDeviceInstanceId }
 if ($MachineLearningAccelerator -notin @('cpu','directml')) { throw "Unknown MachineLearningAccelerator: $MachineLearningAccelerator" }
-if ($MachineLearningDeviceId -lt 0) { throw 'MachineLearningDeviceId must be zero or greater.' }
+if ($MachineLearningAccelerator -eq 'directml' -and [string]::IsNullOrWhiteSpace($MachineLearningDeviceInstanceId)) { throw 'IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID is required for DirectML.' }
 $RedisPort = if ($PSBoundParameters.ContainsKey('RedisPort')) { $RedisPort } elseif ($sourceEnv['REDIS_PORT']) { [int]$sourceEnv['REDIS_PORT'] } else { $RedisPort }
 $RedisMode = if ($PSBoundParameters.ContainsKey('RedisMode')) { $RedisMode } elseif ($sourceEnv['IMMICH_WINDOWS_REDIS_MODE']) { [string]$sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] } else { $RedisMode }
 $RedisHost = if ($PSBoundParameters.ContainsKey('RedisHost')) { $RedisHost } elseif ($sourceEnv['REDIS_HOSTNAME'] -and $sourceEnv['IMMICH_WINDOWS_REDIS_MODE'] -eq 'External') { [string]$sourceEnv['REDIS_HOSTNAME'] } else { $RedisHost }
@@ -188,7 +188,7 @@ if ($existingRelease) {
         throw 'The candidate must have a newer Windows package version. Active releases cannot be overwritten or downgraded.'
     }
     if (-not $ReuseServices) {
-        $configurationOverrides = @('MediaRoot','DatabasePassword','DatabaseHost','DatabasePort','DatabaseName','DatabaseUser','ServerPort','MachineLearningPort','MachineLearningAccelerator','MachineLearningDeviceId','RedisMode','RedisHost','RedisPort')
+        $configurationOverrides = @('MediaRoot','DatabasePassword','DatabaseHost','DatabasePort','DatabaseName','DatabaseUser','ServerPort','MachineLearningPort','MachineLearningAccelerator','MachineLearningDeviceInstanceId','RedisMode','RedisHost','RedisPort')
         if (@($configurationOverrides | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count) { throw 'An existing installation is updated using its saved immich.env. Edit that file before updating instead of passing configuration overrides.' }
         & (Join-Path $PSScriptRoot 'Update.ps1') -PackageRoot $PackageRoot -Scope $Scope -InstallRoot $InstallRoot -DataRoot $DataRoot -PostgresRoot $PostgresRoot -PostgresService $PostgresService
         return
@@ -344,14 +344,16 @@ $managedEnvValues = [ordered]@{
     MACHINE_LEARNING_CACHE_FOLDER = $(if ($sourceEnv['MACHINE_LEARNING_CACHE_FOLDER']) { $sourceEnv['MACHINE_LEARNING_CACHE_FOLDER'] } else { $cache })
     MACHINE_LEARNING_WORKERS = $(if ($sourceEnv['MACHINE_LEARNING_WORKERS']) { $sourceEnv['MACHINE_LEARNING_WORKERS'] } else { '1' })
     MACHINE_LEARNING_ACCELERATOR = $MachineLearningAccelerator
-    MACHINE_LEARNING_DEVICE_ID = [string]$MachineLearningDeviceId
+    IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID = $MachineLearningDeviceInstanceId
     IMMICH_HOST_ML = $(if ($sourceEnv['IMMICH_HOST_ML']) { $sourceEnv['IMMICH_HOST_ML'] } else { '127.0.0.1' })
     IMMICH_PORT_ML = [string]$MachineLearningPort
     NO_COLOR = 'true'
 }
 $envFile = Join-Path $DataRoot 'immich.env'
 $envValues = [ordered]@{}
-foreach ($pair in $sourceEnv.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
+foreach ($pair in $sourceEnv.GetEnumerator()) {
+    if ($pair.Key -ne 'MACHINE_LEARNING_DEVICE_ID') { $envValues[$pair.Key] = $pair.Value }
+}
 foreach ($pair in $managedEnvValues.GetEnumerator()) { $envValues[$pair.Key] = $pair.Value }
 Write-EnvFile -Path $envFile -Values $envValues
 Write-ImmichTrayConnectionHint -InstallRoot $InstallRoot -DataRoot $DataRoot

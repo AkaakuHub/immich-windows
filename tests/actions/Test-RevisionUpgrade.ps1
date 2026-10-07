@@ -97,9 +97,10 @@ $updated=Get-CurrentReleaseTarget $InstallRoot
 $updatedManifest=Get-Content -Raw (Join-Path $updated 'manifest.json')|ConvertFrom-Json
 if ($updatedManifest.packageVersion -ne $expected) { throw 'Update did not activate the requested Windows revision.' }
 $after=Read-EnvFile $envFile
-foreach ($key in @('IMMICH_WINDOWS_TEST_PRESERVE','IMMICH_WINDOWS_INSTALL_SCOPE','IMMICH_HOST','DB_HOSTNAME','DB_PORT','DB_DATABASE_NAME','DB_USERNAME','DB_PASSWORD','IMMICH_MEDIA_LOCATION','POSTGRES_ROOT','POSTGRES_SERVICE','MACHINE_LEARNING_ACCELERATOR','MACHINE_LEARNING_DEVICE_ID')) {
+foreach ($key in @('IMMICH_WINDOWS_TEST_PRESERVE','IMMICH_WINDOWS_INSTALL_SCOPE','IMMICH_HOST','DB_HOSTNAME','DB_PORT','DB_DATABASE_NAME','DB_USERNAME','DB_PASSWORD','IMMICH_MEDIA_LOCATION','POSTGRES_ROOT','POSTGRES_SERVICE','MACHINE_LEARNING_ACCELERATOR','IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID')) {
     if ([string]$after[$key] -cne [string]$envs[$key]) { throw "Update changed persistent setting: $key" }
 }
+if ($after.Contains('MACHINE_LEARNING_DEVICE_ID')) { throw 'Update retained the obsolete numeric GPU setting.' }
 $state=Get-Content -Raw (Join-Path $DataRoot 'state\upgrade-recovery.json')|ConvertFrom-Json
 if ($state.status -ne 'qualified') { throw 'The baseline upgrade did not qualify.' }
 if ($upstreamChanged -and ($state.databaseUnchanged -or -not $state.databaseBackup -or -not (Test-Path -LiteralPath $state.databaseBackup -PathType Leaf))) {

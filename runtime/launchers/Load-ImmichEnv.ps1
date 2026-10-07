@@ -27,6 +27,11 @@ if ($ServiceRole -eq 'Server') {
     exit $LASTEXITCODE
 } elseif ($ServiceRole -eq 'MachineLearning') {
     $python = Get-ImmichPythonExecutable -ReleaseRoot $release
+    if ($env:MACHINE_LEARNING_ACCELERATOR -eq 'directml') {
+        Import-Module (Join-Path $PSScriptRoot '..\DirectML.psm1') -Force
+        $adapter = Resolve-ImmichDirectMLAdapter -PythonPath $python.FullName -DeviceInstanceId ([string]$env:IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID)
+        $env:MACHINE_LEARNING_DEVICE_ID = [string]$adapter.device_id
+    }
     $env:IMMICH_HOST = if ($env:IMMICH_HOST_ML) { $env:IMMICH_HOST_ML } else { '127.0.0.1' }
     $env:IMMICH_PORT = if ($env:IMMICH_PORT_ML) { $env:IMMICH_PORT_ML } else { '3003' }
     $env:PYTHONPATH = Join-Path $release 'machine-learning\app'

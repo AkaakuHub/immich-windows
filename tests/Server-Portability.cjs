@@ -69,6 +69,33 @@ function sqlCheck(label, assetPath, condition, expected) {
 }
 
 (async () => {
+  const job = { name: 'ocr', data: { id: 'asset' } };
+  const queue = 'ocr';
+  for (const response of ['success', 'skipped', undefined]) {
+    const events = [];
+    const service = probe('services/job.service.ts', ['onJobRun'], path.win32, { JobStatus: { Success: 'success', Skipped: 'skipped' } });
+    service.eventRepository = { async emit(...args) { events.push(args); } };
+    service.jobRepository = { async run() { return response; } };
+    let done = 0;
+    service.onDone = async () => { done++; };
+    await service.onJobRun(queue, job);
+    assert.deepEqual(events, [['JobStart', queue, job], ['JobSuccess', { job, response }], ['JobComplete', queue, job]]);
+    assert.equal(done, response ? 1 : 0);
+    checks++;
+  }
+  for (const failure of [new Error('DirectML device removed'), 'worker disconnected']) {
+    const events = [];
+    const service = probe('services/job.service.ts', ['onJobRun'], path.win32, { JobStatus: { Success: 'success', Skipped: 'skipped' } });
+    service.eventRepository = { async emit(...args) { events.push(args); } };
+    let runs = 0;
+    service.jobRepository = { async run() { runs++; throw failure; } };
+    service.onDone = async () => { assert.fail('Failed OCR must not queue follow-up jobs'); };
+    await assert.rejects(service.onJobRun(queue, job), error => error === failure);
+    assert.equal(runs, 1);
+    assert.deepEqual(events, [['JobStart', queue, job], ['JobError', { job, error: failure }], ['JobComplete', queue, job]]);
+    checks++;
+  }
+
   for (const flavor of [path.win32, path.posix]) {
     const view = probe('repositories/view-repository.ts', ['getUniqueOriginalPaths', 'getAssetsByOriginalPath'], flavor);
     const cases = flavor === path.win32 ? [
