@@ -307,7 +307,7 @@ ort = SimpleNamespace(InferenceSession=factory, SessionOptions=Options, Executio
 platform = SimpleNamespace(platform='win32')
 supported = ['CUDAExecutionProvider', 'MIGraphXExecutionProvider', 'OpenVINOExecutionProvider', 'CoreMLExecutionProvider', 'CPUExecutionProvider']
 prepare_model = Mock(side_effect=lambda source, input_shapes: nullcontext(source))
-globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported,
+globals_ = dict(Path=Path, Lock=Lock, log=Mock(), ort=ort, DirectMLNativeSession=ort.InferenceSession, settings=settings, sys=platform, SUPPORTED_PROVIDERS=supported,
                 locale=locale, nullcontext=nullcontext, directml_model=prepare_model,
                 dynamic_session=Mock(return_value=None), DirectMLDynamicSession=type('DynamicSession', (), {}))
 exec(compile(ast.fix_missing_locations(module), str(source), 'exec'), globals_)
@@ -376,10 +376,10 @@ def run(*args):
 s.session.run.side_effect=run
 with ThreadPoolExecutor(max_workers=4) as pool:
     list(pool.map(lambda _:s.run(None,{}),range(8)))
-assert peak==1
+assert peak==4
 prepare_model.reset_mock()
 settings.accelerator='cpu';s=fresh()
-assert s.providers==['CPUExecutionProvider'] and s._run_lock is None
+assert s.providers==['CPUExecutionProvider'] and not hasattr(s, '_run_lock')
 assert s.sess_options.enable_mem_pattern is True and not s.sess_options.entries
 prepare_model.assert_not_called()
 settings.accelerator='directml'
@@ -393,7 +393,7 @@ for platform_name in ('linux', 'darwin'):
     platform.platform=platform_name
     factory.reset_mock(return_value=True,side_effect=True)
     s=Session('model.onnx',provider_options=[])
-    assert s.providers==supported and s._run_lock is None
+    assert s.providers==supported and not hasattr(s, '_run_lock')
     assert 'enable_fallback' not in factory.call_args.kwargs
     assert not s.sess_options.entries
 print('DirectML policy passed, including implicit CPU registration (mocked ORT; no hardware inference claim).')
