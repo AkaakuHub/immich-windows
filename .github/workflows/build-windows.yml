@@ -122,6 +122,8 @@ jobs:
           }
           node ./tests/Server-Portability.cjs $source
           if ($LASTEXITCODE -ne 0) { $failed.Add('Server-Portability') }
+          python ./tests/DirectML-Adapter.py
+          if ($LASTEXITCODE -ne 0) { $failed.Add('DirectML-Adapter') }
           python ./tests/MachineLearning-Lifecycle.py $source
           if ($LASTEXITCODE -ne 0) { $failed.Add('MachineLearning-Lifecycle') }
           if ($failed.Count) { throw "Validation failed: $($failed -join ', ')" }

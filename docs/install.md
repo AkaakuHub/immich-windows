@@ -71,14 +71,20 @@ Windows版は`onnxruntime-directml`を使用し、CLIP、顔検出・顔認識�
 
 ```text
 MACHINE_LEARNING_ACCELERATOR=cpu
-MACHINE_LEARNING_DEVICE_ID=0
+IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID=
 ```
 
 `MACHINE_LEARNING_ACCELERATOR`は`cpu`または`directml`です。既定の`cpu`ではCPUを使用します。`directml`では未対応ノードのCPU実行、初期化失敗時・推論失敗時のCPU再試行をすべて禁止します。対応しないモデル・GPU・ドライバーは明確なエラーになります。
 
-`MACHINE_LEARNING_DEVICE_ID`はDirectMLのDXGIアダプター番号です。複数GPUではDXGIのアダプター順を確認してください。タスクマネージャーのGPU番号と一致する保証はありません。画像デコード、リサイズ、NMS、OCRの後処理などONNXモデル外の処理はCPUで実行されます。
+`IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID`にはWindowsのデバイスインスタンスIDを指定します。次のコマンドでGPU名とIDを確認できます。
 
-インストール引数で指定する場合は、例えば`-MachineLearningAccelerator directml -MachineLearningDeviceId 1`を使用します。新規導入時の値は`immich.env`へ保存されます。導入後はこのファイルを編集し、停止→起動で反映してください。AllUsersでも毎回のサービス起動時（PC起動時を含む）に読み直します。DirectMLの指定だけで全モデルの動作を保証するものではなく、RX 550上のCLIP・顔認識・OCRは実機で確認が必要です。
+```powershell
+Get-PnpDevice -Class Display -PresentOnly | Select-Object FriendlyName, InstanceId
+```
+
+`directml`を使用する場合は、対象GPUの`InstanceId`を省略せず保存してください。毎回の起動時に、その固有IDから現在のDXGIアダプター番号を取得します。指定したGPUが存在しない場合や一意に特定できない場合は起動に失敗します。数値の`MACHINE_LEARNING_DEVICE_ID`は設定ファイルへ保存しません。旧設定から更新する場合は、その行を削除して固有IDの設定を追加してください。タスクマネージャーのGPU番号は指定に使用しません。
+
+新規インストールの引数では`-MachineLearningAccelerator directml -MachineLearningDeviceInstanceId '取得したInstanceId'`を使用します。導入後は`immich.env`を編集し、停止→起動で反映してください。AllUsersでもサービス起動時（PC起動時を含む）に読み直します。画像デコード、リサイズ、NMS、OCRの後処理などONNXモデル外の処理はCPUで実行されます。DirectMLの指定だけで全モデルの動作を保証するものではなく、対象GPU上のCLIP・顔認識・OCRは実機で確認が必要です。
 
 依存取得に失敗した場合はエラーを確認し、同じReleaseの`Install.cmd`と同じ引数に`-ResumeExistingRelease`を追加して再実行します。コピー済みのアプリから依存の設定を再開します。別のReleaseにはこの引数を使いません。
 

@@ -148,7 +148,12 @@ np.testing.assert_array_equal(actual, np.array([[2., 4.]], dtype=np.float32))
 print(json.dumps({"onnxruntime": ort.__version__, "inferenceProvider": selected, "tinyGraph": "passed"}))
 '@
 $accelerator = if ($envs['MACHINE_LEARNING_ACCELERATOR']) { [string]$envs['MACHINE_LEARNING_ACCELERATOR'] } else { 'cpu' }
-$device = if ($envs['MACHINE_LEARNING_DEVICE_ID']) { [string]$envs['MACHINE_LEARNING_DEVICE_ID'] } else { '0' }
+$device = '0'
+if ($accelerator -eq 'directml') {
+    Import-Module (Join-Path $current 'runtime\DirectML.psm1') -Force
+    $adapter = Resolve-ImmichDirectMLAdapter -PythonPath $python.FullName -DeviceInstanceId ([string]$envs['IMMICH_WINDOWS_ML_DEVICE_INSTANCE_ID'])
+    $device = [string]$adapter.device_id
+}
 & $python.FullName -c $ortProbe ([string]$manifest.dependencies.onnxruntimeDirectml.version) $accelerator $device
 if($LASTEXITCODE -ne 0){throw 'ONNX Runtime selected-provider inference probe failed.'}
 & $python.FullName (Join-Path $PSScriptRoot 'DirectML-ProviderPolicy.py') (Join-Path $current 'machine-learning/app')
