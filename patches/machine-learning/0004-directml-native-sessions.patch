@@ -12,7 +12,13 @@ diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immic
  
  MigraphxInputSignature = tuple[tuple[str, str, tuple[int, ...]], ...]
  
-@@ -82,7 +83,8 @@
+@@ -67,7 +67,6 @@
+         directml = "DmlExecutionProvider" in self.providers
+         if directml and self.providers != ["DmlExecutionProvider"]:
+             raise ValueError("DirectML cannot be combined with another execution provider")
+-        self._run_lock = Lock() if directml else None
+         self.provider_options = provider_options if provider_options is not None else self._provider_options_default
+\n@@ -82,7 +83,8 @@
          directml = "DmlExecutionProvider" in self.providers
          with directml_model(self.model_path, input_shapes) if directml else nullcontext(self.model_path) as model:
              try:
