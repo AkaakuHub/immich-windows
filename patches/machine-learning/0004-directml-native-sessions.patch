@@ -302,4 +302,3 @@ new file mode 100644
 +            for handle in outputs:
 +                if handle:
 +                    self.api.release_value(handle)
-+
