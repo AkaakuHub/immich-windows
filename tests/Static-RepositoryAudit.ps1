@@ -290,7 +290,9 @@ from unittest.mock import Mock
 source = Path(sys.argv[1]) / 'machine-learning/immich_ml/sessions/ort.py'
 tree = ast.parse(source.read_text(encoding='utf-8'))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'OrtSession')
-module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), cls], type_ignores=[])
+lock_init = next(n for n in tree.body if isinstance(n, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == '_directml_lock' for target in n.targets))
+module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), lock_init, cls], type_ignores=[])
 seq, parallel = SimpleNamespace(name='SEQ'), SimpleNamespace(name='PARALLEL')
 class Options:
     def __init__(self):
