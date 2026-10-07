@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from threading import Event, Lock
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 SOURCE = Path(sys.argv.pop(1)) / "machine-learning" / "immich_ml" / "sessions" / "ort.py"
@@ -28,9 +28,10 @@ class DirectMLConcurrencyTests(unittest.TestCase):
         nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
         nodes.extend(node for node in tree.body if isinstance(node, (ast.Assign, ast.AnnAssign, ast.ClassDef)))
         self.factory = Mock(side_effect=lambda *args, **kwargs: self.native_session())
+        self.settings = SimpleNamespace(accelerator="directml")
         namespace = dict(
-            Lock=Lock, Path=Path, sys=sys, nullcontext=nullcontext, log=Mock(),
-            settings=SimpleNamespace(accelerator="directml"),
+            Lock=Lock, Path=Path, sys=SimpleNamespace(platform="win32"), nullcontext=nullcontext, log=Mock(),
+            settings=self.settings,
             ort=SimpleNamespace(InferenceSession=self.factory,
                                 ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential")),
             directml_model=lambda source, shapes: nullcontext(source), dynamic_session=lambda *args: None,
@@ -45,8 +46,9 @@ class DirectMLConcurrencyTests(unittest.TestCase):
         return session
 
     def session(self, provider=DML):
-        return self.session_type("model.onnx", providers=[provider],
-                                 provider_options=[{"device_id": "1"}], sess_options=Options())
+        with patch.object(self.settings, "accelerator", "cpu" if provider == CPU else "directml"):
+            return self.session_type("model.onnx", providers=[provider],
+                                     provider_options=[{"device_id": "1"}], sess_options=Options())
 
     def check_concurrency(self, first, second, parallel):
         entered_first, entered_second, started_second, release_first = Event(), Event(), Event(), Event()
