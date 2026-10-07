@@ -8,8 +8,10 @@ import io
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -259,8 +261,29 @@ class DynamicModelTests(unittest.TestCase):
         self.model.graph.input[0].type.tensor_type.shape.dim[1].dim_value = 3
         self.onnx.save_model(self.model, self.source)
         factory = Mock()
-        self.assertIsNone(self.prepare(self.source, factory))
-        factory.assert_not_called()
+        session = self.prepare(self.source, factory)
+        self.assertIs(session.session, factory.return_value)
+        factory.assert_called_once_with(None)
+
+    def test_parallel_threads_keep_distinct_sessions_and_shapes(self):
+        barrier = Barrier(2)
+        session = self.prepare(self.source, self.create_session)
+
+        def infer(length):
+            tokens = self.np.arange(length, dtype=self.np.int32).reshape(1, length)
+            output = session.run(None, {"tokens": tokens})[0]
+            native_session = session.session
+            barrier.wait(timeout=10)
+            self.assertIs(session.session, native_session)
+            self.assertEqual(session.input_shapes, {"tokens": (1, length)})
+            self.np.testing.assert_array_equal(output, self.weights[tokens])
+            return native_session
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(infer, 2)
+            second = executor.submit(infer, 3)
+            self.assertIsNot(first.result(), second.result())
+        self.assertIsNone(session.session)
 
     def test_small_and_empty_resize_constants_are_available_to_shape_inference(self):
         helper, tensor = self.onnx.helper, self.onnx.TensorProto

@@ -1,0 +1,304 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] machine-learning: isolate DirectML contexts per session
+
+diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immich_ml/sessions/ort.py
+--- a/machine-learning/immich_ml/sessions/ort.py
++++ b/machine-learning/immich_ml/sessions/ort.py
+@@ -18,6 +18,7 @@
+ from ..config import log, settings
+ from .directml import directml_model
+ from .directml_dynamic import DirectMLDynamicSession, InputShapes, dynamic_session
++from .directml_native import DirectMLNativeSession
+ 
+ MigraphxInputSignature = tuple[tuple[str, str, tuple[int, ...]], ...]
+ 
+@@ -66,7 +67,6 @@
+         directml = "DmlExecutionProvider" in self.providers
+         if directml and self.providers != ["DmlExecutionProvider"]:
+             raise ValueError("DirectML cannot be combined with another execution provider")
+-        self._run_lock = Lock() if directml else None
+         self.provider_options = provider_options if provider_options is not None else self._provider_options_default
+         self.sess_options = sess_options if sess_options is not None else self._sess_options_default
+         if directml:
+@@ -83,7 +83,8 @@
+         directml = "DmlExecutionProvider" in self.providers
+         with directml_model(self.model_path, input_shapes) if directml else nullcontext(self.model_path) as model:
+             try:
+-                session = ort.InferenceSession(
++                factory = DirectMLNativeSession if directml and sys.platform == "win32" else ort.InferenceSession
++                session = factory(
+                     model.as_posix(),
+                     providers=self.providers,
+                     provider_options=self.provider_options,
+@@ -124,10 +125,6 @@
+         input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]] | dict[str, NDArray[np.uint8]],
+         run_options: Any = None,
+     ) -> list[NDArray[np.float32]]:
+-        if self._run_lock is not None:
+-            with self._run_lock:
+-                return self.session.run(output_names, input_feed, run_options)
+-
+         if "MIGraphXExecutionProvider" in self.providers:
+             model_key = self.model_path.resolve().as_posix()
+             input_key = (model_key, _migraphx_input_signature(input_feed))
+diff --git a/machine-learning/immich_ml/sessions/directml_dynamic.py b/machine-learning/immich_ml/sessions/directml_dynamic.py
+--- a/machine-learning/immich_ml/sessions/directml_dynamic.py
++++ b/machine-learning/immich_ml/sessions/directml_dynamic.py
+@@ -1,6 +1,7 @@
+ from collections.abc import Callable, Sequence
+ from dataclasses import dataclass
+ from pathlib import Path
++from threading import local
+ 
+ import numpy as np
+ import onnx
+@@ -34,8 +35,29 @@
+         self.outputs = _nodes(model.graph.output)
+         self.metadata = {entry.key: entry.value for entry in model.metadata_props}
+         self.create_session = create_session
+-        self.session: ort.InferenceSession | None = None
+-        self.input_shapes: InputShapes | None = None
++        self._thread_state = local()
++        self.dynamic_inputs = any(
++            not dimension.HasField("dim_value")
++            for value in model.graph.input for dimension in value.type.tensor_type.shape.dim
++        )
++        if not self.dynamic_inputs:
++            self.session = create_session(None)
++
++    @property
++    def session(self):
++        return getattr(self._thread_state, "session", None)
++
++    @session.setter
++    def session(self, session):
++        self._thread_state.session = session
++
++    @property
++    def input_shapes(self):
++        return getattr(self._thread_state, "input_shapes", None)
++
++    @input_shapes.setter
++    def input_shapes(self, shapes):
++        self._thread_state.input_shapes = shapes
+ 
+     def run(
+         self,
+@@ -46,10 +68,10 @@
+         shapes = {name: tuple(value.shape) for name, value in input_feed.items()}
+         if set(shapes) != {node.name for node in self.inputs}:
+             raise ValueError("DirectML input names do not match the model")
+-        if self.input_shapes != shapes:
++        if self.session is None or (self.dynamic_inputs and self.input_shapes != shapes):
+             self.session = None
+             self.input_shapes = None
+-            session = self.create_session(shapes)
++            session = self.create_session(shapes if self.dynamic_inputs else None)
+             self.session, self.input_shapes = session, shapes
+         assert self.session is not None
+         return self.session.run(output_names, input_feed, run_options)
+@@ -65,8 +87,4 @@
+     source: Path, create_session: Callable[[InputShapes], ort.InferenceSession]
+ ) -> DirectMLDynamicSession | None:
+     model = read_external_model(source)
+-    if all(
+-        dimension.HasField("dim_value") for value in model.graph.input for dimension in value.type.tensor_type.shape.dim
+-    ):
+-        return None
+     return DirectMLDynamicSession(model, create_session)
+diff --git a/machine-learning/immich_ml/sessions/directml_api.py b/machine-learning/immich_ml/sessions/directml_api.py
+new file mode 100644
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/directml_api.py
+@@ -0,0 +1,78 @@
++import ctypes as C
++from threading import Lock
++from pathlib import Path
++
++import onnxruntime as ort
++
++P = C.c_void_p
++PP = C.POINTER(P)
++S = C.c_size_t
++I = C.c_int
++CP = C.c_char_p
++CPP = C.POINTER(CP)
++I64P = C.POINTER(C.c_int64)
++
++
++class DirectMLApi:
++    def __init__(self):
++        dll = Path(ort.__file__).parent / 'capi' / 'onnxruntime.dll'
++        self.dll = C.WinDLL(str(dll))
++        self.dll.OrtGetApiBase.restype = C.POINTER(P)
++        base = self.dll.OrtGetApiBase()
++        get_api = C.WINFUNCTYPE(C.POINTER(P), C.c_uint32)(base[0])
++        self.table = get_api(24)
++        if not self.table:
++            raise RuntimeError('ONNX Runtime API 24 is unavailable')
++        self.error_message = self.bind(2, CP, P)
++        self.release_status = self.bind(93, None, P)
++        self.create_env = self.bind(3, P, I, CP, PP)
++        self.create_session = self.bind(7, P, P, C.c_wchar_p, P, PP)
++        self.run = self.bind(9, P, P, P, CPP, PP, S, CPP, S, PP)
++        self.options = self.bind(10, P, PP)
++        self.mode = self.bind(13, P, P, I)
++        self.disable_pattern = self.bind(17, P, P)
++        self.disable_arena = self.bind(19, P, P)
++        self.optimization = self.bind(23, P, P, I)
++        self.intra = self.bind(24, P, P, I)
++        self.inter = self.bind(25, P, P, I)
++        self.tensor = self.bind(49, P, P, P, S, I64P, S, I, PP)
++        self.tensor_data = self.bind(51, P, P, PP)
++        self.element_type = self.bind(60, P, P, C.POINTER(I))
++        self.dimensions_count = self.bind(61, P, P, C.POINTER(S))
++        self.dimensions = self.bind(62, P, P, I64P, S)
++        self.shape = self.bind(65, P, P, PP)
++        self.memory = self.bind(69, P, I, I, PP)
++        self.release_session = self.bind(95, None, P)
++        self.release_value = self.bind(96, None, P)
++        self.release_shape = self.bind(99, None, P)
++        self.release_options = self.bind(100, None, P)
++        self.config = self.bind(130, P, P, CP, CP)
++        self.provider = self.bind(216, P, P, CP, CPP, CPP, S)
++        self.env = P()
++        self.cpu_memory = P()
++        self.check(self.create_env(3, b'immich-directml', C.byref(self.env)))
++        self.check(self.memory(0, 0, C.byref(self.cpu_memory)))
++
++    def bind(self, index, result, *args):
++        return C.WINFUNCTYPE(result, *args)(self.table[index])
++
++    def check(self, status):
++        if status:
++            try:
++                message = self.error_message(status).decode('utf-8', errors='replace')
++            finally:
++                self.release_status(status)
++            raise RuntimeError(message)
++
++
++
++_api = None
++_api_lock = Lock()
++
++
++def get_api():
++    global _api
++    with _api_lock:
++        if _api is None:
++            _api = DirectMLApi()
++        return _api
+diff --git a/machine-learning/immich_ml/sessions/directml_native.py b/machine-learning/immich_ml/sessions/directml_native.py
+new file mode 100644
+--- /dev/null
++++ b/machine-learning/immich_ml/sessions/directml_native.py
+@@ -0,0 +1,108 @@
++import ctypes as C
++from pathlib import Path
++from types import SimpleNamespace
++from weakref import finalize
++
++import numpy as np
++
++from .directml_api import CP, I, P, PP, S, get_api
++from .directml_dynamic import _nodes
++from .onnx_external import read_external_model
++
++ELEMENT_TYPES = {1: np.dtype('float32'), 2: np.dtype('uint8'), 3: np.dtype('int8'),
++                 4: np.dtype('uint16'), 5: np.dtype('int16'), 6: np.dtype('int32'),
++                 7: np.dtype('int64'), 9: np.dtype('bool'), 10: np.dtype('float16'),
++                 11: np.dtype('float64'), 12: np.dtype('uint32'), 13: np.dtype('uint64')}
++DTYPE_TYPES = {dtype: element for element, dtype in ELEMENT_TYPES.items()}
++
++
++class DirectMLNativeSession:
++    def __init__(self, model_path, providers, provider_options, sess_options, **kwargs):
++        if providers != ['DmlExecutionProvider']:
++            raise ValueError('Native DirectML session requires DirectML only')
++        self.api = get_api()
++        self.handle = P()
++        model = read_external_model(Path(model_path))
++        self.inputs = _nodes(model.graph.input)
++        self.outputs = _nodes(model.graph.output)
++        self.metadata = {entry.key: entry.value for entry in model.metadata_props}
++        options = P()
++        self.api.check(self.api.options(C.byref(options)))
++        try:
++            self.api.check(self.api.mode(options, 0))
++            self.api.check(self.api.disable_pattern(options))
++            if not sess_options.enable_cpu_mem_arena:
++                self.api.check(self.api.disable_arena(options))
++            self.api.check(self.api.optimization(options, int(sess_options.graph_optimization_level)))
++            self.api.check(self.api.intra(options, sess_options.intra_op_num_threads))
++            self.api.check(self.api.inter(options, sess_options.inter_op_num_threads))
++            for name, value in [('session.disable_cpu_ep_fallback', '1'), ('ep.dml.disable_graph_fusion', '1')]:
++                self.api.check(self.api.config(options, name.encode(), value.encode()))
++            settings = provider_options[0]
++            keys = (CP * len(settings))(*(name.encode() for name in settings))
++            values = (CP * len(settings))(*(str(value).encode() for value in settings.values()))
++            self.api.check(self.api.provider(options, b'DML', keys, values, len(settings)))
++            self.api.check(self.api.create_session(self.api.env, str(Path(model_path).resolve()), options, C.byref(self.handle)))
++        finally:
++            self.api.release_options(options)
++        self._release_session = finalize(self, self.api.release_session, self.handle.value)
++
++    def get_inputs(self):
++        return self.inputs
++
++    def get_outputs(self):
++        return self.outputs
++
++    def get_modelmeta(self):
++        return SimpleNamespace(custom_metadata_map=self.metadata)
++
++    def get_providers(self):
++        return ['DmlExecutionProvider', 'CPUExecutionProvider']
++
++    def run(self, output_names, input_feed, run_options=None):
++        if run_options is not None:
++            raise ValueError('RunOptions are unsupported by this diagnostic prototype')
++        names = list(input_feed)
++        arrays = [np.ascontiguousarray(input_feed[name]) for name in names]
++        inputs = (P * len(names))()
++        outputs_names = output_names if output_names is not None else [node.name for node in self.outputs]
++        outputs = (P * len(outputs_names))()
++        try:
++            for index, array in enumerate(arrays):
++                shape = (C.c_int64 * array.ndim)(*array.shape)
++                self.api.check(self.api.tensor(self.api.cpu_memory, array.ctypes.data, array.nbytes, shape,
++                                     array.ndim, DTYPE_TYPES[array.dtype], C.cast(C.byref(inputs, index * C.sizeof(P)), PP)))
++            native_names = (CP * len(names))(*(name.encode() for name in names))
++            native_outputs = (CP * len(outputs_names))(*(name.encode() for name in outputs_names))
++            self.api.check(self.api.run(self.handle, None, native_names, inputs, len(names), native_outputs, len(outputs_names), outputs))
++            result = []
++            for handle in outputs:
++                info = P()
++                self.api.check(self.api.shape(handle, C.byref(info)))
++                try:
++                    count = S()
++                    element = I()
++                    self.api.check(self.api.dimensions_count(info, C.byref(count)))
++                    dimensions = (C.c_int64 * count.value)()
++                    self.api.check(self.api.dimensions(info, dimensions, count.value))
++                    self.api.check(self.api.element_type(info, C.byref(element)))
++                    dtype = ELEMENT_TYPES[element.value]
++                    shape = tuple(dimensions)
++                    size = int(np.prod(shape, dtype=np.int64))
++                    if size == 0:
++                        result.append(np.empty(shape, dtype=dtype))
++                    else:
++                        data = P()
++                        self.api.check(self.api.tensor_data(handle, C.byref(data)))
++                        raw = (C.c_ubyte * (size * dtype.itemsize)).from_address(data.value)
++                        result.append(np.ctypeslib.as_array(raw).view(dtype).reshape(shape).copy())
++                finally:
++                    self.api.release_shape(info)
++            return result
++        finally:
++            for handle in inputs:
++                if handle:
++                    self.api.release_value(handle)
++            for handle in outputs:
++                if handle:
++                    self.api.release_value(handle)
