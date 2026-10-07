@@ -13,3 +13,4 @@ server/0010-preserve-failed-jobs.patch
 machine-learning/0001-native-windows-uvicorn.patch
 machine-learning/0002-native-windows-directml.patch
 machine-learning/0003-lightweight-supervisor-imports.patch
+machine-learning/0004-serialize-directml-models.patch

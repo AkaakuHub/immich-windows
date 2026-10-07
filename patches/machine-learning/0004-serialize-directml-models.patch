@@ -1,0 +1,35 @@
+From: immich-windows <local@immich-windows.invalid>
+Subject: [PATCH] machine-learning: serialize DirectML models across requests
+
+diff --git a/machine-learning/immich_ml/sessions/ort.py b/machine-learning/immich_ml/sessions/ort.py
+--- a/machine-learning/immich_ml/sessions/ort.py
++++ b/machine-learning/immich_ml/sessions/ort.py
+@@ -24,6 +24,7 @@
+ _migraphx_registry_lock = Lock()
+ _migraphx_model_locks: dict[str, Lock] = {}
+ _migraphx_compiled_inputs: set[tuple[str, MigraphxInputSignature]] = set()
++_directml_lock = Lock()
+ 
+ 
+ def _migraphx_get_model_lock(model_key: str) -> Lock:
+@@ -66,7 +67,7 @@
+         directml = "DmlExecutionProvider" in self.providers
+         if directml and self.providers != ["DmlExecutionProvider"]:
+             raise ValueError("DirectML cannot be combined with another execution provider")
+-        self._run_lock = Lock() if directml else None
++        self._run_lock = _directml_lock if directml else None
+         self.provider_options = provider_options if provider_options is not None else self._provider_options_default
+         self.sess_options = sess_options if sess_options is not None else self._sess_options_default
+         if directml:
+@@ -76,8 +77,9 @@
+             self.sess_options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+             self.sess_options.add_session_config_entry("ep.dml.disable_graph_fusion", "1")
+             self.provider_options = [{**options, "disable_metacommands": "true"} for options in self.provider_options]
+-        prepared_session = dynamic_session(self.model_path, self._create_session) if directml else None
+-        self.session = prepared_session if prepared_session is not None else self._create_session()
++        with self._run_lock if self._run_lock is not None else nullcontext():
++            prepared_session = dynamic_session(self.model_path, self._create_session) if directml else None
++            self.session = prepared_session if prepared_session is not None else self._create_session()
+ 
+     def _create_session(self, input_shapes: InputShapes | None = None) -> ort.InferenceSession:
+         directml = "DmlExecutionProvider" in self.providers

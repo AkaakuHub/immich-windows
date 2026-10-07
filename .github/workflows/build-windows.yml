@@ -126,6 +126,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { $failed.Add('DirectML-Adapter') }
           python ./tests/MachineLearning-Lifecycle.py $source
           if ($LASTEXITCODE -ne 0) { $failed.Add('MachineLearning-Lifecycle') }
+          python ./tests/DirectML-Serialization.py $source
+          if ($LASTEXITCODE -ne 0) { $failed.Add('DirectML-Serialization') }
           if ($failed.Count) { throw "Validation failed: $($failed -join ', ')" }
   codec:
     needs: [plan, validate]
