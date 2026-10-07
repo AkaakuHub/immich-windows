@@ -193,7 +193,7 @@ diff --git a/machine-learning/immich_ml/sessions/directml_native.py b/machine-le
 new file mode 100644
 --- /dev/null
 +++ b/machine-learning/immich_ml/sessions/directml_native.py
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,108 @@
 +import ctypes as C
 +from pathlib import Path
 +from types import SimpleNamespace
