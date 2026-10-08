@@ -11,3 +11,4 @@ server/0008-cross-platform-glob-paths.patch
 server/0009-cross-platform-external-library-paths.patch
 server/0010-preserve-failed-jobs.patch
 machine-learning/0005-v330-native-directml.patch
+server/0011-cross-platform-migration-loader.patch
