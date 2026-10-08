@@ -1,9 +1,9 @@
 {
   "repository": "https://github.com/immich-app/immich.git",
-  "version": "v3.3.0",
-  "commit": "e3b165609135365302e40a43d94967fdbb2e6888",
+  "version": "v3.3.1",
+  "commit": "db6e11ecc851228aec9c525abb0ee026d1f5055e",
   "channel": "stable",
   "buildArchitecture": "win-x64",
-  "notes": "v3.3.0 stable source and upstream production runtime pins; Windows revision 3 separates dependency delivery and downloads only missing content while preserving DirectML fixes.",
-  "windowsRevision": 3
+  "notes": "v3.3.1 stable source and upstream production runtime pins; initial Windows revision 0. Native compatibility requires the release qualification gates.",
+  "windowsRevision": 0
 }
