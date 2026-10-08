@@ -270,6 +270,7 @@ def write_tree(api, base, files):
     # Validate the complete output before making any write, even orphan blobs.
     for path, content in sorted(files.items()):
         require(path in ('upstream.json', 'dependencies/versions.json', 'patches/series', 'metadata-patches/series')
+                or path == 'media-patches/libvips/0001-put-other-loaders-ahead-of-dcrawload.patch'
                 or (path.startswith(('patches/server/', 'patches/machine-learning/', 'metadata-patches/server/'))
                     and path.endswith('.patch')), f'Unexpected updater output: {path}')
         require(all(part not in ('', '.', '..', '.git') for part in path.split('/'))

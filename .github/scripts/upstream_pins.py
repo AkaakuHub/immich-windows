@@ -7,7 +7,6 @@ proved by the Windows qualification workflow, never inferred from versions.
 from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
 import re
 import tomllib
 from urllib.parse import quote
@@ -15,10 +14,17 @@ from urllib.parse import quote
 IMMICH = 'immich-app/immich'
 BASE = 'immich-app/base-images'
 MXE = 'libvips/build-win64-mxe'
+PYTHON_STANDALONE = 'astral-sh/python-build-standalone'
+PYTHON_ASSET = re.compile(
+    r'cpython-(\d+\.\d+\.\d+)\+[^-]+-x86_64-pc-windows-msvc-install_only(?:_stripped)?\.tar\.gz')
+WINDOWS_RELEASES = {
+    'uv': ('astral-sh/uv', re.compile(r'uv-x86_64-pc-windows-msvc\.zip')),
+    'valkey': ('valkey-windows/valkey-windows', re.compile(r'Valkey-(\d+\.\d+\.\d+)-Windows-x64-msys2-with-Service\.zip')),
+    'winsw': ('winsw/winsw', re.compile(r'WinSW-x64\.exe')),
+}
 SHA = re.compile(r'[0-9a-f]{40}')
 VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9]+)?')
-WINDOWS_OWNED = ('postgresql', 'pgvector', 'vectorchord', 'valkey', 'python',
-                 'onnxruntimeDirectml', 'uv', 'winsw')
+WINDOWS_PRESERVED = ('postgresql', 'onnxruntimeDirectml')
 LOADER = '0001-put-other-loaders-ahead-of-dcrawload.patch'
 
 
@@ -59,6 +65,33 @@ def source(api, repo, ref, path):
     return api.file(path, ref, repo=repo)
 
 
+def update_dependency(result, name, source_url, version=None, **fields):
+    """Apply one resolved dependency result through the common pin format."""
+    value = result[name]
+    if version is not None:
+        fields['version'] = version
+    fields['source'] = source_url
+    value.update(fields)
+
+
+def latest_windows_release(api, name):
+    repository, asset_pattern = WINDOWS_RELEASES[name]
+    release = api.get('releases/latest', repo=repository)
+    require(not release.get('draft') and not release.get('prerelease'),
+            f'Expected stable {name} release from {repository}')
+    tag = release.get('tag_name', '').removeprefix('v')
+    require(VERSION.fullmatch(tag), f'Invalid {name} release version: {release.get("tag_name")!r}')
+    assets = [asset['name'] for asset in release.get('assets', []) if asset_pattern.fullmatch(asset.get('name', ''))]
+    require(len(assets) == 1, f'Expected one Windows {name} asset in {repository} {tag}')
+    return repository, tag, assets[0]
+
+
+def base_dependency_version(text, name):
+    section = re.search(rf'(?ms)^{re.escape(name)}:\s*\n(.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:\s*$|\Z)', text)
+    require(section, f'Cannot map base-images postgres/{name}')
+    return unique(r'^\s*-\s*"([0-9]+(?:\.[0-9]+)+)"\s*$', section[1], f'base-images postgres/{name}')
+
+
 def release_asset(api, repo, tag, name):
     release = api.get(f'releases/tags/{quote(tag, safe="")}', repo=repo)
     require(release.get('tag_name') == tag and not release.get('draft') and not release.get('prerelease'),
@@ -84,7 +117,22 @@ def python_compatible(version, constraint):
         other += (0,) * (3 - len(other))
         passes = {'>=': current >= other, '<=': current <= other, '>': current > other,
                   '<': current < other, '==': current == other}[match[1]]
-        require(passes, f'Windows Python {version} is incompatible with upstream {constraint}')
+        if not passes:
+            return False
+    return True
+
+
+def compatible_python_version(api, constraint, minor):
+    """Select the newest Windows CPython asset satisfying upstream's bounds."""
+    release = api.get('releases/latest', repo=PYTHON_STANDALONE)
+    candidates = []
+    for asset in release.get('assets', []):
+        name = asset.get('name', '')
+        match = PYTHON_ASSET.fullmatch(name)
+        if match and match[1].startswith(minor + '.') and python_compatible(match[1], constraint):
+            candidates.append(match[1])
+    require(candidates, f'No Windows CPython runtime satisfies upstream {constraint}')
+    return max(candidates, key=lambda value: tuple(map(int, value.split('.'))))
 
 
 def prepare_update(api, current_pin, dependencies, release):
@@ -102,13 +150,15 @@ def prepare_update(api, current_pin, dependencies, release):
     require(not release.get('commit') or release['commit'] == commit, 'Upstream tag moved during update')
     files = {path: source(api, IMMICH, commit, path) for path in (
         'mise.toml', 'server/package.json', 'server/Dockerfile',
-        'machine-learning/pyproject.toml', 'machine-learning/uv.lock')}
+        'machine-learning/pyproject.toml', 'machine-learning/uv.lock', 'machine-learning/Dockerfile')}
     mise = tomllib.loads(files['mise.toml'])['tools']
     server = json.loads(files['server/package.json'])
     ml = tomllib.loads(files['machine-learning/pyproject.toml'])['project']
     require('v' + server['version'] == version and 'v' + ml['version'] == version,
             'Upstream package versions do not match the release')
-    python_compatible(dependencies['python']['version'], ml['requires-python'])
+    python_minor = unique(r'^FROM python:([0-9]+\.[0-9]+)(?:\.[0-9]+)?-[^\s]+ AS builder-openvino\s*$',
+                          files['machine-learning/Dockerfile'], 'production Python')
+    python_version = compatible_python_version(api, ml['requires-python'], python_minor)
     providers = ml['optional-dependencies'].get('openvino', [])
     require(len(providers) == 1 and re.fullmatch(r'onnxruntime-openvino[><=0-9., ]+', providers[0]),
             'Upstream OpenVINO extra changed; review Windows DirectML replacement')
@@ -124,6 +174,9 @@ def prepare_update(api, current_pin, dependencies, release):
     base_tag = image['prod']['tag']
     base_commit = tag_commit(api, BASE, base_tag)
     base_docker = source(api, BASE, base_commit, 'server/Dockerfile')
+    postgres_versions = source(api, BASE, base_commit, 'postgres/versions.yaml')
+    pgvector_version = base_dependency_version(postgres_versions, 'pgvector')
+    vectorchord_version = base_dependency_version(postgres_versions, 'vectorchord')
     node = unique(r'^FROM node:([0-9]+\.[0-9]+\.[0-9]+)-[^\s@]+@sha256:[0-9a-f]{64} AS prod\s*$',
                   base_docker, 'production Node')
     ffmpeg_source = json.loads(source(api, BASE, base_commit, 'server/packages/ffmpeg.json'))
@@ -132,22 +185,39 @@ def prepare_update(api, current_pin, dependencies, release):
     ffmpeg_asset = f'jellyfin-ffmpeg_{ffmpeg}_portable_win64-clang-gpl.zip'
     ffmpeg_checksum = release_asset(api, 'jellyfin/jellyfin-ffmpeg', f'v{ffmpeg}', ffmpeg_asset)
     result = deepcopy(dependencies)
+    update_dependency(result, 'python', f'https://github.com/{PYTHON_STANDALONE}/releases/latest', python_version)
+    uv_repository, uv_version, uv_asset = latest_windows_release(api, 'uv')
+    update_dependency(result, 'uv', f'https://github.com/{uv_repository}/releases/tag/{uv_version}', uv_version, asset=uv_asset)
+    valkey_repository, valkey_version, valkey_asset = latest_windows_release(api, 'valkey')
+    update_dependency(result, 'valkey', f'https://github.com/{valkey_repository}/releases/tag/{valkey_version}',
+                      valkey_version, asset=valkey_asset)
+    winsw_repository, winsw_version, winsw_asset = latest_windows_release(api, 'winsw')
+    update_dependency(result, 'winsw', f'https://github.com/{winsw_repository}/releases/tag/v{winsw_version}',
+                      winsw_version, asset=winsw_asset)
+    pgvector_commit = tag_commit(api, 'pgvector/pgvector', f'v{pgvector_version}')
+    update_dependency(result, 'pgvector', f'https://github.com/pgvector/pgvector/releases/tag/v{pgvector_version}',
+                      pgvector_version, commit=pgvector_commit)
+    vectorchord_commit = tag_commit(api, 'supervc-stack/VectorChord', vectorchord_version)
+    vectorchord_cargo = tomllib.loads(source(api, 'supervc-stack/VectorChord', vectorchord_commit, 'Cargo.toml'))
+    pgrx_version = vectorchord_cargo['dependencies']['pgrx']['version'].removeprefix('=')
+    update_dependency(result, 'vectorchord', f'https://github.com/supervc-stack/VectorChord/releases/tag/{vectorchord_version}',
+                      vectorchord_version, commit=vectorchord_commit, pgrx=pgrx_version)
     provenance = f'https://github.com/{BASE}/blob/{base_commit}/'
-    result['node'].update(version=node, asset=f'node-v{node}-win-x64.zip', source=provenance + 'server/Dockerfile')
-    result['ffmpeg'].update(version=ffmpeg, asset=ffmpeg_asset, sha256=ffmpeg_checksum,
-                            source=provenance + 'server/packages/ffmpeg.json')
+    update_dependency(result, 'node', provenance + 'server/Dockerfile', node, asset=f'node-v{node}-win-x64.zip')
+    update_dependency(result, 'ffmpeg', provenance + 'server/packages/ffmpeg.json', ffmpeg,
+                      asset=ffmpeg_asset, sha256=ffmpeg_checksum)
     for local, upstream, prefix in [('pnpm', 'pnpm', ''), ('extismJs', 'github:extism/js-pdk', 'v'),
                                     ('binaryen', 'github:webassembly/binaryen', 'version_')]:
         value = mise[upstream]
         require(isinstance(value, str) and value.startswith(prefix), f'Unsupported mise pin: {upstream}')
         value = value[len(prefix):]
         require(re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', value), f'Non-exact mise pin: {upstream}')
-        result[local].update(version=value, source=f'https://github.com/{IMMICH}/blob/{commit}/mise.toml')
+        update_dependency(result, local, f'https://github.com/{IMMICH}/blob/{commit}/mise.toml', value)
     result['extismJs']['asset'] = f"extism-js-x86_64-windows-v{result['extismJs']['version']}.gz"
     result['binaryen']['asset'] = f"binaryen-version_{result['binaryen']['version']}-x86_64-windows.tar.gz"
     sharp = server['dependencies']['sharp']
     require(re.fullmatch(r'[~^]?[0-9]+\.[0-9]+\.[0-9]+', sharp), 'Non-exact Sharp dependency baseline')
-    result['sharp'].update(version=sharp.lstrip('~^'), source=f'https://github.com/{IMMICH}/blob/{commit}/server/package.json')
+    update_dependency(result, 'sharp', f'https://github.com/{IMMICH}/blob/{commit}/server/package.json', sharp.lstrip('~^'))
 
     media_sources = {}
     expected_repositories = {'libvips': 'libvips/libvips', 'libheif': 'strukturag/libheif',
@@ -186,12 +256,6 @@ def prepare_update(api, current_pin, dependencies, release):
     require(len(patches) == 1 and patches[0]['path'] == loader_path and patches[0]['type'] == 'file',
             'Production libvips patch set changed; review Windows port')
     loader = source(api, BASE, base_commit, loader_path)
-    windows_ref = release.get('windows_commit')
-    require(windows_ref is None or SHA.fullmatch(windows_ref), 'Windows baseline must be an immutable commit')
-    windows_loader = (api.file(dependencies['sharpLibvips']['immichLoaderPatch'], windows_ref) if windows_ref
-                      else Path(dependencies['sharpLibvips']['immichLoaderPatch']).read_text(encoding='utf-8'))
-    require(loader.replace('\r\n', '\n').rstrip('\n') == windows_loader.replace('\r\n', '\n').rstrip('\n'),
-            'Production libvips loader patch changed; review Windows port')
     heif = media_sources['libheif']
     require(VERSION.fullmatch(heif['version']) and
             tag_commit(api, 'strukturag/libheif', 'v' + heif['version']) == heif['revision'],
@@ -209,18 +273,21 @@ def prepare_update(api, current_pin, dependencies, release):
         'baseImages': {'repository': BASE, 'tag': base_tag, 'commit': base_commit, 'images': image},
         'nodeVersion': node, 'ffmpegVersion': ffmpeg,
         'developmentTools': {'node': mise['node'], 'ffmpeg': mise['github:jellyfin/jellyfin-ffmpeg']['version']},
-        'sourceSha256': {path: digest(text) for path, text in files.items()},
+        'sourceSha256': {path: digest(text) for path, text in files.items() if path != 'machine-learning/Dockerfile'},
         'mediaSources': media_sources,
         'windowsOverrides': {
-            'preservedComponents': list(WINDOWS_OWNED),
-            'machineLearning': 'Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the independently pinned Windows DirectML package. Keep Windows Python/uv pins and reject incompatible Python bounds.',
+            'preservedComponents': list(WINDOWS_PRESERVED),
+            'machineLearning': 'Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the Windows DirectML package. Select the newest compatible Windows CPython runtime and stable uv release automatically.',
             'media': 'Keep the MXE Windows platform recipes, GLib TLS fix and codec feature flags. LibRaw 0.22.2 is a reviewed Windows override for upstream 0.22.2-1; other unmapped source drift fails closed.',
-            'database': 'Windows PostgreSQL, pgvector and VectorChord are independently pinned and validated by the native build/upgrade gates.'}}
-    require(all(result[name] == dependencies[name] for name in WINDOWS_OWNED), 'Windows-owned dependency changed')
+            'database': 'Resolve pgvector and VectorChord from the upstream base-images PostgreSQL versions and validate their native Windows builds.'}}
+    require(all(result[name] == dependencies[name] for name in WINDOWS_PRESERVED), 'Windows-preserved dependency changed')
     for flag in ('target', 'variant', 'hevc', 'jpeg', 'immichLoaderPatch', 'repository'):
         require(result['sharpLibvips'][flag] == dependencies['sharpLibvips'][flag], f'Windows codec policy changed: {flag}')
     pin = deepcopy(current_pin)
     pin.update(version=version, commit=commit, windowsRevision=0,
                notes=f'{version} stable source and upstream production runtime pins; initial Windows revision 0. Native compatibility requires the release qualification gates.')
-    return {path: json.dumps(value, indent=2, ensure_ascii=False) + '\n' for path, value in (
-        ('upstream.json', pin), ('dependencies/versions.json', result))}
+    return {
+        'upstream.json': json.dumps(pin, indent=2, ensure_ascii=False) + '\n',
+        'dependencies/versions.json': json.dumps(result, indent=2, ensure_ascii=False) + '\n',
+        dependencies['sharpLibvips']['immichLoaderPatch']: loader,
+    }
