@@ -1,10 +1,12 @@
 """Regressions for provider policy and optional ONNX embedding transformations.
 
+Test runtime behavior, never source text or implementation structure.
 Mocks model ORT's registered providers, not GPU execution. Real DirectML
 inference still requires the packaged Windows smoke test on suitable hardware.
 """
 
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -147,6 +149,29 @@ class GraphInferenceTests(unittest.TestCase):
         model = onnx.helper.make_model(graph, opset_imports=[onnx.helper.make_opsetid("", 13)], ir_version=8)
         onnx.save_model(model, self.source)
 
+    def test_windows_default_uses_only_the_selected_accelerator(self):
+        for accelerator, expected in (("directml", DML), ("cpu", CPU)):
+            with self.subTest(accelerator=accelerator), patch.object(self.graph_module.sys, "platform", "win32"), patch.dict(
+                "os.environ", {"MACHINE_LEARNING_ACCELERATOR": accelerator}
+            ), patch.object(self.graph_module.ort, "get_available_providers", return_value=[DML, CPU]):
+                self.assertEqual(self.graph_module._providers_default(), [expected])
+
+    def test_windows_unavailable_directml_does_not_select_cpu(self):
+        with patch.object(self.graph_module.sys, "platform", "win32"), patch.dict(
+            "os.environ", {"MACHINE_LEARNING_ACCELERATOR": "directml"}
+        ), patch.object(self.graph_module.ort, "get_available_providers", return_value=[CPU]):
+            with self.assertRaises(RuntimeError):
+                self.graph_module._providers_default()
+
+    def test_directml_session_options_disable_parallel_execution_and_cpu_fallback(self):
+        spec = self.graph_module.GraphSpec(self.source, {}, (), [DML], [])
+        with patch.object(self.graph_module.settings, "model_inter_op_threads", 2):
+            options = spec.sess_options()
+        self.assertFalse(options.enable_mem_pattern)
+        self.assertEqual(options.execution_mode, self.ort.ExecutionMode.ORT_SEQUENTIAL)
+        self.assertEqual(options.get_session_config_entry("session.disable_cpu_ep_fallback"), "1")
+        self.assertEqual(options.get_session_config_entry("ep.dml.disable_graph_fusion"), "1")
+
     def test_packaged_graph_runs_concurrent_requests_with_correct_outputs(self):
         spec = SimpleNamespace(provider=DML, session=lambda path: self.ort.InferenceSession(str(path), providers=[CPU]))
         with patch.object(self.graph_module, "prepared", return_value=self.source):
@@ -156,6 +181,17 @@ class GraphInferenceTests(unittest.TestCase):
             outputs = list(pool.map(lambda value: graph.run(None, {"x": value})[0], inputs))
         for value, output in zip(inputs, outputs):
             self.np.testing.assert_array_equal(output, value * 2)
+
+    def test_concurrent_child_preparation_produces_a_runnable_graph(self):
+        spec = self.graph_module.GraphSpec(self.source, {}, (), [DML], [])
+        with patch.dict(os.environ, {"PYTHONPATH": str(MODEL_SOURCE), "MACHINE_LEARNING_MODEL_REVISION": "main"}), patch.object(
+            self.graph_module.settings, "model_revision", "main"
+        ), ThreadPoolExecutor(2) as pool:
+            graphs = list(pool.map(self.graph_module.prepared, [spec, spec]))
+        self.assertEqual(graphs[0], graphs[1])
+        session = self.ort.InferenceSession(str(graphs[0]), providers=[CPU])
+        value = self.np.array([[1.0, 2.0]], dtype=self.np.float32)
+        self.np.testing.assert_array_equal(session.run(None, {"x": value})[0], value * 2)
 
     def test_session_initialization_failure_is_not_retried(self):
         failure = RuntimeError("session initialization failed")
