@@ -32,6 +32,17 @@ $requirementsLines = @($requirementsLines | ForEach-Object {
 })
 $requirementsLines | Set-Content -Encoding utf8 -LiteralPath $requirementsPath
 
+$wheelhouse = New-CleanDirectory (Join-Path $Destination 'wheelhouse')
+$pythonRoot = New-CleanDirectory (Join-Path $root '.work\machine-learning-python')
+$env:UV_PYTHON_INSTALL_DIR = $pythonRoot
+& $uv python install $versions.python.version --no-bin
+if ($LASTEXITCODE -ne 0) { throw 'Could not install the pinned Python runtime for the Machine Learning wheel build.' }
+$python = Get-ChildItem -LiteralPath $pythonRoot -Recurse -File -Filter python.exe | Select-Object -First 1
+if (-not $python) { throw 'Pinned Python runtime did not produce python.exe for the Machine Learning wheel build.' }
+& $python.FullName -m pip wheel --disable-pip-version-check --no-input --wheel-dir $wheelhouse --requirement $requirementsPath
+if ($LASTEXITCODE -ne 0) { throw 'Could not build the self-contained Machine Learning wheelhouse.' }
+'complete' | Set-Content -Encoding ascii -LiteralPath (Join-Path $wheelhouse '.complete')
+
 $manifest = [ordered]@{
     python = $versions.python.version
     baseExtra = 'openvino'

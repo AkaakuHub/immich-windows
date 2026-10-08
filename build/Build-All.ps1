@@ -88,7 +88,7 @@ $mlInputs=[ordered]@{
     builder=(& git hash-object (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1')).Trim()
     shared=$sharedBuildInputs
 }
-Invoke-CachedBuildStage -Destination $ml -StateName 'build-inputs.json' -Inputs $mlInputs -Required @('app\immich_ml\__main__.py','requirements.txt','ml-manifest.json') -Build {
+Invoke-CachedBuildStage -Destination $ml -StateName 'build-inputs.json' -Inputs $mlInputs -Required @('app\immich_ml\__main__.py','requirements.txt','ml-manifest.json','wheelhouse\.complete') -Build {
     & (Join-Path $PSScriptRoot 'Build-MachineLearning.ps1') -Source $source -Destination $ml
 }
 if (-not $SkipNativeDependencies) {
