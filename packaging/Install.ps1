@@ -415,7 +415,6 @@ function New-WinSWServiceXml {
         ("  <arguments>{0}</arguments>" -f (ConvertTo-XmlValue $Arguments)),
         ("  <workingdirectory>{0}</workingdirectory>" -f (ConvertTo-XmlValue $current)),
         '  <startmode>Automatic</startmode>',
-        '  <stopparentprocessfirst>true</stopparentprocessfirst>',
         '  <stoptimeout>30 sec</stoptimeout>',
         ("  <logpath>{0}</logpath>" -f (ConvertTo-XmlValue $logs)),
         '  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>5</keepFiles></log>'
@@ -442,16 +441,12 @@ $loader = Join-Path $current 'runtime\launchers\Load-ImmichEnv.ps1'
 New-WinSWServiceXml -Id 'ImmichServer' -Name 'Immich Server' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -ServiceRole Server" -f $loader,$envFile) -ExtraEnv @{} -Depends $serverDepends | Set-Content -Encoding utf8 -LiteralPath $serverXml
 $mlExe = Join-Path $services 'ImmichMachineLearning.exe'; Copy-Item $winswSource $mlExe -Force
 $mlXml = Join-Path $services 'ImmichMachineLearning.xml'
-$previousMlConfiguration=if (Test-Path -LiteralPath $mlXml -PathType Leaf) { Get-Content -Raw -LiteralPath $mlXml } else { $null }
-$mlConfiguration=New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -ServiceRole MachineLearning" -f $loader,$envFile) -ExtraEnv @{}
-$mlConfigurationChanged=$previousMlConfiguration -and $previousMlConfiguration -cne $mlConfiguration
-$mlConfiguration | Set-Content -Encoding utf8 -LiteralPath $mlXml
+New-WinSWServiceXml -Id 'ImmichMachineLearning' -Name 'Immich Machine Learning' -Executable $serviceHost -Arguments ("-NoProfile -File `"{0}`" -EnvFile `"{1}`" -ServiceRole MachineLearning" -f $loader,$envFile) -ExtraEnv @{} | Set-Content -Encoding utf8 -LiteralPath $mlXml
 foreach ($svc in @(@($serverExe,$serverXml),@($mlExe,$mlXml))) {
     $name = [IO.Path]::GetFileNameWithoutExtension($svc[0])
     $existingService=Get-Service -Name $name -ErrorAction SilentlyContinue
-    $reinstall=$existingService -and (-not $ReuseServices -or ($name -eq 'ImmichMachineLearning' -and $mlConfigurationChanged))
-    if ($reinstall) { & $svc[0] stop 2>$null; & $svc[0] uninstall }
-    if (-not $existingService -or $reinstall) {
+    if ($existingService -and -not $ReuseServices) { & $svc[0] stop 2>$null; & $svc[0] uninstall }
+    if (-not $existingService -or -not $ReuseServices) {
         & $svc[0] install
         if ($LASTEXITCODE -ne 0) { throw "Failed to install $name" }
     } elseif ($name -eq 'ImmichServer') {

@@ -12,27 +12,6 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Load-ImmichEnv.ps1') -EnvFile $EnvFile
 $redisMode = $env:IMMICH_WINDOWS_REDIS_MODE
 
-function Stop-ImmichMachineLearningProcesses {
-    $roots = @(
-        (Join-Path $InstallRoot 'current'),
-        (Join-Path $InstallRoot 'releases')
-    )
-    $pythonProcesses = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-        $path = [string]$_.ExecutablePath
-        $commandLine = [string]$_.CommandLine
-        $packagedPath = $path -and ($roots | Where-Object { $path.StartsWith($_.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }) -and
-            $path -match '\\machine-learning\\python-runtime\\'
-        $mlSupervisor = $commandLine -match '\s-m\s+immich_ml(?:\s|$)'
-        $packagedPath -or $mlSupervisor
-    }
-    foreach ($process in $pythonProcesses) {
-        & taskkill.exe /PID $process.ProcessId /T /F | Out-Host
-        if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue)) {
-            throw "Could not stop Immich Machine Learning process tree $($process.ProcessId)."
-        }
-    }
-}
-
 $shouldStopValkey = $redisMode -eq 'BundledValkey'
 if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
     $processNames = @('ImmichServer','ImmichMachineLearning')
@@ -70,8 +49,6 @@ if ($env:IMMICH_WINDOWS_INSTALL_SCOPE -eq 'CurrentUser') {
 } else {
     throw "Unsupported IMMICH_WINDOWS_INSTALL_SCOPE: $($env:IMMICH_WINDOWS_INSTALL_SCOPE)"
 }
-
-Stop-ImmichMachineLearningProcesses
 
 # Native process races that are verified as already exited are successful stops.
 exit 0

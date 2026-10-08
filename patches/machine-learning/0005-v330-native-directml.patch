@@ -229,3 +229,21 @@ index 8f96a29c8611873891927ff843a0faf7c7d770da..f649de1823257c69d8f64b835954738f
  ]
  sdist = { url = "https://files.pythonhosted.org/packages/17/06/68c27a523103dad5837dc5b87e71285280c4f098c60e4fe8a8db6486ab09/opencv-python-4.11.0.86.tar.gz", hash = "sha256:03d60ccae62304860d232272e4a4fda93c39d595780cb40b161b310244b736a4", size = 95171956, upload-time = "2025-01-16T13:52:24.737Z" }
  
+diff --git a/machine-learning/immich_ml/allocator.py b/machine-learning/immich_ml/allocator.py
+--- a/machine-learning/immich_ml/allocator.py
++++ b/machine-learning/immich_ml/allocator.py
+@@ -1,10 +1,13 @@
+ import ctypes
++import sys
+ 
+-_process = ctypes.CDLL(None)
++_process = ctypes.CDLL(None) if sys.platform != "win32" else None
+ 
+ 
+ def release() -> None:
++    if _process is None:
++        return
+     if hasattr(_process, "mi_collect"):
+         _process.mi_collect(True)
+     elif hasattr(_process, "malloc_trim"):
+         _process.malloc_trim(0)
