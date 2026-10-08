@@ -4,6 +4,6 @@
   "commit": "e3b165609135365302e40a43d94967fdbb2e6888",
   "channel": "stable",
   "buildArchitecture": "win-x64",
-  "notes": "v3.3.0 stable source and upstream production runtime pins; initial Windows revision 0. Native compatibility requires the release qualification gates.",
-  "windowsRevision": 0
+  "notes": "v3.3.0 stable source and upstream production runtime pins; Windows revision 1 adds a self-contained ML wheelhouse. Native compatibility requires the release qualification gates.",
+  "windowsRevision": 1
 }

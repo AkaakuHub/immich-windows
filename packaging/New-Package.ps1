@@ -34,6 +34,7 @@ $mlDestination = Join-Path $Destination 'machine-learning'
 Copy-Directory (Join-Path $ml 'app') (Join-Path $mlDestination 'app')
 Copy-Item (Join-Path $ml 'requirements.txt') (Join-Path $mlDestination 'requirements.txt') -Force
 Copy-Item (Join-Path $ml 'ml-manifest.json') (Join-Path $mlDestination 'ml-manifest.json') -Force
+Copy-Directory (Join-Path $ml 'wheelhouse') (Join-Path $mlDestination 'wheelhouse')
 Copy-Item (Join-Path $app 'LICENSE') (Join-Path $Destination 'LICENSE') -Force
 
 foreach ($project in @('server','cli')) {
