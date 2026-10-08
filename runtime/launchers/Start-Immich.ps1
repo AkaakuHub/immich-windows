@@ -146,5 +146,13 @@ try {
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { [string]$_.CommandLine -match '\s-m\s+immich_ml(?:\s|$)' } |
         ForEach-Object { Write-Warning "Immich ML supervisor: pid=$($_.ProcessId) command=$($_.CommandLine)" }
+    Get-ChildItem -LiteralPath $logRoot -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'ImmichMachineLearning*.err.log' } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1 |
+        ForEach-Object {
+            Write-Warning "Recent Immich ML error log: $($_.FullName)"
+            Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+        }
     throw
 }
