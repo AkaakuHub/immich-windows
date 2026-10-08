@@ -7,7 +7,6 @@ proved by the Windows qualification workflow, never inferred from versions.
 from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
 import re
 import tomllib
 from urllib.parse import quote
@@ -15,9 +14,12 @@ from urllib.parse import quote
 IMMICH = 'immich-app/immich'
 BASE = 'immich-app/base-images'
 MXE = 'libvips/build-win64-mxe'
+PYTHON_STANDALONE = 'astral-sh/python-build-standalone'
+PYTHON_ASSET = re.compile(
+    r'cpython-(\d+\.\d+\.\d+)\+[^-]+-x86_64-pc-windows-msvc-install_only(?:_stripped)?\.tar\.gz')
 SHA = re.compile(r'[0-9a-f]{40}')
 VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9]+)?')
-WINDOWS_OWNED = ('postgresql', 'pgvector', 'vectorchord', 'valkey', 'python',
+WINDOWS_OWNED = ('postgresql', 'pgvector', 'vectorchord', 'valkey',
                  'onnxruntimeDirectml', 'uv', 'winsw')
 LOADER = '0001-put-other-loaders-ahead-of-dcrawload.patch'
 
@@ -84,7 +86,26 @@ def python_compatible(version, constraint):
         other += (0,) * (3 - len(other))
         passes = {'>=': current >= other, '<=': current <= other, '>': current > other,
                   '<': current < other, '==': current == other}[match[1]]
-        require(passes, f'Windows Python {version} is incompatible with upstream {constraint}')
+        if not passes:
+            return False
+    return True
+
+
+def compatible_python_version(api, constraint):
+    """Select the newest Windows CPython asset satisfying upstream's bounds."""
+    release = api.get('releases/latest', repo=PYTHON_STANDALONE)
+    candidates = []
+    for asset in release.get('assets', []):
+        name = asset.get('name', '')
+        match = PYTHON_ASSET.fullmatch(name)
+        if match and python_compatible(match[1], constraint):
+            candidates.append(match[1])
+    require(candidates, f'No Windows CPython runtime satisfies upstream {constraint}')
+    lowest_supported_minor = min(tuple(map(int, value.split('.')[:2])) for value in candidates)
+    return max(
+        (value for value in candidates if tuple(map(int, value.split('.')[:2])) == lowest_supported_minor),
+        key=lambda value: tuple(map(int, value.split('.'))),
+    )
 
 
 def prepare_update(api, current_pin, dependencies, release):
@@ -108,7 +129,9 @@ def prepare_update(api, current_pin, dependencies, release):
     ml = tomllib.loads(files['machine-learning/pyproject.toml'])['project']
     require('v' + server['version'] == version and 'v' + ml['version'] == version,
             'Upstream package versions do not match the release')
-    python_compatible(dependencies['python']['version'], ml['requires-python'])
+    python_version = dependencies['python']['version']
+    if not python_compatible(python_version, ml['requires-python']):
+        python_version = compatible_python_version(api, ml['requires-python'])
     providers = ml['optional-dependencies'].get('openvino', [])
     require(len(providers) == 1 and re.fullmatch(r'onnxruntime-openvino[><=0-9., ]+', providers[0]),
             'Upstream OpenVINO extra changed; review Windows DirectML replacement')
@@ -132,6 +155,10 @@ def prepare_update(api, current_pin, dependencies, release):
     ffmpeg_asset = f'jellyfin-ffmpeg_{ffmpeg}_portable_win64-clang-gpl.zip'
     ffmpeg_checksum = release_asset(api, 'jellyfin/jellyfin-ffmpeg', f'v{ffmpeg}', ffmpeg_asset)
     result = deepcopy(dependencies)
+    result['python'].update(
+        version=python_version,
+        source=f'https://github.com/{PYTHON_STANDALONE}/releases/latest',
+    )
     provenance = f'https://github.com/{BASE}/blob/{base_commit}/'
     result['node'].update(version=node, asset=f'node-v{node}-win-x64.zip', source=provenance + 'server/Dockerfile')
     result['ffmpeg'].update(version=ffmpeg, asset=ffmpeg_asset, sha256=ffmpeg_checksum,
@@ -186,12 +213,6 @@ def prepare_update(api, current_pin, dependencies, release):
     require(len(patches) == 1 and patches[0]['path'] == loader_path and patches[0]['type'] == 'file',
             'Production libvips patch set changed; review Windows port')
     loader = source(api, BASE, base_commit, loader_path)
-    windows_ref = release.get('windows_commit')
-    require(windows_ref is None or SHA.fullmatch(windows_ref), 'Windows baseline must be an immutable commit')
-    windows_loader = (api.file(dependencies['sharpLibvips']['immichLoaderPatch'], windows_ref) if windows_ref
-                      else Path(dependencies['sharpLibvips']['immichLoaderPatch']).read_text(encoding='utf-8'))
-    require(loader.replace('\r\n', '\n').rstrip('\n') == windows_loader.replace('\r\n', '\n').rstrip('\n'),
-            'Production libvips loader patch changed; review Windows port')
     heif = media_sources['libheif']
     require(VERSION.fullmatch(heif['version']) and
             tag_commit(api, 'strukturag/libheif', 'v' + heif['version']) == heif['revision'],
@@ -213,7 +234,7 @@ def prepare_update(api, current_pin, dependencies, release):
         'mediaSources': media_sources,
         'windowsOverrides': {
             'preservedComponents': list(WINDOWS_OWNED),
-            'machineLearning': 'Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the independently pinned Windows DirectML package. Keep Windows Python/uv pins and reject incompatible Python bounds.',
+            'machineLearning': 'Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the independently pinned Windows DirectML package. Select the newest compatible Windows CPython runtime automatically and keep the uv pin.',
             'media': 'Keep the MXE Windows platform recipes, GLib TLS fix and codec feature flags. LibRaw 0.22.2 is a reviewed Windows override for upstream 0.22.2-1; other unmapped source drift fails closed.',
             'database': 'Windows PostgreSQL, pgvector and VectorChord are independently pinned and validated by the native build/upgrade gates.'}}
     require(all(result[name] == dependencies[name] for name in WINDOWS_OWNED), 'Windows-owned dependency changed')
@@ -222,5 +243,8 @@ def prepare_update(api, current_pin, dependencies, release):
     pin = deepcopy(current_pin)
     pin.update(version=version, commit=commit, windowsRevision=0,
                notes=f'{version} stable source and upstream production runtime pins; initial Windows revision 0. Native compatibility requires the release qualification gates.')
-    return {path: json.dumps(value, indent=2, ensure_ascii=False) + '\n' for path, value in (
-        ('upstream.json', pin), ('dependencies/versions.json', result))}
+    return {
+        'upstream.json': json.dumps(pin, indent=2, ensure_ascii=False) + '\n',
+        'dependencies/versions.json': json.dumps(result, indent=2, ensure_ascii=False) + '\n',
+        dependencies['sharpLibvips']['immichLoaderPatch']: loader,
+    }

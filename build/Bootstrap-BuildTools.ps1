@@ -31,7 +31,7 @@ $pnpm = Assert-Command 'pnpm'
 $pnpmVersion = (& $pnpm --version).Trim()
 if ($pnpmVersion -ne $versions.pnpm.version) { throw "Unexpected bootstrapped pnpm version: $pnpmVersion" }
 
-# Machine-learning uses the pinned uv release so it can install CPython 3.11.14.
+# Machine-learning uses the pinned uv release so it can install the selected CPython runtime.
 $uvRoot = Join-Path $ToolRoot 'uv'
 $uvExe = Join-Path $uvRoot 'uv.exe'
 $uvVersion = if (Test-Path -LiteralPath $uvExe) { (& $uvExe --version).Trim() } else { '' }

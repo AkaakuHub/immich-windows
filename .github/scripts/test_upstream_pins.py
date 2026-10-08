@@ -48,6 +48,9 @@ class FakeAPI:
             'jellyfin/jellyfin-ffmpeg': ('v7.1.4-3', 'jellyfin-ffmpeg_7.1.4-3_portable_win64-clang-gpl.zip'),
             'strukturag/libheif': ('v1.23.3', 'libheif-1.23.3.tar.gz'),
         }
+        self.python_release = {
+            'assets': [{'name': 'cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz'}]
+        }
         self.extra_patch = False
         self.asset_digest = 'sha256:' + '5' * 64
         self.calls = []
@@ -66,6 +69,8 @@ class FakeAPI:
             tag, name = self.assets[repo]
             return {'tag_name': tag, 'draft': False, 'prerelease': False,
                     'assets': [{'name': name, 'digest': self.asset_digest}]}
+        if path == 'releases/latest' and repo == pins.PYTHON_STANDALONE:
+            return self.python_release
         if path.startswith('contents/'):
             patches = [{'path': f'server/sources/libvips-patches/{pins.LOADER}', 'type': 'file'}]
             return patches + ([{'path': 'new.patch', 'type': 'file'}] if self.extra_patch else [])
@@ -84,7 +89,7 @@ class PinTests(unittest.TestCase):
                         'commit': '0' * 40, 'windowsRevision': 9, 'buildArchitecture': 'win-x64'}
         self.dependencies = {'schemaVersion': 1, 'target': 'win-x64'}
         self.dependencies.update({name: {'version': '1.0.0'} for name in pins.WINDOWS_OWNED})
-        self.dependencies['python']['version'] = '3.11.14'
+        self.dependencies['python'] = {'version': '3.11.14'}
         self.dependencies['onnxruntimeDirectml']['version'] = '1.24.4'
         self.dependencies.update({name: {'version': '0.0.0'} for name in ('node', 'ffmpeg', 'pnpm', 'extismJs', 'binaryen', 'sharp')})
         self.dependencies['sharpLibvips'] = {'version': '8.18.5', 'target': 'x86_64-w64-mingw32.shared',
@@ -94,7 +99,9 @@ class PinTests(unittest.TestCase):
 
     def prepare(self):
         with patch.object(Path, 'read_text', return_value='fixture loader patch\n'):
-            return {k: json.loads(v) for k, v in pins.prepare_update(self.api, self.current, self.dependencies, self.release).items()}
+            result = pins.prepare_update(self.api, self.current, self.dependencies, self.release)
+        return {k: json.loads(v) for k, v in result.items() if k.endswith('.json')} | {
+            k: v for k, v in result.items() if not k.endswith('.json')}
 
     def mutate(self, repo, path, old, new):
         self.api.files[repo, path] = self.api.files[repo, path].replace(old, new)
@@ -155,9 +162,14 @@ class PinTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing or ambiguous'):
             self.prepare()
 
-    def test_unmapped_python_version_rejected(self):
+    def test_incompatible_python_pin_is_updated_from_standalone_release(self):
+        self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11', '>=3.12')
+        result = self.prepare()
+        self.assertEqual(result['dependencies/versions.json']['python']['version'], '3.12.15')
+
+    def test_missing_compatible_python_runtime_is_rejected(self):
         self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11', '>=3.13')
-        with self.assertRaisesRegex(ValueError, 'incompatible'):
+        with self.assertRaisesRegex(ValueError, 'No Windows CPython runtime'):
             self.prepare()
 
     def test_unmapped_python_syntax_rejected(self):
@@ -190,10 +202,10 @@ class PinTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'patch set changed'):
             self.prepare()
 
-    def test_changed_loader_patch_rejected(self):
+    def test_changed_loader_patch_is_updated(self):
         self.api.files[pins.BASE, f'server/sources/libvips-patches/{pins.LOADER}'] = 'different patch'
-        with self.assertRaisesRegex(ValueError, 'loader patch changed'):
-            self.prepare()
+        result = self.prepare()
+        self.assertEqual(result['media-patches/libvips/' + pins.LOADER], 'different patch')
 
     def test_terminal_patch_blank_line_allowed(self):
         self.api.files[pins.BASE, f'server/sources/libvips-patches/{pins.LOADER}'] += '\n'
@@ -234,18 +246,9 @@ class PinTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Non-exact Sharp'):
             self.prepare()
 
-    def test_windows_patch_uses_exact_current_main(self):
-        self.release['windows_commit'] = '7' * 40
-        original = self.api.file
-        calls = []
-        def file(path, ref, repo=None):
-            if repo is None:
-                calls.append((path, ref))
-                return 'fixture loader patch\n'
-            return original(path, ref, repo)
-        self.api.file = file
-        self.prepare()
-        self.assertEqual(calls, [(self.dependencies['sharpLibvips']['immichLoaderPatch'], '7' * 40)])
+    def test_windows_patch_is_taken_from_upstream_base(self):
+        result = self.prepare()
+        self.assertEqual(result['media-patches/libvips/' + pins.LOADER], 'fixture loader patch\n')
 
     def test_unsupported_platform_rejected(self):
         self.dependencies['target'] = 'win-arm64'
