@@ -126,5 +126,15 @@ try {
         $paths = $startupLogs[$name]
         Write-Warning "CurrentUser startup logs for ${name}: stdout='$($paths.Stdout)'; stderr='$($paths.Stderr)'"
     }
+    $logRoot = Join-Path $DataRoot 'logs'
+    if (Test-Path -LiteralPath $logRoot) {
+        Get-ChildItem -LiteralPath $logRoot -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 6 |
+            ForEach-Object {
+                Write-Warning "Recent Immich log: $($_.FullName)"
+                Get-Content -LiteralPath $_.FullName -Tail 40 -ErrorAction SilentlyContinue
+            }
+    }
     throw
 }
