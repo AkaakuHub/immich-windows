@@ -10,7 +10,8 @@
   "pgvector": {
     "version": "0.8.5",
     "commit": "159b79aaad5983fb7459c1e3df2897fbb2d11788",
-    "repository": "https://github.com/pgvector/pgvector.git"
+    "repository": "https://github.com/pgvector/pgvector.git",
+    "source": "https://github.com/pgvector/pgvector/releases/tag/v0.8.5"
   },
   "vectorchord": {
     "version": "1.1.1",
@@ -19,17 +20,20 @@
     "windowsBuildReference": "https://github.com/grimmjoww/vchord-windows-port",
     "notes": "Matches the current Immich-supported VectorChord line and has verified native Windows PostgreSQL 18 builds.",
     "pgrx": "0.17.0",
-    "rustToolchain": "1.95.0"
+    "rustToolchain": "1.95.0",
+    "source": "https://github.com/supervc-stack/VectorChord/releases/tag/1.1.1"
   },
   "valkey": {
-    "version": "9.0.3",
+    "version": "9.1.2",
     "repository": "https://github.com/valkey-windows/valkey-windows",
-    "asset": "Valkey-9.0.3-Windows-x64-msys2-with-Service.zip"
+    "asset": "Valkey-9.1.2-Windows-x64-msys2-with-Service.zip",
+    "source": "https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.2"
   },
   "python": {
-    "version": "3.11.14",
+    "version": "3.13.16",
     "distribution": "uv-managed CPython / python-build-standalone",
-    "architecture": "x86_64-pc-windows-msvc"
+    "architecture": "x86_64-pc-windows-msvc",
+    "source": "https://github.com/astral-sh/python-build-standalone/releases/latest"
   },
   "onnxruntimeDirectml": {
     "version": "1.24.4",
@@ -38,112 +42,113 @@
   "node": {
     "version": "24.21.0",
     "architecture": "win-x64",
-    "source": "https://github.com/immich-app/base-images/blob/71fbae519f9a62bfd13977f6d3f3d046c89bfe11/server/Dockerfile",
+    "source": "https://github.com/immich-app/base-images/blob/d4726ea0e09ef384de165932a6c92c37317312c7/server/Dockerfile",
     "asset": "node-v24.21.0-win-x64.zip"
   },
   "uv": {
-    "version": "0.12.18",
-    "source": "Astral uv release with CPython 3.11.14 support",
+    "version": "0.12.23",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.12.23",
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
     "version": "7.1.4-3",
     "distribution": "jellyfin-ffmpeg",
     "repository": "https://github.com/jellyfin/jellyfin-ffmpeg",
-    "source": "https://github.com/immich-app/base-images/blob/71fbae519f9a62bfd13977f6d3f3d046c89bfe11/server/packages/ffmpeg.json",
+    "source": "https://github.com/immich-app/base-images/blob/d4726ea0e09ef384de165932a6c92c37317312c7/server/packages/ffmpeg.json",
     "asset": "jellyfin-ffmpeg_7.1.4-3_portable_win64-clang-gpl.zip",
     "sha256": "113adeb702683c38be40a65d859f8ef7ffb07bae9df16dfb6c3df5ac3d95ef3c"
   },
   "winsw": {
     "version": "2.12.0",
     "repository": "https://github.com/winsw/winsw",
-    "asset": "WinSW-x64.exe"
+    "asset": "WinSW-x64.exe",
+    "source": "https://github.com/winsw/winsw/releases/tag/v2.12.0"
   },
   "pnpm": {
-    "version": "11.22.0",
-    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/mise.toml"
+    "version": "11.27.1",
+    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/mise.toml"
   },
   "extismJs": {
     "version": "1.7.0",
     "repository": "https://github.com/extism/js-pdk",
-    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/mise.toml",
     "asset": "extism-js-x86_64-windows-v1.7.0.gz"
   },
   "binaryen": {
     "version": "124",
     "repository": "https://github.com/WebAssembly/binaryen",
-    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/mise.toml",
     "asset": "binaryen-version_124-x86_64-windows.tar.gz"
   },
   "sharp": {
     "version": "0.35.3",
-    "source": "https://github.com/immich-app/immich/blob/db355f79d910bbfc6378117ed10868493c97b922/server/package.json"
+    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/server/package.json"
   },
   "sharpLibvips": {
-    "version": "8.18.5",
+    "version": "8.18.7",
     "repository": "https://github.com/libvips/build-win64-mxe.git",
-    "tag": "v8.18.5",
-    "commit": "695b4511e498d35ea736b6315b5afb1f5144cac8",
+    "tag": "v8.18.7",
+    "commit": "ef19ca09af2453d127453d677c849ccb37cf5694",
     "target": "x86_64-w64-mingw32.shared",
     "variant": "vips-all",
     "hevc": true,
     "notes": "Native Windows MXE media build with upstream libvips/libheif and loader patch. Windows platform recipes and HEVC/jpegli/JXL/RAW feature flags are preserved. Keep HEVC/GPL license notices with the package.",
-    "libvipsRevision": "7c28da9c2b8b5b8defe54f2ae92ee474c0e2d6e4",
+    "libvipsRevision": "24ad4d042940e6bf99a68871ba886ca8847c9c82",
     "jpeg": "jpegli",
-    "immichBaseImagesCommit": "71fbae519f9a62bfd13977f6d3f3d046c89bfe11",
+    "immichBaseImagesCommit": "d4726ea0e09ef384de165932a6c92c37317312c7",
     "immichLoaderPatch": "media-patches/libvips/0001-put-other-loaders-ahead-of-dcrawload.patch",
     "libheif": {
-      "version": "1.23.3",
-      "revision": "78c9746aea226b22885e8d35241353ce669c4ea5",
-      "sha256": "11c1179e0e4bec33624b87f22ec42c1e993a40d946d44d26f9c431cf1456a863",
-      "recipeVersion": "1.23.1",
-      "recipeSha256": "386ded3ff188354157fda97389905c58e299a57b3372fe40ea585e13b13ef79d",
-      "source": "https://github.com/immich-app/base-images/blob/71fbae519f9a62bfd13977f6d3f3d046c89bfe11/server/sources/libheif.json"
+      "version": "1.23.5",
+      "revision": "413e2a87e6a70b3eccc3a3adc5801179dd2d9e00",
+      "sha256": "fd9036064c4432f0550d15072ddf34956a248279ee9aeaff0fba3fa0f77d8f1a",
+      "recipeVersion": "1.23.5",
+      "recipeSha256": "d1b78104a9618777f41ae155fe4436b1630f3f94056262feb4694b634d3a9744",
+      "source": "https://github.com/immich-app/base-images/blob/d4726ea0e09ef384de165932a6c92c37317312c7/server/sources/libheif.json"
     }
   },
   "upstreamRuntime": {
     "schemaVersion": 1,
-    "immichCommit": "db355f79d910bbfc6378117ed10868493c97b922",
+    "immichCommit": "e3b165609135365302e40a43d94967fdbb2e6888",
     "baseImages": {
       "repository": "immich-app/base-images",
-      "tag": "202609281550",
-      "commit": "71fbae519f9a62bfd13977f6d3f3d046c89bfe11",
+      "tag": "202610021601",
+      "commit": "d4726ea0e09ef384de165932a6c92c37317312c7",
       "images": {
         "dev": {
-          "tag": "202609281550",
-          "digest": "ec2b9196bb2da497a495ded539528778c45487817eb8605cdbb3b765d727aeaa"
+          "tag": "202610021601",
+          "digest": "a97a4e83561eca4bee1a636d05642f354aefb8ceeb84c969f3ac372b4cde24a8"
         },
         "prod": {
-          "tag": "202609281550",
-          "digest": "a97e8c52bb10c25b0bf2d7eb4c26da7e70088471886820f160e3f5f6f3c6c556"
+          "tag": "202610021601",
+          "digest": "bd94134f812c8231e9e997076f1db1e006fb0df5463e343b3e93286bd517abe8"
         }
       }
     },
     "nodeVersion": "24.21.0",
     "ffmpegVersion": "7.1.4-3",
     "developmentTools": {
-      "node": "24.15.0",
+      "node": "24.21.0",
       "ffmpeg": "7.1.3-6"
     },
     "sourceSha256": {
-      "mise.toml": "26293a04de0cb9a418b9720c076d93d6685a9cb0284d924b0739c7c79665da29",
-      "server/package.json": "02e3406bbfb6edeef3e1b11e7e8940689f8c0cacc0755215b80c541fb97164cf",
-      "server/Dockerfile": "21d74db5e3e8886ceb7a38e6eba98fa10367e93e257eeab756806867c7d08693",
-      "machine-learning/pyproject.toml": "6d969046a1035ad475346644341c42d5f4960270780d4a4529eab5f8c1878e6d",
-      "machine-learning/uv.lock": "47fcede8b3ebbaa2dcf04ca69d84959244b307cfd07388fd46c28b8f231f2df6"
+      "mise.toml": "67db5697b6c2d156f35d18bcb68881ee4130a9cddb852efdc7dba9a1c7bdb8ca",
+      "server/package.json": "0fb04758eba6d634d483005ba6405a7cba19e5688a863a3122f7bbd044caf20a",
+      "server/Dockerfile": "fb94e8a40776a39843620a72b544958717b644a8971a7b5a040622d371cccc29",
+      "machine-learning/pyproject.toml": "ee2bc4fd879afe6c8f12705b0934cabaed2d30e72a0a9ff62a33ad9ae6aecc4b",
+      "machine-learning/uv.lock": "2aacb02b41617714b1016a8c53ec3a69be75ce8bf20cf63ea1c88e8f3d33ff48"
     },
     "mediaSources": {
       "libvips": {
         "name": "libvips",
         "repository": "libvips/libvips",
-        "version": "8.18.5",
-        "revision": "7c28da9c2b8b5b8defe54f2ae92ee474c0e2d6e4"
+        "version": "8.18.7",
+        "revision": "24ad4d042940e6bf99a68871ba886ca8847c9c82"
       },
       "libheif": {
         "name": "libheif",
         "repository": "strukturag/libheif",
-        "version": "1.23.3",
-        "revision": "78c9746aea226b22885e8d35241353ce669c4ea5"
+        "version": "1.23.5",
+        "revision": "413e2a87e6a70b3eccc3a3adc5801179dd2d9e00"
       },
       "libjxl": {
         "name": "libjxl",
@@ -167,17 +172,11 @@
     "windowsOverrides": {
       "preservedComponents": [
         "postgresql",
-        "pgvector",
-        "vectorchord",
-        "valkey",
-        "python",
-        "onnxruntimeDirectml",
-        "uv",
-        "winsw"
+        "onnxruntimeDirectml"
       ],
-      "machineLearning": "Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the independently pinned Windows DirectML package. Keep Windows Python/uv pins and reject incompatible Python bounds.",
+      "machineLearning": "Export the immutable upstream uv.lock openvino extra; replace only onnxruntime-openvino with the Windows DirectML package. Select the newest compatible Windows CPython runtime and stable uv release automatically.",
       "media": "Keep the MXE Windows platform recipes, GLib TLS fix and codec feature flags. LibRaw 0.22.2 is a reviewed Windows override for upstream 0.22.2-1; other unmapped source drift fails closed.",
-      "database": "Windows PostgreSQL, pgvector and VectorChord are independently pinned and validated by the native build/upgrade gates."
+      "database": "Resolve pgvector and VectorChord from the upstream base-images PostgreSQL versions and validate their native Windows builds."
     }
   }
 }
