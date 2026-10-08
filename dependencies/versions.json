@@ -46,8 +46,8 @@
     "asset": "node-v24.21.0-win-x64.zip"
   },
   "uv": {
-    "version": "0.12.23",
-    "source": "https://github.com/astral-sh/uv/releases/tag/0.12.23",
+    "version": "0.12.24",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.12.24",
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
@@ -66,23 +66,23 @@
   },
   "pnpm": {
     "version": "11.27.1",
-    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/mise.toml"
+    "source": "https://github.com/immich-app/immich/blob/db6e11ecc851228aec9c525abb0ee026d1f5055e/mise.toml"
   },
   "extismJs": {
     "version": "1.7.0",
     "repository": "https://github.com/extism/js-pdk",
-    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/db6e11ecc851228aec9c525abb0ee026d1f5055e/mise.toml",
     "asset": "extism-js-x86_64-windows-v1.7.0.gz"
   },
   "binaryen": {
     "version": "124",
     "repository": "https://github.com/WebAssembly/binaryen",
-    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/db6e11ecc851228aec9c525abb0ee026d1f5055e/mise.toml",
     "asset": "binaryen-version_124-x86_64-windows.tar.gz"
   },
   "sharp": {
     "version": "0.35.3",
-    "source": "https://github.com/immich-app/immich/blob/e3b165609135365302e40a43d94967fdbb2e6888/server/package.json"
+    "source": "https://github.com/immich-app/immich/blob/db6e11ecc851228aec9c525abb0ee026d1f5055e/server/package.json"
   },
   "sharpLibvips": {
     "version": "8.18.7",
@@ -108,7 +108,7 @@
   },
   "upstreamRuntime": {
     "schemaVersion": 1,
-    "immichCommit": "e3b165609135365302e40a43d94967fdbb2e6888",
+    "immichCommit": "db6e11ecc851228aec9c525abb0ee026d1f5055e",
     "baseImages": {
       "repository": "immich-app/base-images",
       "tag": "202610021601",
@@ -131,11 +131,11 @@
       "ffmpeg": "7.1.3-6"
     },
     "sourceSha256": {
-      "mise.toml": "67db5697b6c2d156f35d18bcb68881ee4130a9cddb852efdc7dba9a1c7bdb8ca",
-      "server/package.json": "0fb04758eba6d634d483005ba6405a7cba19e5688a863a3122f7bbd044caf20a",
+      "mise.toml": "03481677e19e5d8108956a35b87c1b97dec9d7a2a51d8e6165574cd47fcd34be",
+      "server/package.json": "1c9db5793f027d565bf3bbfeab3512b80ff714201b9402e39eb45a373dbf00e7",
       "server/Dockerfile": "fb94e8a40776a39843620a72b544958717b644a8971a7b5a040622d371cccc29",
-      "machine-learning/pyproject.toml": "ee2bc4fd879afe6c8f12705b0934cabaed2d30e72a0a9ff62a33ad9ae6aecc4b",
-      "machine-learning/uv.lock": "2aacb02b41617714b1016a8c53ec3a69be75ce8bf20cf63ea1c88e8f3d33ff48"
+      "machine-learning/pyproject.toml": "9f1c7aa3065f61d5cc629e4ea5ee1ebf2ee8a5d0a57e39c5cc5a4dbc70400fea",
+      "machine-learning/uv.lock": "d55122806e9fd6e3330ff787e546b6b1761ade7ed36a3cb4345bd29efc15a7a6"
     },
     "mediaSources": {
       "libvips": {
