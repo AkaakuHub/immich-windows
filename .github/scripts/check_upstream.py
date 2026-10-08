@@ -221,13 +221,19 @@ def prepare_patches(api, main, old_commit, new_commit):
             for path in sorted(paths):
                 target = directory / path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(api.file(path, commit, UPSTREAM), encoding='utf-8', newline='')
+                try:
+                    content = api.file(path, commit, UPSTREAM)
+                except urllib.error.HTTPError as error:
+                    if error.code != 404:
+                        raise
+                    continue
+                target.write_text(content, encoding='utf-8', newline='')
             command(directory, 'add', '.')
         for name, patch in patches.items():
             patch_file = Path(temporary) / 'change.patch'
             patch_file.write_text(patch, encoding='utf-8', newline='')
             old_tree = command(old, 'write-tree').stdout.strip()
-            old_bytes = {path: (old / path).read_bytes() for path in paths}
+            old_bytes = {path: (old / path).read_bytes() for path in paths if (old / path).is_file()}
             command(old, 'apply', '--index', '--whitespace=error-all', str(patch_file))
             full_patch = command(old, 'diff', '--binary', '--full-index', old_tree).stdout
             require(full_patch, f'Empty patch: {name}')

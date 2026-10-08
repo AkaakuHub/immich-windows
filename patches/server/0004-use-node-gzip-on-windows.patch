@@ -1,27 +1,24 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: use Node gzip for database backups on Windows
-
-Immich's backup path shells out to GNU gzip with --rsyncable. Native Windows
-installations do not provide that executable. Keep the existing GNU gzip path
-on POSIX and use Node's built-in zlib stream on win32. The resulting .sql.gz
-format remains compatible with Immich's existing restore path.
----
- server/src/services/database-backup.service.ts | 6 +++++-
- 1 file changed, 5 insertions(+), 1 deletion(-)
-
 diff --git a/server/src/services/database-backup.service.ts b/server/src/services/database-backup.service.ts
+index 732132a138b162bb5affefc3b3211db769821789..e0aab1b1f3e012e81b2ba62ea332543c9fe7c175 100644
 --- a/server/src/services/database-backup.service.ts
 +++ b/server/src/services/database-backup.service.ts
-@@ -5,4 +5,5 @@
+@@ -4,6 +4,7 @@ import { DateTime } from 'luxon';
+ import { devNull } from 'node:os';
  import path, { basename } from 'node:path';
  import { Duplex, PassThrough, Readable, Writable } from 'node:stream';
- import { pipeline } from 'node:stream/promises';
 +import { createGzip } from 'node:zlib';
- import semver from 'semver';
-@@ -258,2 +258,5 @@
+ import { pipeline } from 'node:stream/promises';
+ import { coerce, satisfies } from 'semver';
+ import type { ArgOf } from 'src/repositories/event.repository.js';
+@@ -255,7 +256,10 @@ export class DatabaseBackupService {
+         },
+       });
+ 
 -      gzip = this.processRepository.spawnDuplexStream('gzip', ['--rsyncable']);
 +      gzip =
 +        process.platform === 'win32'
 +          ? createGzip()
 +          : this.processRepository.spawnDuplexStream('gzip', ['--rsyncable']);
        const fileStream = this.storageRepository.createWriteStream(temporaryFilePath);
+ 
+       await pipeline(pgdump, gzip, fileStream);

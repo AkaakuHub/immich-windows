@@ -1,32 +1,13 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: convert native paths to fast-glob patterns
-
-fast-glob patterns always use forward slashes. escapePath() escapes special
-characters but deliberately does not convert Windows path separators;
-convertPathToPattern() performs both platform-aware escaping and separator
-conversion. Without this, native External Library roots such as D:\\Photos can
-be interpreted as glob escape sequences instead of absolute Windows paths.
----
- server/src/repositories/storage.repository.ts | 4 ++--
- 1 file changed, 2 insertions(+), 2 deletions(-)
-
 diff --git a/server/src/repositories/storage.repository.ts b/server/src/repositories/storage.repository.ts
+index eaed895531ab0e1a47087425e4b3275a8a9cd82e..9d0800de7abe51416b2aec7148bece1040e7214a 100644
 --- a/server/src/repositories/storage.repository.ts
 +++ b/server/src/repositories/storage.repository.ts
-@@ -1,6 +1,6 @@
- import { Injectable } from '@nestjs/common';
- import archiver from 'archiver';
- import chokidar, { ChokidarOptions } from 'chokidar';
--import { escapePath, glob, globStream } from 'fast-glob';
-+import { convertPathToPattern, glob, globStream } from 'fast-glob';
- import {
-   constants,
-@@ -101,7 +101,7 @@
-   watchDir = watch; // Native fs.watch without chokidar overhead
- 
+@@ -300,7 +300,7 @@ export class StorageRepository {
    private asGlob(pathToCrawl: string): string {
--    const escapedPath = escapePath(pathToCrawl).replaceAll('"', '["]').replaceAll("'", "[']").replaceAll('`', '[`]');
-+    const escapedPath = convertPathToPattern(pathToCrawl).replaceAll('"', '["]').replaceAll("'", "[']").replaceAll('`', '[`]');
-     const extensions = `*{${mimeTypes.getSupportedFileExtensions().join(',')}}`;
-     return `${escapedPath}/**/${extensions}`;
-   }
+     // eslint-disable-next-line import-x/no-named-as-default-member
+     const escapedPath = fastGlob
+-      .escapePath(pathToCrawl)
++      .convertPathToPattern(pathToCrawl)
+       .replaceAll('"', '["]')
+       .replaceAll("'", "[']")
+       .replaceAll('`', '[`]');
