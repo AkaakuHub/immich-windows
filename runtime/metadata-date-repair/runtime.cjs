@@ -6,7 +6,7 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 const { createHash } = require('node:crypto');
 const core = require('./core.cjs');
-const PIN = 'db355f79d910bbfc6378117ed10868493c97b922';
+const PIN = 'e3b165609135365302e40a43d94967fdbb2e6888';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function normalized(p) { const v = path.resolve(p); return process.platform === 'win32' ? v.toLowerCase() : v; }
 function sourceFileError(error) {
@@ -33,7 +33,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
   const release = await fs.realpath(releaseRoot);
   const server = path.join(release, 'server');
   const manifest = JSON.parse((await fs.readFile(path.join(release, 'manifest.json'), 'utf8')).replace(/^\uFEFF/, ''));
-  core.insist(manifest.upstreamCommit === PIN && /^v?3\.2\.4(?:\.|$)/.test(manifest.immichVersion), 'unsupported-upstream-build');
+  core.insist(manifest.upstreamCommit === PIN && /^v?3\.3\.0(?:\.|$)/.test(manifest.immichVersion), 'unsupported-upstream-build');
   const req = createRequire(path.join(server, 'package.json'));
   const runtimeFiles = ['dist/services/metadata.service.js', 'dist/repositories/metadata.repository.js', 'dist/repositories/config.repository.js', 'dist/utils/database.js', 'dist/enum.js', 'package.json'];
   const hashes = {};

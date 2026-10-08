@@ -1,6 +1,6 @@
 # Guarded existing-photo date repair
 
-For AkaakuHub/immich-windows, upstream Immich v3.2.4 at `db355f79d910bbfc6378117ed10868493c97b922`. This is a single optional Windows maintenance tool, not a startup hook, background job, or normal metadata refresh. Releasing/building it does not authorize running it on a library.
+For AkaakuHub/immich-windows, upstream Immich v3.3.0 at `e3b165609135365302e40a43d94967fdbb2e6888`. This is a single optional Windows maintenance tool, not a startup hook, background job, or normal metadata refresh. Releasing/building it does not authorize running it on a library.
 
 ## Double-click repair
 
