@@ -61,6 +61,15 @@ def source(api, repo, ref, path):
     return api.file(path, ref, repo=repo)
 
 
+def update_dependency(result, name, source_url, version=None, **fields):
+    """Apply one resolved dependency result through the common pin format."""
+    value = result[name]
+    if version is not None:
+        fields['version'] = version
+    fields['source'] = source_url
+    value.update(fields)
+
+
 def release_asset(api, repo, tag, name):
     release = api.get(f'releases/tags/{quote(tag, safe="")}', repo=repo)
     require(release.get('tag_name') == tag and not release.get('draft') and not release.get('prerelease'),
@@ -155,26 +164,23 @@ def prepare_update(api, current_pin, dependencies, release):
     ffmpeg_asset = f'jellyfin-ffmpeg_{ffmpeg}_portable_win64-clang-gpl.zip'
     ffmpeg_checksum = release_asset(api, 'jellyfin/jellyfin-ffmpeg', f'v{ffmpeg}', ffmpeg_asset)
     result = deepcopy(dependencies)
-    result['python'].update(
-        version=python_version,
-        source=f'https://github.com/{PYTHON_STANDALONE}/releases/latest',
-    )
+    update_dependency(result, 'python', f'https://github.com/{PYTHON_STANDALONE}/releases/latest', python_version)
     provenance = f'https://github.com/{BASE}/blob/{base_commit}/'
-    result['node'].update(version=node, asset=f'node-v{node}-win-x64.zip', source=provenance + 'server/Dockerfile')
-    result['ffmpeg'].update(version=ffmpeg, asset=ffmpeg_asset, sha256=ffmpeg_checksum,
-                            source=provenance + 'server/packages/ffmpeg.json')
+    update_dependency(result, 'node', provenance + 'server/Dockerfile', node, asset=f'node-v{node}-win-x64.zip')
+    update_dependency(result, 'ffmpeg', provenance + 'server/packages/ffmpeg.json', ffmpeg,
+                      asset=ffmpeg_asset, sha256=ffmpeg_checksum)
     for local, upstream, prefix in [('pnpm', 'pnpm', ''), ('extismJs', 'github:extism/js-pdk', 'v'),
                                     ('binaryen', 'github:webassembly/binaryen', 'version_')]:
         value = mise[upstream]
         require(isinstance(value, str) and value.startswith(prefix), f'Unsupported mise pin: {upstream}')
         value = value[len(prefix):]
         require(re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', value), f'Non-exact mise pin: {upstream}')
-        result[local].update(version=value, source=f'https://github.com/{IMMICH}/blob/{commit}/mise.toml')
+        update_dependency(result, local, f'https://github.com/{IMMICH}/blob/{commit}/mise.toml', value)
     result['extismJs']['asset'] = f"extism-js-x86_64-windows-v{result['extismJs']['version']}.gz"
     result['binaryen']['asset'] = f"binaryen-version_{result['binaryen']['version']}-x86_64-windows.tar.gz"
     sharp = server['dependencies']['sharp']
     require(re.fullmatch(r'[~^]?[0-9]+\.[0-9]+\.[0-9]+', sharp), 'Non-exact Sharp dependency baseline')
-    result['sharp'].update(version=sharp.lstrip('~^'), source=f'https://github.com/{IMMICH}/blob/{commit}/server/package.json')
+    update_dependency(result, 'sharp', f'https://github.com/{IMMICH}/blob/{commit}/server/package.json', sharp.lstrip('~^'))
 
     media_sources = {}
     expected_repositories = {'libvips': 'libvips/libvips', 'libheif': 'strukturag/libheif',
