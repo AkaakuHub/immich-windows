@@ -189,7 +189,7 @@ def prepare_patches(api, main, old_commit, new_commit):
             patch_path = root + '/' + name
             patch = api.file(patch_path, main)
             targets = re.findall(r'^\+\+\+ b/(.+)$', patch, re.M)
-            require(targets and not re.search(r'^(rename |copy |GIT binary patch|deleted file mode|new file mode)', patch, re.M),
+            require(targets and not re.search(r'^(rename |copy |GIT binary patch|deleted file mode)', patch, re.M),
                     f'Patch {patch_path} uses an unsupported structural operation; manual review required')
             for path in targets:
                 allowed = ('server/',) if root == 'metadata-patches' else ('server/', 'machine-learning/')
