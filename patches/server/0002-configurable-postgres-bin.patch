@@ -1,23 +1,16 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: make postgres client directory cross-platform
-
-Use Node's platform null device for psql progress output and allow native
-Windows PostgreSQL installations to supply their bin directory through
-IMMICH_POSTGRES_BIN_DIR. Linux keeps the existing versioned default path.
----
- server/src/services/database-backup.service.ts | 15 ++++++++++++---
- 1 file changed, 12 insertions(+), 3 deletions(-)
-
 diff --git a/server/src/services/database-backup.service.ts b/server/src/services/database-backup.service.ts
+index 2a62afbe50be56f3d5194c19bd8c102c3764c28f..732132a138b162bb5affefc3b3211db769821789 100644
 --- a/server/src/services/database-backup.service.ts
 +++ b/server/src/services/database-backup.service.ts
-@@ -2,4 +2,5 @@
- import { debounce } from 'lodash';
+@@ -1,6 +1,7 @@
+ import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+ import { debounce } from 'lodash-es';
  import { DateTime } from 'luxon';
 +import { devNull } from 'node:os';
  import path, { basename } from 'node:path';
  import { Duplex, PassThrough, Readable, Writable } from 'node:stream';
-@@ -203,7 +204,7 @@
+ import { pipeline } from 'node:stream/promises';
+@@ -203,7 +204,7 @@ export class DatabaseBackupService {
          args.push(
            // used for progress monitoring
            '--echo-all',
@@ -26,17 +19,17 @@ diff --git a/server/src/services/database-backup.service.ts b/server/src/service
          );
          break;
        }
-@@ -212,8 +213,15 @@
+@@ -214,8 +215,15 @@ export class DatabaseBackupService {
        throw new UnsupportedPostgresError(databaseVersion);
      }
-+
+ 
 +    const postgresBinDir =
 +      process.env.IMMICH_POSTGRES_BIN_DIR ??
 +      (process.platform === 'win32'
 +        ? path.join(process.env.ProgramFiles ?? String.raw`C:\Program Files`, 'PostgreSQL', String(databaseMajorVersion), 'bin')
 +        : `/usr/lib/postgresql/${databaseMajorVersion}/bin`);
 +    const executable = process.platform === 'win32' ? `${bin}.exe` : bin;
- 
++
      return {
 -      bin: `/usr/lib/postgresql/${databaseMajorVersion}/bin/${bin}`,
 +      bin: path.join(postgresBinDir, executable),

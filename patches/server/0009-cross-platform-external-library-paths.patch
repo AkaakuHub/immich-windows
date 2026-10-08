@@ -1,104 +1,51 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: keep external library scans in the native path format
-
-Normalize glob results before comparing with stored native paths. Escape SQL
-LIKE path literals and use forward slashes only for glob-derived regexes.
-
-diff --git a/server/src/repositories/storage.repository.ts b/server/src/repositories/storage.repository.ts
---- a/server/src/repositories/storage.repository.ts
-+++ b/server/src/repositories/storage.repository.ts
-@@ -233,7 +233,7 @@
-       onlyFiles: true,
-       dot: includeHidden,
-       ignore: exclusionPatterns,
--    });
-+    }).then((paths) => paths.map((filePath) => path.normalize(filePath)));
-   }
-
-   async *walk(walkOptions: WalkOptionsDto): AsyncGenerator<string[]> {
-@@ -255,7 +255,7 @@
-
-     let batch: string[] = [];
-     for await (const value of stream) {
--      batch.push(value.toString());
-+      batch.push(path.normalize(value.toString()));
-       if (batch.length === walkOptions.take) {
-         yield batch;
-         batch = [];
-diff --git a/server/src/repositories/asset.repository.ts b/server/src/repositories/asset.repository.ts
 --- a/server/src/repositories/asset.repository.ts
 +++ b/server/src/repositories/asset.repository.ts
 @@ -14,6 +14,7 @@
  import { jsonArrayFrom } from 'kysely/helpers/postgres';
- import { isEmpty, isUndefined, omitBy } from 'lodash';
+ import { isEmpty, isUndefined, omitBy } from 'lodash-es';
  import { InjectKysely } from 'nestjs-kysely';
 +import { normalize } from 'node:path';
- import { LockableProperty, Stack } from 'src/database';
- import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators';
- import { AuthDto } from 'src/dtos/auth.dto';
-@@ -1087,7 +1088,12 @@
+ import type { AuthDto } from 'src/dtos/auth.dto.js';
+ import { LockableProperty, Stack } from 'src/database.js';
+ import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators.js';
+@@ -1087,7 +1088,11 @@
      importPaths: string[],
      exclusionPatterns: string[],
    ): Promise<UpdateResult> {
 -    const paths = importPaths.map((importPath) => `${importPath}%`);
 +    const paths = importPaths.map((importPath) => {
 +      const normalizedPath = normalize(importPath);
-+      // LIKE treats backslashes as escape characters, and %/_ as wildcards.
 +      const escapedPath = normalizedPath.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 +      return `${escapedPath}%`;
 +    });
      const exclusions = exclusionPatterns.map((pattern) => globToPostgresRegex(pattern));
-
+ 
      return this.db
-@@ -1102,7 +1108,17 @@
-       .where((eb) =>
-         eb.or([
-           eb.not(eb.or(paths.map((path) => eb('originalPath', 'like', path)))),
--          eb.or(exclusions.map((pattern) => eb('originalPath', '~', pattern))),
-+          eb.or(
-+            exclusions.map((pattern) =>
-+              eb(
-+                process.platform === 'win32'
-+                  ? eb.fn<string>('replace', ['originalPath', eb.val('\\'), eb.val('/')])
-+                  : eb.ref('originalPath'),
-+                '~',
-+                pattern,
-+              ),
-+            ),
-+          ),
-         ]),
-       )
-       .executeTakeFirstOrThrow();
-diff --git a/server/src/services/library.service.ts b/server/src/services/library.service.ts
 --- a/server/src/services/library.service.ts
 +++ b/server/src/services/library.service.ts
-@@ -102,6 +102,7 @@
-
+@@ -104,6 +104,7 @@
+ 
      const matcher = picomatch(`**/*{${mimeTypes.getSupportedFileExtensions().join(',')}}`, {
        nocase: true,
 +      windows: process.platform === 'win32',
        ignore: library.exclusionPatterns,
      });
-
-@@ -509,7 +510,9 @@
+ 
+@@ -512,7 +513,7 @@
            break;
          }
          case AssetSyncResult.CHECK_OFFLINE: {
 -          const isInImportPath = job.importPaths.some((path) => asset.originalPath.startsWith(path));
-+          const isInImportPath = job.importPaths.some((importPath) =>
-+            asset.originalPath.startsWith(path.normalize(importPath)),
-+          );
-
++          const isInImportPath = job.importPaths.some((importPath) => asset.originalPath.startsWith(path.normalize(importPath)));
+ 
            if (!isInImportPath) {
              this.logger.verbose(
-@@ -518,7 +521,9 @@
-             break;
+@@ -522,7 +523,7 @@
            }
-
--          const isExcluded = job.exclusionPatterns.some((pattern) => picomatch.isMatch(asset.originalPath, pattern));
-+          const isExcluded = job.exclusionPatterns.some((pattern) =>
-+            picomatch.isMatch(asset.originalPath, pattern, { windows: process.platform === 'win32' }),
-+          );
-
+ 
+           const isExcluded = job.exclusionPatterns.some((pattern) =>
+-            picomatch.isMatch(asset.originalPath, pattern, { nocase: true }),
++            picomatch.isMatch(asset.originalPath, pattern, { nocase: true, windows: process.platform === 'win32' }),
+           );
+ 
            if (!isExcluded) {
-             this.logger.debug(`Offline asset ${asset.originalPath} is now online in library ${job.libraryId}`);

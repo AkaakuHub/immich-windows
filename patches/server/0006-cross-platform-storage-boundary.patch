@@ -1,32 +1,23 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: make Immich storage boundary check cross-platform
-
-StorageCore.isImmichPath appends a literal POSIX separator before comparing
-resolved paths. On native Windows, resolved paths use backslashes, so valid
-D:\\... paths can fail the boundary check. Use node:path.relative instead,
-which handles drive letters, UNC roots and the platform separator correctly.
----
- server/src/cores/storage.core.ts | 12 ++++++------
- 1 file changed, 6 insertions(+), 6 deletions(-)
-
 diff --git a/server/src/cores/storage.core.ts b/server/src/cores/storage.core.ts
+index fa9d21a06c72b7f8361c220f503c1ce3d53f7a33..13e9bdc360550c7917ba101c987956692032bdc3 100644
 --- a/server/src/cores/storage.core.ts
 +++ b/server/src/cores/storage.core.ts
-@@ -1,3 +1,3 @@
+@@ -1,4 +1,4 @@
 -import { dirname, join, resolve } from 'node:path';
 +import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
- import { StorageAsset } from 'src/database';
+ import type { VideoInterfaces } from 'src/types.js';
+ import { StorageAsset } from 'src/database.js';
  import {
-@@ -152,9 +152,10 @@
+@@ -151,12 +151,13 @@ export class StorageCore {
+ 
    static isImmichPath(path: string) {
--    const resolvedPath = resolve(path);
+     const resolvedPath = resolve(path);
 -    const resolvedAppMediaLocation = StorageCore.getMediaLocation();
 -    const normalizedPath = resolvedPath.endsWith('/') ? resolvedPath : resolvedPath + '/';
 -    const normalizedAppMediaLocation = resolvedAppMediaLocation.endsWith('/')
 -      ? resolvedAppMediaLocation
 -      : resolvedAppMediaLocation + '/';
 -    return normalizedPath.startsWith(normalizedAppMediaLocation);
-+    const resolvedPath = resolve(path);
 +    const resolvedAppMediaLocation = resolve(StorageCore.getMediaLocation());
 +    const relativePath = relative(resolvedAppMediaLocation, resolvedPath);
 +
@@ -35,3 +26,5 @@ diff --git a/server/src/cores/storage.core.ts b/server/src/cores/storage.core.ts
 +      (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
 +    );
    }
+ 
+   async moveAssetImage(asset: StorageAsset, fileType: AssetFileType, format: ImageFormat) {

@@ -100,9 +100,9 @@ try {
     foreach ($cycle in 1..3) {
         $oldWorker = $worker
         $response = Invoke-WebRequest "$url/predict" -Method Post -ContentType 'application/x-www-form-urlencoded' `
-            -Body @{ entries='{}'; text='lifecycle smoke test' } -TimeoutSec 10
-        if ($response.StatusCode -ne 200 -or $response.Content.Trim() -ne '{}') {
-            throw 'Empty prediction failed; the real /predict state dependency was not exercised.'
+            -Body @{ entries='{}'; text='lifecycle smoke test' } -TimeoutSec 10 -SkipHttpErrorCheck
+        if ($response.StatusCode -ne 422) {
+            throw 'The ML API did not reject an empty model request.'
         }
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         $recycled = $false

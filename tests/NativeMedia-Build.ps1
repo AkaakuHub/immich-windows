@@ -168,15 +168,11 @@ try{
             Check ($state.Calls -gt $afterChange) 'Corrupted forwarder cache was reused.'
         } finally { foreach ($tool in @($cl,$lib,$link)) { Remove-Item "function:global:$tool" } }
     }
-    Check ($builder.Contains('build/patches/glib-3-win32-tls-directory.patch')) 'TLS patch does not use the MXE glib-[0-9]* discovery naming.'
     Check ($builder.Contains('$targetCacheId="immich-mxe-$($v.target)-$($nativeIdentity.nativeBuildInputsSha256)"')) 'BuildKit installed-library cache lacks the content digest.'
     Check ($builder.Contains('Assert-WindowsPeTlsDirectory -Path')) 'Native output is not checked for a TLS directory.'
     foreach($file in @('build/Stage-CustomSharpLibvips.ps1','build/Build-Release.ps1','build/Build-All.ps1')){
         Check ((Get-Content -Raw -LiteralPath (Join-Path $repo $file)).Contains('Assert-NativeMediaBundleIdentity')) "Explicit or cached bundle identity bypass in $file."
     }
-    $actualPatch=Get-Content -Raw -LiteralPath (Join-Path $repo 'media-patches/libvips/0006-glib-win32-tls-directory.patch')
-    Check ($actualPatch.Contains('+const IMAGE_TLS_DIRECTORY * const g_priv_tls_used_ = &_tls_used;')) 'Upstream TLS directory anchor is missing.'
-    Check ($actualPatch.Contains('+__attribute__ ((used, selectany))')) 'Upstream TLS anchor retention is missing.'
     if($LegacyGlibDll){Reject {Assert-WindowsPeTlsDirectory $LegacyGlibDll} 'Accepted the known-bad released GLib DLL.'}
     Write-Host 'PASS native media build: PE TLS directory/callback bounds, content-addressed cache, stale bundle rejection, upstream patch wiring.'
 }finally{if(Test-Path -LiteralPath $base){Remove-Item -LiteralPath $base -Recurse -Force}}

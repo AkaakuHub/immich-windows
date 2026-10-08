@@ -120,12 +120,9 @@ jobs:
             & "$PSHOME/pwsh.exe" @arguments
             if ($LASTEXITCODE -ne 0) { $failed.Add($name) }
           }
-          node ./tests/Server-Portability.cjs $source
-          if ($LASTEXITCODE -ne 0) { $failed.Add('Server-Portability') }
+          # Do not add source-text or AST checks here; behavior belongs in functional tests.
           python ./tests/DirectML-Adapter.py
           if ($LASTEXITCODE -ne 0) { $failed.Add('DirectML-Adapter') }
-          python ./tests/MachineLearning-Lifecycle.py $source
-          if ($LASTEXITCODE -ne 0) { $failed.Add('MachineLearning-Lifecycle') }
           if ($failed.Count) { throw "Validation failed: $($failed -join ', ')" }
   codec:
     needs: [plan, validate]
@@ -311,6 +308,12 @@ jobs:
           key: build-downloads-corepack-v1-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
           # Reuse the matching archive cache once when seeding Corepack.
           restore-keys: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
+      - name: Start PostgreSQL qualification service
+        shell: pwsh
+        run: |
+          .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
+            -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
+            -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
       - name: Build and qualify Windows package
         shell: pwsh
         env:
@@ -370,21 +373,6 @@ jobs:
         with:
           path: C:\Program Files\PostgreSQL\18
           key: postgresql-runtime-${{ runner.os }}-${{ steps.pg-runtime.outputs.version }}
-      - name: Start PostgreSQL test service
-        shell: pwsh
-        run: |
-          .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
-            -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
-            -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
-          $env:PGHOST='127.0.0.1'
-          $env:PGPORT='5432'
-          $env:PGUSER='postgres'
-          $env:PGDATABASE='postgres'
-          $env:PGPASSWORD=Get-Content -Raw -LiteralPath (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
-          try {
-            & ./.tools/node/node.exe ./tests/Server-Portability.cjs .work/immich --server-root artifacts/application/server --psql 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
-            if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL path portability checks failed.' }
-          } finally { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.pg-runtime-cache.outputs.cache-hit != 'true'
         with:

@@ -126,5 +126,33 @@ try {
         $paths = $startupLogs[$name]
         Write-Warning "CurrentUser startup logs for ${name}: stdout='$($paths.Stdout)'; stderr='$($paths.Stderr)'"
     }
+    $logRoot = Join-Path $DataRoot 'logs'
+    if (Test-Path -LiteralPath $logRoot) {
+        Get-ChildItem -LiteralPath $logRoot -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 6 |
+            ForEach-Object {
+                Write-Warning "Recent Immich log: $($_.FullName)"
+                Get-Content -LiteralPath $_.FullName -Tail 40 -ErrorAction SilentlyContinue
+            }
+    }
+    foreach ($serviceName in @('ImmichMachineLearning', 'ImmichServer')) {
+        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($service) { Write-Warning "Immich service state: $serviceName=$($service.Status)" }
+    }
+    $mlPort = if ($env:IMMICH_PORT_ML) { [int]$env:IMMICH_PORT_ML } else { 3003 }
+    Get-NetTCPConnection -LocalPort $mlPort -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object { Write-Warning "Immich ML listener: port=$mlPort pid=$($_.OwningProcess)" }
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { [string]$_.CommandLine -match '\s-m\s+immich_ml(?:\s|$)' } |
+        ForEach-Object { Write-Warning "Immich ML supervisor: pid=$($_.ProcessId) command=$($_.CommandLine)" }
+    Get-ChildItem -LiteralPath $logRoot -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'ImmichMachineLearning*.err.log' } |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1 |
+        ForEach-Object {
+            Write-Warning "Recent Immich ML error log: $($_.FullName)"
+            Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+        }
     throw
 }

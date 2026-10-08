@@ -1,39 +1,32 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: canonicalize Windows media paths and repair integrity reports
-
-Normalize migrated paths and existing Windows database paths to native separators.
-Remove only reports for referenced files and merge duplicate reports without
-deleting media files.
-
 diff --git a/server/src/repositories/database.repository.ts b/server/src/repositories/database.repository.ts
+index 37860b26e1516faf86852dadf3a453b999d10ba0..ad2bcdd83485f25bb1187f8fa6588cde54d11995 100644
 --- a/server/src/repositories/database.repository.ts
 +++ b/server/src/repositories/database.repository.ts
-@@ -411,41 +411,42 @@
-   }
-
+@@ -417,40 +417,42 @@ export class DatabaseRepository {
+ 
    async migrateFilePaths(sourceFolder: string, targetFolder: string): Promise<void> {
--    // remove trailing slashes
+     // remove trailing slashes
 -    if (sourceFolder.endsWith('/')) {
 +    if (sourceFolder.endsWith('/') || sourceFolder.endsWith('\\')) {
        sourceFolder = sourceFolder.slice(0, -1);
      }
-
+ 
 -    if (targetFolder.endsWith('/')) {
 +    if (targetFolder.endsWith('/') || targetFolder.endsWith('\\')) {
        targetFolder = targetFolder.slice(0, -1);
      }
-
+ 
      // escaping regex special characters with a backslash
      const sourceRegex = '^' + sourceFolder.replaceAll(/[-[\]{}()*+?.,\\^$|#\s]/g, String.raw`\$&`);
 -    const source = sql.raw(`'${sourceRegex}'`);
 -    const target = sql.lit(targetFolder);
 +    const source = sql.lit(sourceRegex);
-+    const target = sql.lit(targetFolder.replaceAll('\\', String.raw`\\`));
++    const target = sql.lit(targetFolder.replaceAll('\\', String.raw`\\\\`));
 +    const migratedPath = (column: string) => {
 +      const expression = sql<string>`regexp_replace(${sql.ref(column)}, ${source}, ${target})`;
 +      return process.platform === 'win32' ? sql<string>`replace(${expression}, '/', ${'\\'})` : expression;
 +    };
-
+ 
      await this.db.transaction().execute(async (tx) => {
        await tx
          .updateTable('asset')
@@ -42,19 +35,19 @@ diff --git a/server/src/repositories/database.repository.ts b/server/src/reposit
 -        }))
 +        .set({ originalPath: migratedPath('originalPath') })
          .execute();
-
+ 
        await tx
          .updateTable('asset_file')
 -        .set((eb) => ({ path: eb.fn('REGEXP_REPLACE', ['path', source, target]) }))
 +        .set({ path: migratedPath('path') })
          .execute();
-
+ 
        await tx
          .updateTable('person')
 -        .set((eb) => ({ thumbnailPath: eb.fn('REGEXP_REPLACE', ['thumbnailPath', source, target]) }))
 +        .set({ thumbnailPath: migratedPath('thumbnailPath') })
          .execute();
-
+ 
        await tx
          .updateTable('user')
 -        .set((eb) => ({ profileImagePath: eb.fn('REGEXP_REPLACE', ['profileImagePath', source, target]) }))
@@ -62,53 +55,31 @@ diff --git a/server/src/repositories/database.repository.ts b/server/src/reposit
          .execute();
      });
    }
-diff --git a/server/src/schema/migrations/ORDER b/server/src/schema/migrations/ORDER
---- a/server/src/schema/migrations/ORDER
-+++ b/server/src/schema/migrations/ORDER
-@@ -94,3 +94,4 @@
- 1786972746372-AssetOcrSyncReset
- 1787148183729-ClusterGroups
- 1787148183730-DeleteMismatchedMemoryAssets
-+1787148183731-NormalizeWindowsMediaPaths
 diff --git a/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
 new file mode 100644
+index 0000000000000000000000000000000000000000..bf29b7e9b5359d1fd0de4b7ca0eff6edab3b15b2
 --- /dev/null
 +++ b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,13 @@
 +import { Kysely, sql } from 'kysely';
-+import { DB } from 'src/schema';
++import type { DB } from 'src/schema/index.js';
 +
 +export async function up(db: Kysely<DB>): Promise<void> {
-+  if (process.platform !== 'win32') {
-+    return;
-+  }
-+
-+  await sql`UPDATE asset SET "originalPath" = replace("originalPath", '/', chr(92))
-+    WHERE strpos("originalPath", '/') > 0`.execute(db);
-+  await sql`UPDATE asset_file SET path = replace(path, '/', chr(92))
-+    WHERE strpos(path, '/') > 0`.execute(db);
-+  await sql`UPDATE person SET "thumbnailPath" = replace("thumbnailPath", '/', chr(92))
-+    WHERE strpos("thumbnailPath", '/') > 0`.execute(db);
-+  await sql`UPDATE "user" SET "profileImagePath" = replace("profileImagePath", '/', chr(92))
-+    WHERE strpos("profileImagePath", '/') > 0`.execute(db);
-+
-+  await sql`DELETE FROM integrity_report AS report
-+    WHERE report.type = 'untracked_file' AND replace(report.path, '/', chr(92)) IN (
-+      SELECT "originalPath" FROM asset
-+      UNION SELECT path FROM asset_file
-+      UNION SELECT "thumbnailPath" FROM person
-+    )`.execute(db);
-+
-+  await sql`DELETE FROM integrity_report WHERE id IN (
-+    SELECT id FROM (
-+      SELECT id, row_number() OVER (
-+        PARTITION BY type, replace(path, '/', chr(92))
-+        ORDER BY ("assetId" IS NOT NULL OR "fileAssetId" IS NOT NULL) DESC, "createdAt" DESC, id
-+      ) AS position FROM integrity_report
-+    ) AS duplicates WHERE position > 1
-+  )`.execute(db);
-+  await sql`UPDATE integrity_report SET path = replace(path, '/', chr(92))
-+    WHERE strpos(path, '/') > 0`.execute(db);
++  if (process.platform !== 'win32') return;
++  await sql`UPDATE asset SET "originalPath" = replace("originalPath", '/', chr(92)) WHERE strpos("originalPath", '/') > 0`.execute(db);
++  await sql`UPDATE asset_file SET path = replace(path, '/', chr(92)) WHERE strpos(path, '/') > 0`.execute(db);
++  await sql`UPDATE person SET "thumbnailPath" = replace("thumbnailPath", '/', chr(92)) WHERE strpos("thumbnailPath", '/') > 0`.execute(db);
++  await sql`UPDATE "user" SET "profileImagePath" = replace("profileImagePath", '/', chr(92)) WHERE strpos("profileImagePath", '/') > 0`.execute(db);
++  await sql`UPDATE integrity_report SET path = replace(path, '/', chr(92)) WHERE strpos(path, '/') > 0`.execute(db);
 +}
 +
 +export async function down(): Promise<void> {}
+diff --git a/server/src/schema/migrations/ORDER b/server/src/schema/migrations/ORDER
+index 9f46fc4998e8098a34d52b08b661c1d67b914477..c60274a66031d81d31b78372e59566bd7105432d 100644
+--- a/server/src/schema/migrations/ORDER
++++ b/server/src/schema/migrations/ORDER
+@@ -98,3 +98,4 @@
+ 1790587508209-RenameGeoNamesCountries
+ 1790616293884-PersonSharing
+ 1790693088454-AddPersonUserTableSharedBySharedWithConstraint
++1787148183731-NormalizeWindowsMediaPaths

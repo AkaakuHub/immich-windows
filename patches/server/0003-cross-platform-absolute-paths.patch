@@ -1,22 +1,15 @@
-From: immich-windows <local@immich-windows.invalid>
-Subject: [PATCH] server: validate absolute paths with node:path
-
-The existing environment schema only accepts paths beginning with '/', which
-rejects native Windows drive and UNC paths. Use Node's platform-aware
-path.isAbsolute while preserving POSIX behavior.
----
- server/src/dtos/env.dto.ts | 3 ++-
- 1 file changed, 2 insertions(+), 1 deletion(-)
-
 diff --git a/server/src/dtos/env.dto.ts b/server/src/dtos/env.dto.ts
+index 71658a6bf..d682d3fba 100644
 --- a/server/src/dtos/env.dto.ts
 +++ b/server/src/dtos/env.dto.ts
 @@ -1,3 +1,4 @@
- import { ImmichEnvironmentSchema, LogFormatSchema, LogLevelSchema } from 'src/enum';
- import { IsIPRange } from 'src/validation';
 +import path from 'node:path';
  import z from 'zod';
-@@ -14,5 +15,5 @@
+ import { ImmichEnvironmentSchema, LogFormatSchema, LogLevelSchema } from 'src/enum.js';
+ import { IsIPRange } from 'src/validation.js';
+@@ -12,7 +13,7 @@ enum DatabaseSslMode {
+ }
+ 
  const DatabaseSslModeSchema = z.enum(DatabaseSslMode).describe('Database SSL mode').meta({ id: 'DatabaseSslMode' });
 -const absolutePath = z.string().regex(/^\//, 'Must be an absolute path').optional();
 +const absolutePath = z.string().refine((value) => path.isAbsolute(value), 'Must be an absolute path').optional();

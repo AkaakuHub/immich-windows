@@ -100,11 +100,6 @@ Assert-FileExists $pangoPatch|Out-Null
 Invoke-Native $git @('-C',$source,'apply','--check','--whitespace=error-all',$pangoPatch)
 Invoke-Native $git @('-C',$source,'apply','--whitespace=error-all',$pangoPatch)
 
-$librsvgPatch=Join-Path $root 'media-patches/libvips/0003-librsvg-synchronization-import-library.patch'
-Assert-FileExists $librsvgPatch|Out-Null
-Invoke-Native $git @('-C',$source,'apply','--check','--whitespace=error-all',$librsvgPatch)
-Invoke-Native $git @('-C',$source,'apply','--whitespace=error-all',$librsvgPatch)
-
 # Mirror the Immich base-image libvips behavior instead of building the plain
 # upstream Windows package. The base image for this Immich generation used
 # libvips v8.18.5 plus a loader-priority patch so cheap HEIF/JPEG sniffers run
@@ -116,14 +111,6 @@ Copy-Item -LiteralPath $immichPatch -Destination $containerPatch -Force
 $popplerPatch=Join-Path $root 'media-patches/libvips/0004-poppler-fontinfo-vector.patch'
 Assert-FileExists $popplerPatch|Out-Null
 Copy-Item -LiteralPath $popplerPatch -Destination (Join-Path $source 'build/patches/poppler-0001-fontinfo-vector.patch') -Force
-$glibTlsPatch=Join-Path $root 'media-patches/libvips/0006-glib-win32-tls-directory.patch'
-Assert-FileExists $glibTlsPatch|Out-Null
-# overrides.mk selects glib-[0-9]*.patch, so this participates in the actual GLib build.
-$glibOverrides=Get-Content -Raw -LiteralPath (Join-Path $source 'build/overrides.mk')
-if($glibOverrides -notmatch 'glib_PATCHES\s*:=.*patches/glib-\[0-9\]\*\.patch'){
-    throw 'The upstream GLib patch discovery recipe changed.'
-}
-Copy-Item -LiteralPath $glibTlsPatch -Destination (Join-Path $source 'build/patches/glib-3-win32-tls-directory.patch') -Force
 $pluginDirectoryPatch=Join-Path $root 'media-patches/libvips/0005-win32-plugin-directory-separators.patch'
 Assert-FileExists $pluginDirectoryPatch|Out-Null
 Copy-Item -LiteralPath $pluginDirectoryPatch -Destination (Join-Path $source 'build/patches/win32-plugin-directory-separators.patch') -Force
