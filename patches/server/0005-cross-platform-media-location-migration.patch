@@ -62,7 +62,7 @@ index 0000000000000000000000000000000000000000..bf29b7e9b5359d1fd0de4b7ca0eff6ed
 +++ b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
 @@ -0,0 +1,13 @@
 +import { Kysely, sql } from 'kysely';
-+import { DB } from 'src/schema';
++import type { DB } from 'src/schema/index.js';
 +
 +export async function up(db: Kysely<DB>): Promise<void> {
 +  if (process.platform !== 'win32') return;
