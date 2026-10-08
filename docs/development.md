@@ -20,7 +20,7 @@ PowerShell 7で次を実行します。初回はネイティブ依存のビル�
 ```powershell
 $fixtures = @(./tests/Fetch-MediaFixtures.ps1 -Destination './.cache/media-fixtures')
 ./build/Build-Release.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' -InstallCargoPgrx -SharpFixture $fixtures
-./packaging/New-NativeDependenciesArchive.ps1
+./packaging/Stage-NativeDependencies.ps1
 ```
 
 ビルド結果は`dist/immich-windows-vX.Y.Z.R-win-x64`に出力されます。既存のlibvipsを使う場合は`-CustomSharpLibvipsBundle`を指定します。

@@ -3,6 +3,7 @@ param([switch]$ForceCrossVolumeFallback,[switch]$ForceNativeCrossDeviceError,[sw
 # Tiny real ZIPs exercise disposable stage promotion; no network or native tools.
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+Import-Module (Join-Path $repo 'runtime/Common.psm1') -Force
 $base=Join-Path ([IO.Path]::GetTempPath()) ('runtime-staging-'+[guid]::NewGuid().ToString('N'))
 function Check([bool]$Value,[string]$Message) { if (-not $Value) { throw $Message } }
 function Write-Fixture([string]$Path,[string]$Text) { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path)); [IO.File]::WriteAllText($Path,$Text) }
@@ -16,26 +17,38 @@ try {
   @{Name='node-fixture.zip';Files=@{'node-fixture/node.exe'='node';'node-fixture/npm.cmd'='npm';'node-fixture/node_modules/npm/index.js'='package'}},
   @{Name='ffmpeg-fixture.zip';Files=@{'ffmpeg-fixture/bin/ffmpeg.exe'='ffmpeg';'ffmpeg-fixture/bin/ffprobe.exe'='ffprobe'}},
   @{Name='valkey.zip';Files=@{'valkey/ValkeyService.exe'='valkey';'valkey/valkey-server.exe'='server';'valkey/valkey-cli.exe'='cli'}},
-  @{Name='uv-0.12.18-uv-fixture.zip';Files=@{'uv.exe'='uv'}},
-  @{Name='immich-windows-v3.2.2.2-native-dependencies.zip';Files=@{'dependencies/postgres-extensions/vector/vector.dll'='native';'dependencies/sharp/lib/resumed.dll'='unchanged installed DLL';'dependencies/sharp/lib/missing.dll'='missing DLL';'dependencies/sharp/versions.json'='{}';'unused/large.dll'='must not extract'}}
+  @{Name='uv-0.12.18-uv-fixture.zip';Files=@{'uv.exe'='uv'}}
  )
  foreach ($archive in $archives) {
   $source=Join-Path $base $archive.Name
   foreach ($entry in $archive.Files.GetEnumerator()) { Write-Fixture (Join-Path $source $entry.Key) $entry.Value }
   [IO.Compression.ZipFile]::CreateFromDirectory($source,(Join-Path $cache $archive.Name))
  }
+ $nativeSource=Join-Path $base 'native-source'
+ foreach ($entry in @{ 'dependencies/postgres-extensions/vector/vector.dll'='native';'dependencies/sharp/lib/resumed.dll'='unchanged installed DLL';'dependencies/sharp/lib/missing.dll'='missing DLL';'dependencies/sharp/versions.json'='{}' }.GetEnumerator()) { Write-Fixture (Join-Path $nativeSource $entry.Key) $entry.Value }
  $nativePath='dependencies/postgres-extensions/vector/vector.dll'
  $manifest=@{schemaVersion=2;target='windows-x64-native';immichVersion='v3.2.2';windowsRevision=2;packageVersion='v3.2.2.2';dependencies=@{
   node=@{version='24.15.0';asset='node-fixture.zip'};ffmpeg=@{version='7';asset='ffmpeg-fixture.zip'};valkey=@{version='1';asset='valkey.zip'};winsw=@{version='2';asset='WinSW-x64.exe'};uv=@{version='0.12.18';asset='uv-fixture.zip'};python=@{version='3.11.14'}
- };nativeDependencyFiles=@{};nativeDependenciesSha256=(Get-FileHash (Join-Path $cache $archives[-1].Name)).Hash}
+ };nativeDependencyFiles=@{};dependencyPayloads=@{}}
  if ($VerifyFfmpegChecksum -or $RejectFfmpegChecksum) { $manifest.dependencies.ffmpeg.sha256 = if ($RejectFfmpegChecksum) { '0' * 64 } else { (Get-FileHash -Algorithm SHA256 (Join-Path $cache 'ffmpeg-fixture.zip')).Hash } }
- $manifest.nativeDependencyFiles[$nativePath]=(Get-FileHash (Join-Path (Join-Path $base $archives[-1].Name) $nativePath)).Hash
+ $manifest.nativeDependencyFiles[$nativePath]=(Get-FileHash (Join-Path $nativeSource $nativePath)).Hash
  foreach ($name in @('dependencies/sharp/lib/resumed.dll','dependencies/sharp/lib/missing.dll','dependencies/sharp/versions.json')) {
-  $manifest.nativeDependencyFiles[$name]=(Get-FileHash (Join-Path (Join-Path $base $archives[-1].Name) $name)).Hash
+  $manifest.nativeDependencyFiles[$name]=(Get-FileHash (Join-Path $nativeSource $name)).Hash
  }
+ foreach ($relative in $manifest.nativeDependencyFiles.Keys) {
+  $hash=$manifest.nativeDependencyFiles[$relative].ToLowerInvariant()
+  $manifest.dependencyPayloads[$relative]=@{assetName="dependency-$hash";sha256=$hash}
+  Copy-Item -LiteralPath (Join-Path $nativeSource $relative) -Destination (Join-Path $cache "dependency-$hash")
+ }
+ $wheelHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('wheel'))).ToLowerInvariant()
+ $manifest.dependencyPayloads['machine-learning/wheelhouse/numpy.whl']=@{assetName="dependency-$wheelHash";sha256=$wheelHash}
+ $geodataHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('cities'))).ToLowerInvariant()
+ $manifest.dependencyPayloads['build/geodata/cities500.txt']=@{assetName="dependency-$geodataHash";sha256=$geodataHash}
+ Write-Fixture (Join-Path $cache "dependency-$geodataHash") 'cities'
  Write-Fixture (Join-Path $release 'server/node_modules/@img/sharp-win32-x64/lib/resumed.dll') 'unchanged installed DLL'
  Write-Fixture (Join-Path $release 'dependencies/sharp/versions.json') '{}'
  Write-Fixture (Join-Path $release manifest.json) ($manifest|ConvertTo-Json -Depth 10)
+ Write-Fixture (Join-Path $release 'runtime/DependencyPayload.psm1') (Get-Content -Raw (Join-Path $repo 'runtime/DependencyPayload.psm1'))
  Write-Fixture (Join-Path $release 'runtime/Common.psm1') (Get-Content -Raw (Join-Path $repo 'runtime/Common.psm1'))
  Write-Fixture (Join-Path $release 'installer/Install-RuntimeDependencies.ps1') (Get-Content -Raw (Join-Path $repo 'packaging/Install-RuntimeDependencies.ps1'))
  Write-Fixture (Join-Path $release 'runtime/winsw/WinSW-x64.exe') 'existing winsw'
@@ -55,7 +68,7 @@ try {
   Write-Fixture (Join-Path (Split-Path $oldPython) 'Lib/site-packages/numpy/data') package
   foreach ($r in @($old,$release)) { Write-Fixture (Join-Path $r 'machine-learning/requirements.txt') 'numpy==1.0' }
   $hash=(Get-FileHash (Join-Path $release 'machine-learning/requirements.txt')).Hash
-  Write-Fixture (Join-Path $old 'machine-learning/.dependencies-installed.json') (@{python='3.11.14';requirementsSha256=$hash}|ConvertTo-Json)
+  Write-Fixture (Join-Path $old 'machine-learning/.dependencies-installed.json') (@{python='3.11.14';requirementsSha256=$hash;payloadsSha256=(Get-ImmichMachineLearningDependencyHash ([pscustomobject]($manifest | ConvertTo-Json -Depth 10 | ConvertFrom-Json)))}|ConvertTo-Json)
   $oldNode=Join-Path $old 'runtime/node/node.exe'
   Set-Item "function:global:$oldNode" { $global:LASTEXITCODE=0;'v24.15.0' };$commands+=$oldNode
   Set-Item "function:global:$oldPython" { $global:LASTEXITCODE=0;'3.11.14' };$commands+=$oldPython
@@ -94,6 +107,7 @@ try {
  }
  $failed=$false
  try { & (Join-Path $release 'installer/Install-RuntimeDependencies.ps1') -ReleaseRoot $release -InstallRoot $root -DependencyReusePlan $reusePlan } catch { $failed=$true; if (-not $ForceMovePermissionError -and -not $RejectFfmpegChecksum) { throw }; if ($RejectFfmpegChecksum) { Check ($_.Exception.Message -like '*checksum mismatch*') 'FFmpeg did not fail for its checksum.' } }
+ if (-not $failed) { Check ((Get-Content -Raw (Join-Path $release 'build/geodata/cities500.txt')) -ceq 'cities') 'Cached geodata was not installed without a network request.' }
  if ($ReuseInstalled) {
   Check (-not $failed) 'Installed runtime planning failed.'
   Check ($reusePlan.Count -eq 5) 'Unchanged runtime/Python trees were not all deferred.'
@@ -128,8 +142,7 @@ try {
  Check (@(Get-ChildItem (Join-Path $root 'cache/runtime-extract') -Force).Count -eq 0) 'Disposable extraction trees remained.'
  foreach ($archive in $archives) { Check (Test-Path (Join-Path $cache $archive.Name)) 'Reusable download archive was removed.' }
  if ($ForceNativeCrossDeviceError) { Check ($promotionCopies.Count -gt 0) 'Native cross-device fallback was not exercised.' }
- Check (-not (Test-Path (Join-Path $release unused))) 'Unneeded native ZIP content was extracted.'
- Write-Host "PASS runtime staging: Node/FFmpeg/Valkey/uv/native promotions, cached ZIP retention, no extraction copy or network (cross-volume fallback=$ForceCrossVolumeFallback)"
+ Write-Host "PASS runtime staging: Node/FFmpeg/Valkey/uv/native promotions, cached ZIP retention, individual native payloads, no extraction copy or network (cross-volume fallback=$ForceCrossVolumeFallback)"
 } finally {
  if ($moveHook) { $moveHook.SetValue($null,$previousMoveHook) }
  foreach ($command in $commands) { Remove-Item "function:global:$command" -ErrorAction SilentlyContinue }

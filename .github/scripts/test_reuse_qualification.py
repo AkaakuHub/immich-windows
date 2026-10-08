@@ -494,7 +494,7 @@ class FinalGateTests(unittest.TestCase):
     def test_final_gate_keeps_early_metadata_and_rejects_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            assets = {name: b'tested' for name in reuse.filenames(VERSION)}
+            assets = {name: content for name, content in bundle_entries()[:-1]}
             for name, content in assets.items(): (root / name).write_bytes(content)
             record = {'version': VERSION, 'sourceCommit': SOURCE, 'sourceTree': TREE,
                       'assets': {name: reuse.sha256(root / name) for name in assets}}

@@ -56,10 +56,26 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def filenames(version):
+def filenames(version, dependency_assets=()):
     require(WINDOWS_VERSION.fullmatch(version), 'Invalid Windows version')
+    dependency_assets = tuple(dependency_assets)
+    require(all(re.fullmatch(r'dependency-[0-9a-f]{64}', name) for name in dependency_assets), 'Invalid dependency asset name')
     return {f'immich-windows-{version}-{suffix}.zip'
-            for suffix in ('win-x64', 'native-dependencies', 'migration-tools')} | {'Install.cmd'}
+            for suffix in ('win-x64', 'migration-tools')} | {'Install.cmd'} | set(dependency_assets)
+
+
+def record_filenames(record):
+    dependencies = set(record['assets']) - filenames(record['version'])
+    expected = filenames(record['version'], dependencies)
+    require(all(record['assets'][name] == name.removeprefix('dependency-') for name in dependencies),
+            'Dependency asset identity mismatch')
+    return expected
+
+
+def package_filenames(directory, version):
+    with zipfile.ZipFile(directory / f'immich-windows-{version}-win-x64.zip') as package:
+        manifest = json.loads(package.read(f'immich-windows-{version}-win-x64/manifest.json').decode('utf-8-sig'))
+    return filenames(version, (payload['assetName'] for payload in manifest['dependencyPayloads'].values()))
 
 
 def ci_only(paths):
@@ -318,10 +334,10 @@ def validate_bundle(archive, destination, version):
         record = json.loads(bundle.read('qualification.json'))
         require(record.get('schemaVersion') == 1, 'Qualification schema mismatch')
         recorded_version = record.get('version', '')
-        expected = filenames(recorded_version)
+        expected = record_filenames(record)
         entries = bundle.infolist()
-        require(len(entries) == 5 and {e.filename for e in entries} == expected | {'qualification.json'},
-                'Artifact must contain exactly four release assets and qualification.json')
+        require(len(entries) == len(expected) + 1 and {e.filename for e in entries} == expected | {'qualification.json'},
+                'Artifact must contain exactly the listed release assets and qualification.json')
         require(all(e.file_size <= MAX_BYTES and not e.is_dir() and not (e.external_attr >> 16 & 0o170000 == 0o120000)
                     for e in entries) and sum(e.file_size for e in entries) <= MAX_BYTES,
                 'Unsafe or oversized artifact entries')
@@ -338,6 +354,8 @@ def validate_bundle(archive, destination, version):
         name = f'immich-windows-{recorded_version}-win-x64/manifest.json'
         require(package.getinfo(name).file_size < 4 * 1024 * 1024, 'Oversized package manifest')
         manifest = json.loads(package.read(name))
+        require(filenames(recorded_version, (payload['assetName'] for payload in manifest['dependencyPayloads'].values())) == expected,
+                'Packaged dependency asset list disagrees with qualification')
         require(manifest['packageVersion'] == recorded_version and manifest['sourceCommit'] == record['sourceCommit'],
                 'Packaged source/version disagrees with qualification')
     if recorded_version != version:
@@ -407,7 +425,7 @@ def record_bundle(version, directory):
                   event=os.environ['GITHUB_EVENT_NAME'], sourceCommit=git('rev-parse', 'HEAD'),
                   sourceTree=git('rev-parse', 'HEAD^{tree}'), pullRequest=pr.get('number'),
                   headCommit=pr.get('head', {}).get('sha'), baseCommit=pr.get('base', {}).get('sha'),
-                  assets={name: sha256(directory / name) for name in sorted(filenames(version))})
+                  assets={name: sha256(directory / name) for name in sorted(package_filenames(directory, version))})
     inputs = event.get('inputs', {})
     if record['event'] == 'workflow_dispatch' and inputs.get('upstream_pr'):
         record.update(automation='upstream-v1', pullRequest=positive_id(inputs['upstream_pr'], 'upstream PR'),

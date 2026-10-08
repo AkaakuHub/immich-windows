@@ -100,7 +100,8 @@ try {
                 { $_ -in @('bad-digest','duplicate-asset') } { 'Missing unique SHA-256 verified baseline asset' }
                 { $_ -in @('bad-size','bad-content','cached-native-corrupt') } { 'Baseline asset SHA-256 or size mismatch' }
                 'wrong-url' { 'Unexpected baseline asset URL' }
-                { $_ -in @('mismatched-version','bad-source-commit','wrong-native-pin') } { 'Baseline package identity or native archive provenance does not match' }
+                { $_ -in @('mismatched-version','bad-source-commit') } { 'Baseline package identity or native archive provenance does not match' }
+                'wrong-native-pin' { 'Historical native archive provenance mismatch' }
                 'existing-destination' { 'Upgrade baseline destination already exists' }
             }
             if (-not $caught.Exception.Message.Contains($expectedError)) { throw "Wrong rejection for ${mode}: $($caught.Exception.Message)" }

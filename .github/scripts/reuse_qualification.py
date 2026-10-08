@@ -18,7 +18,7 @@ import urllib.parse
 
 from qualified_release import (
     API, ARTIFACT, DIGEST, REQUIRED_JOBS, SHA, WORKFLOW, NotReusable,
-    artifacts_for, filenames, git, output, pin_version, require, sha256,
+    artifacts_for, package_filenames, git, output, pin_version, require, sha256,
     summary, validate_bundle, validate_provenance, WINDOWS_VERSION,
 )
 
@@ -325,8 +325,7 @@ def unchanged_baseline(api, version, run, jobs):
     if any(not baseline.get(key) or datetime.fromisoformat(baseline[key]) > cutoff
            for key in ('published_at', 'updated_at')):
         return False
-    for suffix in ('win-x64', 'native-dependencies'):
-        name = f"immich-windows-{baseline['tag_name']}-{suffix}.zip"
+    for name in [a['name'] for a in baseline['assets'] if a['name'] != 'Install.cmd' and not a['name'].endswith('-migration-tools.zip')]:
         assets = [a for a in baseline['assets'] if a['name'] == name]
         if len(assets) != 1:
             return False
@@ -432,7 +431,7 @@ def finish(directory=Path('dist')):
     require(not git('status', '--porcelain', '--untracked-files=no'), 'Tracked source changed during qualification')
     require(record['sourceCommit'] == git('rev-parse', 'HEAD')
             and record['sourceTree'] == git('rev-parse', 'HEAD^{tree}'), 'Tested checkout changed')
-    require(set(record['assets']) == filenames(record['version']), 'Qualification asset list changed')
+    require(set(record['assets']) == package_filenames(directory, record['version']), 'Qualification asset list changed')
     require(all(sha256(directory / name) == digest for name, digest in record['assets'].items()),
             'Staged release asset changed during installation tests')
 

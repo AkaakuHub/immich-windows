@@ -114,7 +114,7 @@ jobs:
           # must fail this gate, but should not hide failures in later checks.
           $PSNativeCommandUseErrorActionPreference = $false
           $failed = [Collections.Generic.List[string]]::new()
-          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Release-Cleanup','Tray-Lifecycle','Update-FromRelease','Install-Bootstrap','Metadata-DateRepair-Launcher','Upgrade-Baseline','Dependency-Reuse','Dependency-Transfer','Node-DependencyReuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
+          foreach ($name in @('Static-RepositoryAudit','Update-Workflow','Release-Cleanup','Tray-Lifecycle','Update-FromRelease','Install-Bootstrap','Metadata-DateRepair-Launcher','Upgrade-Baseline','Dependency-Reuse','Dependency-Payload','Dependency-Transfer','Node-DependencyReuse','Startup-Workflow','NativeMedia-Build','Native-Probe','Source-Preparation','MachineLearning-Diagnostics')) {
             $arguments = @('-NoLogo','-NoProfile','-File',"./tests/$name.ps1")
             if ($name -eq 'Static-RepositoryAudit') { $arguments += @('-SourceRoot',$source) }
             & "$PSHOME/pwsh.exe" @arguments
@@ -299,7 +299,7 @@ jobs:
         id: ml-cache
         with:
           path: artifacts/machine-learning
-          key: machine-learning-${{ runner.os }}-${{ steps.application-key.outputs.machineLearning }}-${{ steps.application-key.outputs.upstream }}-${{ hashFiles('patches/machine-learning/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
+          key: machine-learning-${{ runner.os }}-${{ steps.application-key.outputs.machineLearning }}-${{ steps.application-key.outputs.upstream }}-${{ hashFiles('patches/machine-learning/**', 'patches/series', 'build/Write-AppBuildCacheKeys.ps1', 'build/Build-All.ps1', 'build/Build-MachineLearning.ps1', 'build/Normalize-WheelRequirements.py', 'build/Prepare-Source.ps1', 'build/Bootstrap-BuildTools.ps1', 'build/Common.psm1') }}
           restore-keys: machine-learning-${{ runner.os }}-
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: build-downloads
@@ -330,7 +330,7 @@ jobs:
           .\build\Stage-VcRuntime.ps1
           $version = '${{ needs.plan.outputs.version }}'
           $folder = "immich-windows-$version-win-x64"
-          .\packaging\New-NativeDependenciesArchive.ps1
+          .\packaging\Stage-NativeDependencies.ps1
           .\packaging\New-Package.ps1
           & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -File ./tests/Tray-Controller.ps1 -Executable "dist/$folder/runtime/tray/ImmichTray.exe" -IconPath "dist/$folder/build/www/favicon.ico"
           if ($LASTEXITCODE -ne 0) { throw 'Notification-area controller tests failed.' }
@@ -408,7 +408,7 @@ jobs:
           foreach ($archive in @($pins.node.asset, "uv-$($pins.uv.version)-$($pins.uv.asset)")) {
             Copy-Item (Join-Path '.cache' $archive) $downloadCache -Force
           }
-          Copy-Item "dist/immich-windows-$version-native-dependencies.zip" $downloadCache
+          Copy-Item dist/dependency-* $downloadCache
           $baseline = ./tests/actions/Get-UpgradeBaseline.ps1 -CandidatePackageRoot $packageRoot `
             -Destination (Join-Path $env:RUNNER_TEMP 'immich-upgrade-baseline') -DownloadCache $downloadCache
           $baselineRoot = $baseline.PackageRoot
@@ -537,7 +537,7 @@ jobs:
           compression-level: 0
           path: |
             dist/*-win-x64.zip
-            dist/*-native-dependencies.zip
+            dist/dependency-*
             dist/*-migration-tools.zip
             dist/Install.cmd
             dist/qualification.json

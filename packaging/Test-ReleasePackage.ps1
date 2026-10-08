@@ -10,14 +10,14 @@ $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
 $packageVersion = 'v' + (Get-WindowsPackageVersion $manifest).ToString(4)
 if ($manifest.schemaVersion -ne 2 -or $manifest.sourceCommit -notmatch '^[0-9a-f]{40}$' -or
-    $manifest.nativeDependenciesSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Invalid Windows package provenance.' }
+    -not @($manifest.dependencyPayloads.PSObject.Properties).Count) { throw 'Invalid Windows package provenance.' }
 if ($manifest.immichVersion -notmatch '^v\d+\.\d+\.\d+$' -or ($Version -and $packageVersion -ne $Version) -or
     $manifest.target -ne 'windows-x64-native' -or $manifest.mediaStack.sharpLibvips -ne 'custom-immich-compatible' -or
     -not $manifest.mediaStack.productionQualified) { throw 'The package is not a qualified Windows native release.' }
 
 foreach ($required in @(
-    'runtime\tray\ImmichTray.exe','build\www\favicon.ico','server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','machine-learning\requirements.txt',
-    'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json','machine-learning\wheelhouse\.complete',
+    'runtime\tray\ImmichTray.exe','build\www\favicon.ico','server\dist\main.js','server\.immich\plugin-sdk\dist\index.js','build\www\index.html','machine-learning\requirements.txt','machine-learning\wheel-requirements.txt',
+    'machine-learning\app\immich_ml\__main__.py','machine-learning\ml-manifest.json','runtime\DependencyPayload.psm1',
     'installer\Install-RuntimeDependencies.ps1','installer\Install-MachineLearningDependencies.ps1',
     'sharp-libvips-qualification.json','installer\Update.ps1','runtime\Common.psm1','runtime\Native-Probe.psm1','runtime\DirectML.psm1','runtime\DirectML-Adapter.py','runtime\tray\DesktopShell.cs',
     'runtime\launchers\Start-Immich.ps1','runtime\launchers\Stop-Immich.ps1','runtime\launchers\Load-ImmichEnv.ps1',
@@ -32,9 +32,9 @@ foreach ($required in @(
 if (Test-Path -LiteralPath (Join-Path $PackageRoot 'Install.cmd')) { throw 'Install.cmd must be distributed as a separate Release asset.' }
 
 foreach ($forbidden in @(
-    'server\node_modules','cli\node_modules','machine-learning\python-runtime','machine-learning\uv.exe',
+    'server\node_modules','cli\node_modules','machine-learning\python-runtime','machine-learning\uv.exe','machine-learning\wheelhouse',
     'machine-learning\build-inputs.json','machine-learning\.build-inputs',
-    'runtime\node','runtime\ffmpeg','runtime\winsw','runtime\vc-runtime','dependencies\sharp',
+    'runtime\node','runtime\ffmpeg','runtime\winsw','runtime\vc-runtime','dependencies\sharp','build\geodata',
     'dependencies\valkey','dependencies\postgres-extensions'
 )) {
     if (Test-Path -LiteralPath (Join-Path $PackageRoot $forbidden)) { throw "Runtime dependency must be installed separately from the application package: $forbidden" }

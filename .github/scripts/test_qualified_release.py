@@ -86,15 +86,17 @@ def provenance(event='pull_request'):
 def bundle_entries(record=None, manifest_changes=None):
     record = copy.deepcopy(record or provenance()[0])
     version = record['version']
-    manifest = {'packageVersion': version, 'sourceCommit': record['sourceCommit']}
+    payload = b'fixture dependency'
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = {'packageVersion': version, 'sourceCommit': record['sourceCommit'],
+                'dependencyPayloads': {'dependencies/fixture.txt': {'assetName': f'dependency-{digest}', 'sha256': digest}}}
     manifest.update(manifest_changes or {})
     assets = {
         f'immich-windows-{version}-win-x64.zip': zip_bytes([
             (f'immich-windows-{version}-win-x64/manifest.json', json.dumps(manifest)),
             (f'immich-windows-{version}-win-x64/app.txt', 'fixture application'),
         ]),
-        f'immich-windows-{version}-native-dependencies.zip': zip_bytes([
-            ('dependencies/fixture.txt', 'fixture dependency')]),
+        f'dependency-{digest}': payload,
         f'immich-windows-{version}-migration-tools.zip': zip_bytes([
             ('migration/fixture.txt', 'fixture migration tool')]),
         'Install.cmd': b'@echo off\r\nrem Offline test fixture, never executed\r\n',
@@ -163,15 +165,15 @@ class EventEncodingTests(OfflineTestCase):
             ('rev-parse', 'HEAD'): SOURCE,
             ('rev-parse', 'HEAD^{tree}'): TREE,
         }[args]
-        for name in release.filenames(VERSION):
-            (self.directory / name).write_bytes(name.encode('ascii'))
+        for name, content in bundle_entries()[:-1]:
+            (self.directory / name).write_bytes(content)
         release.record_bundle(VERSION, self.directory)
         record = json.loads((self.directory / 'qualification.json').read_text(encoding='utf-8'))
         self.assertEqual((record['sourceCommit'], record['sourceTree']), (SOURCE, TREE))
         self.assertEqual((record['pullRequest'], record['headCommit'], record['baseCommit']),
                          (17, HEAD, BASE))
         self.assertEqual(record['assets'], {
-            name: hashlib.sha256(name.encode('ascii')).hexdigest() for name in release.filenames(VERSION)})
+            name: release.sha256(self.directory / name) for name in release.record_filenames(record)})
 
     def test_dispatch_inputs_reads_utf8_event_with_non_ascii_content(self):
         self.assertEqual(release.dispatch_inputs(), self.event['inputs'])
@@ -189,9 +191,9 @@ class BundleTests(OfflineTestCase):
         entries = bundle_entries()
         record = self.check_bundle(entries)
         self.assertEqual(record['sourceCommit'], SOURCE)
-        self.assertEqual(set(record['assets']), release.filenames(VERSION))
+        self.assertEqual(set(record['assets']), release.record_filenames(record))
         self.assertEqual({path.name for path in (self.directory / 'assets').iterdir()},
-                         release.filenames(VERSION))
+                         release.record_filenames(record))
         for name, content in entries[:-1]:
             self.assertEqual((self.directory / 'assets' / name).read_bytes(), content)
 
@@ -448,7 +450,7 @@ class ReleasePolicyTests(OfflineTestCase):
         return api
 
     def test_version_must_include_the_windows_revision(self):
-        self.assertEqual(len(release.filenames(VERSION)), 4)
+        self.assertEqual(len(release.filenames(VERSION)), 3)
         for version in ('3.2.2.4', 'v3.2.2', 'v3.2.2.4-beta', '../v3.2.2.4', 'v3.2.2.4\n'):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 release.filenames(version)
@@ -731,7 +733,7 @@ class ControlFlowTests(OfflineTestCase):
             'artifact_digest': artifact['digest'],
         })
         self.assertEqual({path.name for path in (self.directory / 'publish').iterdir()},
-                         release.filenames(VERSION))
+                         release.package_filenames(self.directory / 'publish', VERSION))
 
     def test_prepare_main_allows_pending_publish_only_with_all_qualification_jobs_successful(self):
         _, run, _, _, _, _ = self.install_fixture('push')
