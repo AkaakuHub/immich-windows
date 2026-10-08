@@ -145,3 +145,87 @@ index 8f96a29c8611873891927ff843a0faf7c7d770da..f649de1823257c69d8f64b835954738f
          log.info(f"Setting execution providers to {self.providers}, in descending order of preference")
          self.disabled_optimizers = _disabled_optimizers_default(self.providers)
          log.debug(f"Setting disabled_optimizers to {self.disabled_optimizers}")
+--- a/machine-learning/pyproject.toml
++++ b/machine-learning/pyproject.toml
+@@ -64,7 +64,7 @@
+ override-dependencies = ["opencv-python ; sys_platform == 'never'"] # only install the headless version
+ 
+ [tool.uv.sources]
+-immich-model = { git = "https://github.com/immich-app/ml-models.git", rev = "8bf3fd1b44b0c8608f52fb6e50ddff52826576d8" }
++immich-model = { url = "https://github.com/immich-app/ml-models/archive/8bf3fd1b44b0c8608f52fb6e50ddff52826576d8.tar.gz" }
+ onnxruntime-gpu = { index = "onnxruntime-cuda-12" }
+ openvino = { index = "openvino-nightly" }
+ 
+--- a/machine-learning/uv.lock
++++ b/machine-learning/uv.lock
+@@ -1,5 +1,5 @@
+ version = 1
+-revision = 5
++revision = 2
+ requires-python = ">=3.12, <4.0"
+ resolution-markers = [
+     "python_full_version >= '3.15' and sys_platform == 'darwin'",
+@@ -769,7 +769,7 @@
+     { name = "fastapi", specifier = ">=0.95.2,<1.0" },
+     { name = "gunicorn", specifier = ">=21.1.0" },
+     { name = "huggingface-hub", specifier = ">=1.0,<2.0" },
+-    { name = "immich-model", git = "https://github.com/immich-app/ml-models.git?rev=8bf3fd1b44b0c8608f52fb6e50ddff52826576d8" },
++    { name = "immich-model", url = "https://github.com/immich-app/ml-models/archive/8bf3fd1b44b0c8608f52fb6e50ddff52826576d8.tar.gz" },
+     { name = "numpy", specifier = ">=2.4.0,<3.0" },
+     { name = "onnx", specifier = ">=1.22.0" },
+     { name = "onnxruntime", marker = "extra == 'armnn'", specifier = ">=1.23.2,<2" },
+@@ -841,7 +841,7 @@
+ [[package]]
+ name = "immich-model"
+ version = "0.2.0"
+-source = { git = "https://github.com/immich-app/ml-models.git?rev=8bf3fd1b44b0c8608f52fb6e50ddff52826576d8#8bf3fd1b44b0c8608f52fb6e50ddff52826576d8" }
++source = { url = "https://github.com/immich-app/ml-models/archive/8bf3fd1b44b0c8608f52fb6e50ddff52826576d8.tar.gz" }
+ dependencies = [
+     { name = "numpy" },
+     { name = "onnx" },
+@@ -849,6 +849,36 @@
+     { name = "onnxscript" },
+     { name = "safetensors" },
+ ]
++sdist = { hash = "sha256:8c42ff838e035e9415b56b6df7921529553a8b15f6acc9c16956e8ef389cc612" }
++
++[package.metadata]
++requires-dist = [
++    { name = "clip-benchmark", marker = "extra == 'export'" },
++    { name = "huggingface-hub", marker = "extra == 'export'", specifier = ">=0.29.3" },
++    { name = "kaggle", marker = "extra == 'export'", specifier = ">=1.7.4.2" },
++    { name = "ml-dtypes", marker = "extra == 'export'", specifier = ">=0.5.0" },
++    { name = "multilingual-clip", marker = "extra == 'export'", specifier = ">=1.0.10" },
++    { name = "numpy", specifier = ">=1.26" },
++    { name = "numpy", marker = "extra == 'export'", specifier = ">=2.1.0" },
++    { name = "onnx", specifier = ">=1.16.1" },
++    { name = "onnx-ir", specifier = ">=0.2.1" },
++    { name = "onnxruntime", marker = "extra == 'export'", specifier = ">=1.18.2" },
++    { name = "onnxruntime", marker = "extra == 'rknn'", specifier = ">=1.18.2" },
++    { name = "onnxscript", specifier = ">=0.7.0" },
++    { name = "open-clip-torch", marker = "extra == 'export'", specifier = ">=2.31.0" },
++    { name = "pyyaml", marker = "extra == 'rknn'", specifier = ">=6" },
++    { name = "rknn-toolkit2", marker = "extra == 'rknn'", specifier = ">=2.3.0" },
++    { name = "safetensors", specifier = ">=0.7,<0.8" },
++    { name = "setuptools", marker = "extra == 'rknn'", specifier = "<81" },
++    { name = "tenacity", marker = "extra == 'export'", specifier = ">=9.0.0" },
++    { name = "torch", marker = "extra == 'export'" },
++    { name = "torch", marker = "extra == 'rknn'" },
++    { name = "torchvision", marker = "extra == 'export'" },
++    { name = "transformers", marker = "extra == 'export'", specifier = ">=4.49.0" },
++    { name = "typer", marker = "extra == 'export'", specifier = ">=0.15.2" },
++    { name = "typer", marker = "extra == 'rknn'", specifier = ">=0.15.2" },
++]
++provides-extras = ["export", "rknn"]
+ 
+ [[package]]
+ name = "iniconfig"
+@@ -1444,7 +1474,7 @@
+ version = "4.11.0.86"
+ source = { registry = "https://pypi.org/simple" }
+ dependencies = [
+-    { name = "numpy" },
++    { name = "numpy", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+ ]
+ sdist = { url = "https://files.pythonhosted.org/packages/17/06/68c27a523103dad5837dc5b87e71285280c4f098c60e4fe8a8db6486ab09/opencv-python-4.11.0.86.tar.gz", hash = "sha256:03d60ccae62304860d232272e4a4fda93c39d595780cb40b161b310244b736a4", size = 95171956, upload-time = "2025-01-16T13:52:24.737Z" }
+ 
