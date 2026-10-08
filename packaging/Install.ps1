@@ -415,6 +415,7 @@ function New-WinSWServiceXml {
         ("  <arguments>{0}</arguments>" -f (ConvertTo-XmlValue $Arguments)),
         ("  <workingdirectory>{0}</workingdirectory>" -f (ConvertTo-XmlValue $current)),
         '  <startmode>Automatic</startmode>',
+        '  <stopparentprocessfirst>true</stopparentprocessfirst>',
         '  <stoptimeout>30 sec</stoptimeout>',
         ("  <logpath>{0}</logpath>" -f (ConvertTo-XmlValue $logs)),
         '  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>5</keepFiles></log>'
