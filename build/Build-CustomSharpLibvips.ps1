@@ -100,11 +100,6 @@ Assert-FileExists $pangoPatch|Out-Null
 Invoke-Native $git @('-C',$source,'apply','--check','--whitespace=error-all',$pangoPatch)
 Invoke-Native $git @('-C',$source,'apply','--whitespace=error-all',$pangoPatch)
 
-$librsvgPatch=Join-Path $root 'media-patches/libvips/0003-librsvg-synchronization-import-library.patch'
-Assert-FileExists $librsvgPatch|Out-Null
-Invoke-Native $git @('-C',$source,'apply','--check','--whitespace=error-all',$librsvgPatch)
-Invoke-Native $git @('-C',$source,'apply','--whitespace=error-all',$librsvgPatch)
-
 # Mirror the Immich base-image libvips behavior instead of building the plain
 # upstream Windows package. The base image for this Immich generation used
 # libvips v8.18.5 plus a loader-priority patch so cheap HEIF/JPEG sniffers run
