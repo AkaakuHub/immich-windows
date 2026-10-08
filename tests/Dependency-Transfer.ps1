@@ -41,7 +41,8 @@ try {
  Reject { Add-ImmichDependencyReuse $plan $old $new 'runtime/node' duplicate }
  Write-Host 'PASS dependency transfer: unchanged directories, no copy, bounded reads, serialized/partial/idempotent recovery, path rejection.'
 
- $manifest=@{immichVersion='v3.2.4';target='windows-x64-native';dependencies=@{python=@{version='3.11.14'}}}
+ $wheelHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes('wheel'))).ToLowerInvariant()
+ $manifest=@{immichVersion='v3.2.4';target='windows-x64-native';dependencies=@{python=@{version='3.11.14'}};dependencyPayloads=@{'machine-learning/wheelhouse/numpy.whl'=@{assetName="dependency-$wheelHash";sha256=$wheelHash}}}
  $distribution='machine-learning/python-runtime/cpython-3.11.14-windows-x86_64-none'
  foreach ($root in @($old,$new)) {
   Write-Fixture (Join-Path $root manifest.json) ($manifest | ConvertTo-Json -Depth 5)
@@ -51,10 +52,15 @@ try {
  Write-Fixture (Join-Path $old "$distribution/Lib/site-packages/numpy/nested/data.txt") data
  Write-Fixture (Join-Path $old "$distribution/Scripts/old-path.exe") 'unused console entry point'
  $hash=(Get-FileHash (Join-Path $new 'machine-learning/requirements.txt')).Hash.ToLowerInvariant()
+ Write-Fixture (Join-Path $old 'machine-learning/wheelhouse/numpy.whl') 'wheel'
  Write-Fixture (Join-Path $old 'machine-learning/.dependencies-installed.json') (@{python='3.11.14';requirementsSha256=$hash}|ConvertTo-Json)
  $inputs=@{}
  Check (Test-ImmichPythonDependencyReusable $old $new -Inputs $inputs) 'Identical Python packages were not reusable.'
+ Check ($inputs.payloadsSha256 -eq (Get-ImmichMachineLearningDependencyHash (Get-Content -Raw (Join-Path $new manifest.json)|ConvertFrom-Json))) 'Wheel inventory input hash was not retained.'
  Check ($inputs.requirementsSha256 -ceq $hash) 'Requirements input hash was not retained for the ML marker.'
+ Write-Fixture (Join-Path $old 'machine-learning/wheelhouse/numpy.whl') 'changed wheel'
+ Check (-not (Test-ImmichPythonDependencyReusable $old $new)) 'Changed wheel content was reused despite identical requirements.'
+ Write-Fixture (Join-Path $old 'machine-learning/wheelhouse/numpy.whl') 'wheel'
  Write-Fixture (Join-Path $new 'machine-learning/requirements.txt') 'numpy==2.0'
  Check (-not (Test-ImmichPythonDependencyReusable $old $new)) 'Changed requirements were reused.'
  Write-Fixture (Join-Path $new 'machine-learning/requirements.txt') 'numpy==1.0'
@@ -68,6 +74,7 @@ try {
  Check (Test-ImmichPythonDependencyReusable $old $new) 'A relative Python path was rejected.'
  # Deferred ML installation writes its marker from the already-computed input;
  # it must not discover Python, run uv, or enumerate/copy the old package tree.
+ Write-Fixture (Join-Path $new 'runtime/DependencyPayload.psm1') (Get-Content -Raw (Join-Path $PSScriptRoot '../runtime/DependencyPayload.psm1'))
  Write-Fixture (Join-Path $new 'runtime/Common.psm1') (Get-Content -Raw (Join-Path $PSScriptRoot '../runtime/Common.psm1'))
  Write-Fixture (Join-Path $new 'installer/Install-MachineLearningDependencies.ps1') (Get-Content -Raw (Join-Path $PSScriptRoot '../packaging/Install-MachineLearningDependencies.ps1'))
  $manifest.dependencies.uv=@{version='0.12.18'}
@@ -75,6 +82,7 @@ try {
  $pythonPlan=[Collections.Generic.List[object]]::new()
  Add-ImmichDependencyReuse $pythonPlan $old $new $distribution Python
  $pythonPlan[0] | Add-Member -NotePropertyName requirementsSha256 -NotePropertyValue $hash
+ $pythonPlan[0] | Add-Member -NotePropertyName payloadsSha256 -NotePropertyValue $inputs.payloadsSha256
  & (Join-Path $new 'installer/Install-MachineLearningDependencies.ps1') -ReleaseRoot $new -InstallRoot (Join-Path $base install) -DependencyReusePlan $pythonPlan
  $state=Get-Content -Raw (Join-Path $new 'machine-learning/.dependencies-installed.json')|ConvertFrom-Json
  Check ($state.requirementsSha256 -ceq $hash) 'Deferred ML marker differs from its proven inputs.'

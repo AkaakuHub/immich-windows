@@ -29,12 +29,11 @@ Copy-Directory (Join-Path $app 'cli') (Join-Path $Destination 'cli') -ExcludeDir
 Get-ChildItem (Join-Path $Destination 'server\dist') -File -Recurse |
     Where-Object { $_.Name -match '(\.d\.ts|\.map|\.tsbuildinfo)$' } |
     Remove-Item -Force
-Copy-Directory (Join-Path $app 'build') (Join-Path $Destination 'build')
+Copy-Directory (Join-Path $app 'build') (Join-Path $Destination 'build') -ExcludeDirectory @('geodata')
 $mlDestination = Join-Path $Destination 'machine-learning'
 Copy-Directory (Join-Path $ml 'app') (Join-Path $mlDestination 'app')
-Copy-Item (Join-Path $ml 'requirements.txt') (Join-Path $mlDestination 'requirements.txt') -Force
+foreach ($requirementsName in @('requirements.txt','wheel-requirements.txt')) { Copy-Item (Join-Path $ml $requirementsName) (Join-Path $mlDestination $requirementsName) -Force }
 Copy-Item (Join-Path $ml 'ml-manifest.json') (Join-Path $mlDestination 'ml-manifest.json') -Force
-Copy-Directory (Join-Path $ml 'wheelhouse') (Join-Path $mlDestination 'wheelhouse')
 Copy-Item (Join-Path $app 'LICENSE') (Join-Path $Destination 'LICENSE') -Force
 
 foreach ($project in @('server','cli')) {
@@ -95,6 +94,7 @@ foreach ($name in @('install.md','operations.md','migration.md')) {
 # File identity, not ZIP timestamps or upstream version, determines native reuse.
 $nativeFiles = [ordered]@{}
 $nativeMetadata = [ordered]@{}
+$dependencyPayloads = [ordered]@{}
 if ($mediaStackQualified) {
     $nativeStage = Join-Path $root 'dist\native-dependencies'
     foreach ($file in (Get-ChildItem -LiteralPath $nativeStage -File -Recurse | Where-Object { $_.Name -ne 'vc-runtime.json' } | Sort-Object FullName)) {
@@ -107,6 +107,20 @@ if ($mediaStackQualified) {
     if ($nativeFiles.Count -eq 0) { throw 'Native dependency content inventory is empty.' }
 
 }
+foreach ($payloadRoot in @(
+    @{root=(Join-Path $root 'dist/native-dependencies');prefix=''},
+    @{root=(Join-Path $ml 'wheelhouse');prefix='machine-learning/wheelhouse/'},
+    @{root=(Join-Path $app 'build/geodata');prefix='build/geodata/'}
+)) {
+    foreach ($file in (Get-ChildItem -LiteralPath $payloadRoot.root -File -Recurse | Where-Object { $_.Name -ne '.complete' -and $_.Name -ne 'vc-runtime.json' })) {
+        $relative = $payloadRoot.prefix + [IO.Path]::GetRelativePath($payloadRoot.root, $file.FullName).Replace('\', '/')
+        if ($nativeMetadata.Contains($relative)) { continue }
+        $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+        $assetName = "dependency-$sha256"
+        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $root "dist/$assetName") -Force
+        $dependencyPayloads[$relative] = [ordered]@{assetName=$assetName;sha256=$sha256}
+    }
+}
 $manifest = [ordered]@{
     schemaVersion = 2
     packageVersion = $packageVersion
@@ -114,7 +128,7 @@ $manifest = [ordered]@{
     sourceCommit = (& git -C $root rev-parse HEAD).Trim()
     nativeDependencyFiles = $nativeFiles
     nativeDependencyMetadata = $nativeMetadata
-    nativeDependenciesSha256 = $(if ($mediaStackQualified) { (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root "dist\immich-windows-$packageVersion-native-dependencies.zip")).Hash.ToLowerInvariant() } else { $null })
+    dependencyPayloads = $dependencyPayloads
     immichVersion = $upstream.version
     upstreamRepository = $upstream.repository
     upstreamCommit = (Get-Content -Raw (Join-Path $app 'application-manifest.json') | ConvertFrom-Json).upstreamCommit

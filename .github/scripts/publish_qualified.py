@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from qualified_release import API, ARTIFACT, DIGEST, REQUIRED_JOBS, SHA, WORKFLOW, filenames, release_policy, require, sha256, summary
+from qualified_release import API, ARTIFACT, DIGEST, REQUIRED_JOBS, SHA, WORKFLOW, filenames, record_filenames, release_policy, require, sha256, summary
 
 
 def notes(record, artifact, commit, *, legacy=False):
@@ -28,7 +28,7 @@ def notes(record, artifact, commit, *, legacy=False):
         description = (f"Immich Windows {record['version']}（Windows x64向け）\n\n"
             f"通常の導入・更新は、このReleaseの `Install.cmd` をダウンロードして実行してください。{upgrade_notice}必要な配布ファイルは自動取得されます。PowerShell 7とPostgreSQL 18 x64が必要です。\n\n"
             f"- `immich-windows-{record['version']}-win-x64.zip`：本体\n"
-            f"- `immich-windows-{record['version']}-native-dependencies.zip`：ネイティブ依存ファイル\n"
+            "- `dependency-*`：必要な依存ファイルだけ自動取得します\n"
             f"- `immich-windows-{record['version']}-migration-tools.zip`：データ移行ツール\n\n"
             "GitHubの `Source code` は導入用ではありません。\n\n"
             f"[導入手順]({docs}/install.md) · [更新手順]({docs}/operations.md) · [移行手順]({docs}/migration.md)")
@@ -77,7 +77,7 @@ def published_metadata(api, version):
     require(record['repository'] == api.repo and record['version'] == version
             and SHA.fullmatch(record['mainCommit']) and SHA.fullmatch(record['sourceCommit'])
             and SHA.fullmatch(record['sourceTree']) and DIGEST.fullmatch(record['artifactDigest'])
-            and set(record['assets']) == filenames(version), 'Invalid published qualification identity')
+            and set(record['assets']) == record_filenames(record), 'Invalid published qualification identity')
     artifact = api.get(f"actions/artifacts/{record['artifactId']}")
     require(artifact['id'] == record['artifactId'] and artifact['name'] == ARTIFACT
             and artifact['digest'] == record['artifactDigest'], 'Published artifact identity changed')
@@ -99,8 +99,8 @@ def published_metadata(api, version):
     require(REQUIRED_JOBS <= {j['name'] for j in jobs if j['conclusion'] == 'success' and j['run_attempt'] == run['run_attempt']},
             'Published qualification jobs did not succeed')
     assets = list(api.pages(f"releases/{release['id']}/assets"))
-    require(len(assets) == 4 and len({a['id'] for a in assets}) == 4
-            and {a['name'] for a in assets} == filenames(version), 'Published asset set changed')
+    require(len(assets) == len(record['assets']) and len({a['id'] for a in assets}) == len(assets)
+            and {a['name'] for a in assets} == record_filenames(record), 'Published asset set changed')
     for asset in assets:
         require(asset['state'] == 'uploaded' and asset['size'] > 0
                 and asset['digest'] == 'sha256:' + record['assets'][asset['name']]
@@ -137,7 +137,7 @@ def refresh_published_metadata(api, version, commit):
 
 def assets_state(api, release_id, record, artifact, directory):
     assets = list(api.pages(f'releases/{release_id}/assets'))
-    expected = filenames(record['version'])
+    expected = record_filenames(record)
     require(len({a['name'] for a in assets}) == len(assets), 'Duplicate release assets')
     require(all(a['name'] in expected for a in assets), 'Unexpected release asset; refusing to modify this release')
     complete, starters = {}, {}
@@ -179,7 +179,7 @@ def publish(api, record, artifact, directory, commit):
     version = record['version']
     require(SHA.fullmatch(commit) and DIGEST.fullmatch(artifact['digest']), 'Invalid publication identity')
     require(api.get('git/ref/heads/main')['object']['sha'] == commit, 'Main changed before release publication')
-    expected = filenames(version)
+    expected = record_filenames(record)
     require(set(record['assets']) == expected, 'Unexpected qualified asset manifest')
     for name in expected:
         require(sha256(directory / name) == record['assets'][name], 'Prepared asset changed before publication')

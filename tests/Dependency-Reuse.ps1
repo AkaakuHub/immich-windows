@@ -58,25 +58,6 @@ try {
     Write-Fixture (Join-Path $pythonRoot 'python.exe') 'legacy interpreter'
     Check ((Get-ImmichPythonExecutable $pythonRelease).FullName -eq (Join-Path $pythonRoot 'python.exe')) 'Legacy flat interpreter was rejected.'
 
-    $zipSource=Join-Path $base 'zip-source'
-    Write-Fixture (Join-Path $zipSource 'dependencies/sharp/lib/needed.dll') 'selected bytes'
-    Write-Fixture (Join-Path $zipSource 'dependencies/postgres-extensions/unused.dll') 'unused bytes'
-    $archive=Join-Path $base 'native.zip'
-    [IO.Compression.ZipFile]::CreateFromDirectory($zipSource,$archive)
-    $extracted=Join-Path $base 'extracted'
-    Expand-ImmichNativePayload $archive $extracted @('dependencies/sharp/lib/needed.dll')
-    Check ((Get-Content -Raw (Join-Path $extracted 'dependencies/sharp/lib/needed.dll')) -ceq 'selected bytes') 'Selected native entry changed.'
-    Check (-not (Test-Path (Join-Path $extracted 'dependencies/postgres-extensions'))) 'Expanded unused native payload.'
-    foreach ($invalid in @('../escape.dll','/escape.dll','C:/escape.dll','a\escape.dll')) {
-        Reject { Expand-ImmichNativePayload $archive $extracted @($invalid) }
-    }
-    Reject { Expand-ImmichNativePayload $archive $extracted @('missing.dll') }
-    Reject { Expand-ImmichNativePayload $archive $extracted @('same.dll','SAME.dll') }
-    $duplicateZip=Join-Path $base 'duplicate.zip'
-    $zip=[IO.Compression.ZipFile]::Open($duplicateZip,[IO.Compression.ZipArchiveMode]::Create)
-    try { [void]$zip.CreateEntry('same.dll');[void]$zip.CreateEntry('same.dll') } finally { $zip.Dispose() }
-    Reject { Expand-ImmichNativePayload $duplicateZip $extracted @('same.dll') }
-
     # Run the real Node installer against completed fixture dependencies. Its
     # native tools are deliberately non-executable: no npm/pnpm work is needed.
     $nodeRelease=Join-Path $base 'node-release'
@@ -170,7 +151,7 @@ try {
     Check ($finish.Count -eq 1 -and $state.Finished) 'Final progress missing.'
     $again=@(Update-ImmichProgress -State $state -Finished 6>&1)
     Check ($again.Count -eq 0) 'Completed progress emitted twice.'
-    Write-Host 'PASS dependency reuse: input identity, bounded Python discovery, independent Sharp replacement, selective ZIP extraction.'
+    Write-Host 'PASS dependency reuse: input identity, bounded Python discovery, independent Sharp replacement, individual native payload reuse.'
 } finally {
     foreach($link in $links){[IO.Directory]::Delete($link)}
     if(Test-Path $base){Remove-Item -LiteralPath $base -Recurse -Force}

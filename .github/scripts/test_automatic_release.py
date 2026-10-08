@@ -115,7 +115,7 @@ class AutomaticTests(OfflineTestCase):
 
     def test_zero_versions_are_canonical_and_all_numeric_fields_are_strict(self):
         for version in ('v0.0.0.0', 'v3.2.4.0', 'v3.2.4.10'):
-            self.assertEqual(len(release.filenames(version)), 4)
+            self.assertEqual(len(release.filenames(version)), 3)
         for version in ('v03.2.4.0', 'v3.02.4.0', 'v3.2.04.0', 'v3.2.4.00', 'v3.2.4.-1', 'v3.2.4.0\n', 'v３.2.4.0'):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 release.filenames(version)

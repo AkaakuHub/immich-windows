@@ -193,8 +193,9 @@ class PublicationTests(OfflineTestCase):
         self.assertIn('通常の導入・更新', visible)
         self.assertIn('`Install.cmd`', visible)
         self.assertIn(f'/blob/{MERGED}/docs/install.md', visible)
-        for name in self.record['assets']:
+        for name in publisher.filenames(self.record['version']):
             self.assertIn(name, visible)
+        self.assertIn('`dependency-*`', visible)
         self.assertNotIn('Artifact:', visible)
         self.assertNotIn('Actual build commit:', visible)
         for version in ('v3.2.4.0', 'v3.2.5.0'):

@@ -1016,6 +1016,13 @@ function Move-ImmichReusedDependencies {
         Write-Host "$(if ($Restore) {'Restored'} else {'Moved'}) unchanged $($entry.label)."
     }
 }
+function Get-ImmichMachineLearningDependencyHash {
+    param($Manifest)
+    $entries = @($Manifest.dependencyPayloads.PSObject.Properties | Where-Object { $_.Name.StartsWith('machine-learning/wheelhouse/') } | Sort-Object Name)
+    if (-not $entries.Count) { throw 'Machine Learning dependency inventory is empty.' }
+    $identity = ($entries | ForEach-Object { "$($_.Name)=$($_.Value.sha256)" }) -join "`n"
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+}
 function Test-ImmichPythonDependencyReusable {
     param([string]$PreviousRelease,[string]$CandidateRelease,[Collections.IDictionary]$Inputs)
     try {
@@ -1023,9 +1030,18 @@ function Test-ImmichPythonDependencyReusable {
         $candidate=Get-Content -Raw -LiteralPath (Join-Path $CandidateRelease 'manifest.json') | ConvertFrom-Json
         if (-not (Test-ImmichDependencyPinEqual $previous $candidate python)) { return $false }
         $marker=Get-Content -Raw -LiteralPath (Join-Path $PreviousRelease 'machine-learning/.dependencies-installed.json') | ConvertFrom-Json
+        $payloadHash=Get-ImmichMachineLearningDependencyHash $candidate
         $requirementsHash=(Get-FileHash -LiteralPath (Join-Path $CandidateRelease 'machine-learning/requirements.txt') -Algorithm SHA256).Hash
         if ([string]$marker.python -cne [string]$candidate.dependencies.python.version -or
-            [string]$marker.requirementsSha256 -ine $requirementsHash) { return $false }
+            [string]$marker.requirementsSha256 -ine $requirementsHash -or
+            ($marker.PSObject.Properties['payloadsSha256'] -and [string]$marker.payloadsSha256 -cne $payloadHash)) { return $false }
+        if (-not $marker.PSObject.Properties['payloadsSha256']) {
+            foreach ($entry in ($candidate.dependencyPayloads.PSObject.Properties | Where-Object { $_.Name.StartsWith('machine-learning/wheelhouse/') })) {
+                $wheel=Join-Path $PreviousRelease $entry.Name
+                if (-not (Test-Path -LiteralPath $wheel -PathType Leaf) -or
+                    (Get-FileHash -Algorithm SHA256 -LiteralPath $wheel).Hash -ine $entry.Value.sha256) { return $false }
+            }
+        }
         # Both CPU and DirectML launch the same exported package set. Device choice
         # changes execution, not installation. The completion marker describes the
         # installed requirements; reading the old requirements again adds no proof.
@@ -1043,7 +1059,7 @@ function Test-ImmichPythonDependencyReusable {
                 if ($line.Trim() -match '^(?:[A-Za-z]:|[/\\])' -or $line.Contains($PreviousRelease)) { return $false }
             }
         }
-        if ($null -ne $Inputs) { $Inputs.requirementsSha256=$requirementsHash.ToLowerInvariant() }
+        if ($null -ne $Inputs) { $Inputs.requirementsSha256=$requirementsHash.ToLowerInvariant(); $Inputs.payloadsSha256=$payloadHash }
         return $true
     } catch { return $false }
 }
@@ -1060,37 +1076,5 @@ function Assert-ImmichReusedDependencies {
         }
     }
 }
-
-function Expand-ImmichNativePayload {
-    param([Parameter(Mandatory)][string]$Archive,[Parameter(Mandatory)][string]$Destination,[Parameter(Mandatory)][string[]]$RelativePath)
-    # The caller verifies the complete archive and each extracted file's SHA256.
-    # Read only selected entries; never expand unrelated payloads or ZIP paths.
-    $selected=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($relative in $RelativePath) {
-        if (-not $relative -or $relative -match '(^/|:|(^|/)\.\.(/|$))' -or $relative.Contains('\') -or
-            -not $selected.Add($relative)) { throw "Invalid or duplicate native payload path: $relative" }
-    }
-    $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
-    try {
-        $entries=[Collections.Generic.Dictionary[string,IO.Compression.ZipArchiveEntry]]::new([StringComparer]::Ordinal)
-        foreach ($entry in $zip.Entries) {
-            if ($selected.Contains($entry.FullName)) {
-                if ($entries.ContainsKey($entry.FullName)) { throw "Duplicate native ZIP entry: $($entry.FullName)" }
-                $entries.Add($entry.FullName,$entry)
-            }
-        }
-        foreach ($relative in $RelativePath) {
-            if (-not $entries.ContainsKey($relative) -or -not $entries[$relative].Name) { throw "Native ZIP entry is missing: $relative" }
-            $target=Join-Path $Destination $relative
-            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-            $input=$entries[$relative].Open()
-            try {
-                $output=[IO.File]::Create($target)
-                try { $input.CopyTo($output) } finally { $output.Dispose() }
-            } finally { $input.Dispose() }
-        }
-    } finally { $zip.Dispose() }
-}
-
 
 Export-ModuleMember -Function *

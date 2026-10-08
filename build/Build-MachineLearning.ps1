@@ -9,6 +9,16 @@ Assert-WindowsX64
 $root = Get-RepositoryRoot
 $versions = Read-JsonFile (Join-Path $root 'dependencies\versions.json')
 if (-not $Destination) { $Destination = Join-Path $root 'artifacts\machine-learning' }
+$cachedRequirements = $null
+$cachedPython = $null
+$cachedWheels = Join-Path $root '.work/machine-learning-wheels'
+if ((Test-Path -LiteralPath (Join-Path $Destination 'requirements.txt')) -and (Test-Path -LiteralPath (Join-Path $Destination 'ml-manifest.json')) -and (Test-Path -LiteralPath (Join-Path $Destination 'wheelhouse/.complete'))) {
+    $cachedRequirements = Get-Content -Raw -LiteralPath (Join-Path $Destination 'requirements.txt')
+    $cachedPython = (Read-JsonFile (Join-Path $Destination 'ml-manifest.json')).python
+    if (Test-Path -LiteralPath $cachedWheels) { Remove-Item -LiteralPath $cachedWheels -Recurse -Force }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $cachedWheels) -Force | Out-Null
+    Move-Item -LiteralPath (Join-Path $Destination 'wheelhouse') -Destination $cachedWheels
+}
 $Destination = New-CleanDirectory $Destination
 $mlDir = Join-Path $Source 'machine-learning'
 $app = Join-Path $Destination 'app'
@@ -39,8 +49,18 @@ $env:UV_PYTHON_INSTALL_DIR = $pythonRoot
 if ($LASTEXITCODE -ne 0) { throw 'Could not install the pinned Python runtime for the Machine Learning wheel build.' }
 $python = Get-ChildItem -LiteralPath $pythonRoot -Recurse -File -Filter python.exe | Select-Object -First 1
 if (-not $python) { throw 'Pinned Python runtime did not produce python.exe for the Machine Learning wheel build.' }
-& $python.FullName -m pip wheel --disable-pip-version-check --no-input --wheel-dir $wheelhouse --requirement $requirementsPath
+$wheelInputs = $requirementsPath
+$wheelArguments = @()
+if ($cachedPython -eq $versions.python.version -and $cachedRequirements -ceq (Get-Content -Raw -LiteralPath $requirementsPath)) {
+    $wheelInputs = Join-Path $Destination 'wheel-requirements.txt'
+    & $python.FullName (Join-Path $PSScriptRoot 'Normalize-WheelRequirements.py') $requirementsPath $cachedWheels $wheelInputs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not normalize cached Machine Learning wheel inputs.' }
+    $wheelArguments = @('--no-index','--find-links',$cachedWheels)
+}
+& $python.FullName -m pip wheel --disable-pip-version-check --no-input --no-deps --wheel-dir $wheelhouse --requirement $wheelInputs @wheelArguments
 if ($LASTEXITCODE -ne 0) { throw 'Could not build the self-contained Machine Learning wheelhouse.' }
+& $python.FullName (Join-Path $PSScriptRoot 'Normalize-WheelRequirements.py') $requirementsPath $wheelhouse (Join-Path $Destination 'wheel-requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Could not normalize wheel-backed Machine Learning requirements.' }
 'complete' | Set-Content -Encoding ascii -LiteralPath (Join-Path $wheelhouse '.complete')
 
 $manifest = [ordered]@{

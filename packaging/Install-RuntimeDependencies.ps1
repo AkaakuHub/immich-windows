@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot 'manifest.json') | ConvertFrom-Json
 Import-Module (Join-Path $PSScriptRoot '..\runtime\Common.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot '..\runtime\DependencyPayload.psm1') -Force
 $packageVersion = 'v' + (Get-WindowsPackageVersion $manifest).ToString(4)
 $versions = $manifest.dependencies
 $reuseSource = Get-ImmichDependencySource -InstallRoot $InstallRoot -ReleaseRoot $ReleaseRoot
@@ -152,6 +153,7 @@ if ($null -ne $DependencyReusePlan -and -not (Test-Path -LiteralPath $pythonRoot
     $relative='machine-learning/python-runtime/'+$deferredPython.Directory.Name
     Add-ImmichDependencyReuse -Plan $DependencyReusePlan -PreviousRelease $reuseSource -CandidateRelease $ReleaseRoot -RelativePath $relative -Label 'Python runtime and packages'
     $DependencyReusePlan[$DependencyReusePlan.Count-1] | Add-Member -NotePropertyName requirementsSha256 -NotePropertyValue $pythonInputs.requirementsSha256
+    $DependencyReusePlan[$DependencyReusePlan.Count-1] | Add-Member -NotePropertyName payloadsSha256 -NotePropertyValue $pythonInputs.payloadsSha256
 }
 $pythonExe = if ($deferredPython) { $deferredPython } else { Get-ImmichPythonExecutable -ReleaseRoot $ReleaseRoot -AllowMissing }
 if (-not $pythonExe) {
@@ -167,7 +169,6 @@ if (-not $pythonExe) { throw 'Pinned CPython installation did not produce python
 $pythonVersion = & $pythonExe.FullName -I -c 'import platform; print(platform.python_version())'
 if ($LASTEXITCODE -ne 0 -or ([string]$pythonVersion).Trim() -ne $versions.python.version) { throw 'Installed Python version does not match manifest.' }
 
-$nativeZipName = "immich-windows-$packageVersion-native-dependencies.zip"
 $inventoryProperty = $manifest.PSObject.Properties['nativeDependencyFiles']
 if (-not $inventoryProperty -or -not @($inventoryProperty.Value.PSObject.Properties).Count) { throw 'Native dependency file inventory is missing.' }
 # Decide the server tree before native staging so unchanged Sharp is never copied
@@ -227,23 +228,23 @@ if ($missing.Count) {
     Write-Host ("{0}: {1}" -f (Get-ImmichProgressText downloadNeeded),$missing.Count)
     $missing | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
     if ($missing.Count -gt 10) { Write-Host ("  ... +{0}" -f ($missing.Count-10)) }
-    $nativeUri = "https://github.com/AkaakuHub/immich-windows/releases/download/$packageVersion/$nativeZipName"
-    $nativeZip = Get-CachedArchive $nativeZipName $nativeUri $manifest.nativeDependenciesSha256
-    $nativeStage = Join-Path $stageRoot 'native-dependencies'
-    if (Test-Path -LiteralPath $nativeStage) { Remove-Item -LiteralPath $nativeStage -Recurse -Force }
-    New-Item -ItemType Directory -Path $nativeStage -Force | Out-Null
-    $nativeExtractProgress=Start-ImmichProgress -Key extract -Detail $nativeZipName
-    Expand-ImmichNativePayload -Archive $nativeZip -Destination $nativeStage -RelativePath $missing.ToArray()
-    Update-ImmichProgress -State $nativeExtractProgress -Finished
     foreach ($relative in $missing) {
-        $source = Join-Path $nativeStage $relative
+        $payload = $manifest.dependencyPayloads.PSObject.Properties[$relative].Value
+        $source = Get-ImmichDependencyPayload -Payload $payload -Version $packageVersion -CacheRoot $cache
         $expected = $inventoryProperty.Value.PSObject.Properties[$relative].Value
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash -ine $expected) { throw "Native payload content mismatch: $relative" }
+        if ([string]$payload.sha256 -ine [string]$expected) { throw "Native payload content identity mismatch: $relative" }
         $target = Join-Path $ReleaseRoot $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-        # Only the verified disposable extraction is consumed; the archive stays cached.
-        [IO.File]::Move($source,$target,$true)
+        Copy-Item -LiteralPath $source -Destination $target -Force
     }
+}
+
+$geodata = @($manifest.dependencyPayloads.PSObject.Properties | Where-Object { $_.Name.StartsWith('build/geodata/') })
+foreach ($entry in $geodata) {
+    $target = Join-Path $ReleaseRoot $entry.Name
+    $source = Get-ImmichDependencyPayload -Payload $entry.Value -Version $packageVersion -CacheRoot $cache -InstalledPath $(if ($reuseSource) { Join-Path $reuseSource $entry.Name })
+    New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+    Copy-Item -LiteralPath $source -Destination $target -Force
 }
 
 $cleanupProgress=Start-ImmichProgress -Key cleanup

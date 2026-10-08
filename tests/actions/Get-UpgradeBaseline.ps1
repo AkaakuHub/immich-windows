@@ -52,21 +52,28 @@ function Get-VerifiedBaselineAsset([string]$Name,[string]$Path) {
 }
 $folder="immich-windows-$version-win-x64"
 $application=Get-VerifiedBaselineAsset "$folder.zip" (Join-Path $Destination "$folder.zip")
-$nativeName="immich-windows-$version-native-dependencies.zip"
-$native=Get-VerifiedBaselineAsset $nativeName (Join-Path $DownloadCache $nativeName)
-$nativeSha256=([string]($release.assets | Where-Object { $_.name -ceq $nativeName }).digest).Substring(7)
 Expand-Archive -LiteralPath $application -DestinationPath $Destination
 $packageRoot=Join-Path $Destination $folder
 $manifest=Get-Content -Raw (Join-Path $packageRoot 'manifest.json') | ConvertFrom-Json
 if ((Get-WindowsPackageVersion $manifest) -ne $selected.Version -or $manifest.schemaVersion -ne 2 -or
     [string]$manifest.upstreamCommit -cnotmatch '\A[0-9a-f]{40}\z' -or
-    [string]$manifest.sourceCommit -cnotmatch '\A[0-9a-f]{40}\z' -or
-    [string]$manifest.nativeDependenciesSha256 -cne $nativeSha256) {
+    [string]$manifest.sourceCommit -cnotmatch '\A[0-9a-f]{40}\z') {
     throw 'Baseline package identity or native archive provenance does not match the released assets.'
+}
+if ($manifest.PSObject.Properties['dependencyPayloads']) {
+    foreach ($payload in $manifest.dependencyPayloads.PSObject.Properties.Value) {
+        [void](Get-VerifiedBaselineAsset $payload.assetName (Join-Path $DownloadCache $payload.assetName))
+    }
+} else {
+    # Historical releases are executed by their historical installer during real upgrades.
+    $nativeName="immich-windows-$version-native-dependencies.zip"
+    [void](Get-VerifiedBaselineAsset $nativeName (Join-Path $DownloadCache $nativeName))
+    $nativeSha256=([string]($release.assets | Where-Object { $_.name -ceq $nativeName }).digest).Substring(7)
+    if ([string]$manifest.nativeDependenciesSha256 -cne $nativeSha256) { throw 'Historical native archive provenance mismatch.' }
 }
 # Validate the historical release with its own historical packaging rules.
 $global:LASTEXITCODE=0
 & (Join-Path $packageRoot 'installer/Test-ReleasePackage.ps1') -PackageRoot $packageRoot -Version $version | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Released upgrade baseline failed package validation.' }
 Write-Host "Verified upgrade baseline: $version ($($manifest.immichVersion), upstream $($manifest.upstreamCommit)) -> v$candidateVersion"
-[pscustomobject]@{PackageRoot=$packageRoot;Version=$version;NativeArchive=$native}
+[pscustomobject]@{PackageRoot=$packageRoot;Version=$version}
