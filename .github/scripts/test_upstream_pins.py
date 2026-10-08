@@ -17,14 +17,18 @@ class FakeAPI:
             ('libvips/libvips', 'v8.18.5'): 'd' * 40,
             ('strukturag/libheif', 'v1.23.3'): 'e' * 40,
             ('libjxl/libjxl', 'v0.12.0'): 'f' * 40,
+            ('pgvector/pgvector', 'v0.8.5'): '6' * 40,
+            ('supervc-stack/VectorChord', '1.1.1'): '7' * 40,
         }
         self.files = {
             (pins.IMMICH, 'mise.toml'): '[tools]\nnode="24.15.0"\npnpm="11.22.0"\n"github:extism/js-pdk"="v1.7.0"\n"github:webassembly/binaryen"="version_124"\n[tools."github:jellyfin/jellyfin-ffmpeg"]\nversion="7.1.3-6"\n',
             (pins.IMMICH, 'server/package.json'): json.dumps({'version': '3.2.4', 'dependencies': {'sharp': '^0.35.3'}}),
             (pins.IMMICH, 'server/Dockerfile'): f'FROM ghcr.io/immich-app/base-server-dev:202609281550@sha256:{"1" * 64} AS builder\nFROM ghcr.io/immich-app/base-server-prod:202609281550@sha256:{"2" * 64}\n',
             (pins.IMMICH, 'machine-learning/pyproject.toml'): '[project]\nversion="3.2.4"\nrequires-python=">=3.11,<4.0"\n[project.optional-dependencies]\nopenvino=["onnxruntime-openvino>=1.24.1,<2"]\n',
+            (pins.IMMICH, 'machine-learning/Dockerfile'): 'FROM python:3.12-slim AS builder-openvino\n',
             (pins.IMMICH, 'machine-learning/uv.lock'): '[[package]]\nname="onnxruntime-openvino"\nversion="1.24.1"\n',
             (pins.BASE, 'server/Dockerfile'): f'FROM node:24.21.0-trixie-slim@sha256:{"3" * 64} AS prod\n',
+            (pins.BASE, 'postgres/versions.yaml'): 'pg:\n  - "18"\nvectorchord:\n  - "1.1.1"\npgvector:\n  - "0.8.5"\n',
             (pins.BASE, 'server/packages/ffmpeg.json'): '{"version":"7.1.4-3"}',
             (pins.MXE, 'build/vips.mk'): '$(PKG)_VERSION := 8.18.5\n',
             (pins.MXE, 'build/libheif.mk'): f'$(PKG)_VERSION := 1.23.1\n$(PKG)_CHECKSUM := {"4" * 64}\n',
@@ -51,6 +55,11 @@ class FakeAPI:
         self.python_release = {
             'assets': [{'name': 'cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz'}]
         }
+        self.release_versions = {
+            'astral-sh/uv': ('0.12.23', 'uv-x86_64-pc-windows-msvc.zip'),
+            'valkey-windows/valkey-windows': ('9.1.2', 'Valkey-9.1.2-Windows-x64-msys2-with-Service.zip'),
+            'winsw/winsw': ('2.12.0', 'WinSW-x64.exe'),
+        }
         self.extra_patch = False
         self.asset_digest = 'sha256:' + '5' * 64
         self.calls = []
@@ -71,12 +80,18 @@ class FakeAPI:
                     'assets': [{'name': name, 'digest': self.asset_digest}]}
         if path == 'releases/latest' and repo == pins.PYTHON_STANDALONE:
             return self.python_release
+        if path == 'releases/latest' and repo in self.release_versions:
+            version, asset = self.release_versions[repo]
+            return {'tag_name': version, 'assets': [{'name': asset}]}
         if path.startswith('contents/'):
             patches = [{'path': f'server/sources/libvips-patches/{pins.LOADER}', 'type': 'file'}]
             return patches + ([{'path': 'new.patch', 'type': 'file'}] if self.extra_patch else [])
         raise AssertionError((repo, path))
 
     def file(self, path, ref, repo=None):
+        if repo == 'supervc-stack/VectorChord':
+            assert ref == '7' * 40
+            return '[dependencies]\npgrx={version="=0.17.0"}\n'
         expected = {pins.IMMICH: 'a' * 40, pins.BASE: 'b' * 40, pins.MXE: 'c' * 40}[repo]
         assert ref == expected, (repo, path, ref)
         return self.files[repo, path]
@@ -88,7 +103,8 @@ class PinTests(unittest.TestCase):
         self.current = {'repository': 'https://github.com/immich-app/immich.git', 'version': 'v3.2.2',
                         'commit': '0' * 40, 'windowsRevision': 9, 'buildArchitecture': 'win-x64'}
         self.dependencies = {'schemaVersion': 1, 'target': 'win-x64'}
-        self.dependencies.update({name: {'version': '1.0.0'} for name in pins.WINDOWS_OWNED})
+        self.dependencies.update({name: {'version': '1.0.0'} for name in pins.WINDOWS_PRESERVED})
+        self.dependencies.update({name: {'version': '1.0.0'} for name in ('pgvector', 'vectorchord', 'valkey', 'uv', 'winsw')})
         self.dependencies['python'] = {'version': '3.11.14'}
         self.dependencies['onnxruntimeDirectml']['version'] = '1.24.4'
         self.dependencies.update({name: {'version': '0.0.0'} for name in ('node', 'ffmpeg', 'pnpm', 'extismJs', 'binaryen', 'sharp')})
@@ -111,6 +127,15 @@ class PinTests(unittest.TestCase):
         deps = result['dependencies/versions.json']
         self.assertEqual(deps['node']['version'], '24.21.0')
         self.assertEqual(deps['ffmpeg']['version'], '7.1.4-3')
+        self.assertEqual(deps['python']['version'], '3.12.15')
+        self.assertEqual(deps['pgvector']['version'], '0.8.5')
+        self.assertEqual(deps['pgvector']['commit'], '6' * 40)
+        self.assertEqual(deps['vectorchord']['version'], '1.1.1')
+        self.assertEqual(deps['vectorchord']['commit'], '7' * 40)
+        self.assertEqual(deps['vectorchord']['pgrx'], '0.17.0')
+        self.assertEqual(deps['uv']['version'], '0.12.23')
+        self.assertEqual(deps['valkey']['version'], '9.1.2')
+        self.assertEqual(deps['winsw']['version'], '2.12.0')
         self.assertEqual(deps['sharpLibvips']['libheif']['version'], '1.23.3')
         self.assertEqual(deps['sharpLibvips']['libheif']['recipeVersion'], '1.23.1')
         self.assertEqual(result['upstream.json']['windowsRevision'], 0)
@@ -123,7 +148,7 @@ class PinTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(before, (self.current, self.dependencies))
         deps = first['dependencies/versions.json']
-        for name in pins.WINDOWS_OWNED:
+        for name in pins.WINDOWS_PRESERVED:
             self.assertEqual(deps[name], self.dependencies[name])
         for key in ('target', 'variant', 'hevc', 'jpeg', 'repository', 'immichLoaderPatch'):
             self.assertEqual(deps['sharpLibvips'][key], self.dependencies['sharpLibvips'][key])
