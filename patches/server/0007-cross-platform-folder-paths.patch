@@ -13,7 +13,7 @@ index dd5b353c6ac5ce8c98c00027131a0e0a7accb5d0..a338d3858ae6adca90c28cda8efded35
      const results = await this.db
        .selectFrom('asset')
 -      .select((eb) => eb.fn<string>('substring', ['asset.originalPath', eb.val('^(.*/)[^/]*$')]).as('directoryPath'))
-+      .select((eb) => eb.fn<string>('substring', ['asset.originalPath', eb.val(sep === '\\' ? '^(.*[\\/])[^\\/]*$' : '^(.*/)[^/]*$')]).as('directoryPath'))
++      .select((eb) => eb.fn<string>('substring', ['asset.originalPath', eb.val(sep === '\\' ? '^(.*[\\\\/])[^\\\\/]*$' : '^(.*/)[^/]*$')]).as('directoryPath'))
        .distinct()
        .where('ownerId', '=', asUuid(userId))
        .where('visibility', '=', AssetVisibility.Timeline)

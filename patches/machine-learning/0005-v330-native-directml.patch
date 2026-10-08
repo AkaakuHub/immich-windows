@@ -58,11 +58,10 @@ index 2a5f47cb1f5259b16e574f186177b2653b7d2dcf..f4738ee094ffd45c6f4172c3b3af2fda
  
  from .schemas import ModelOrganization
  
-@@ -80,6 +82,14 @@ class Settings(BaseSettings):
+@@ -80,6 +82,13 @@ class Settings(BaseSettings):
      def legacy_models(self) -> bool:
          return self.model_revision == "main"
  
-+    @property
 +    @property
 +    def accelerator(self) -> str:
 +        accelerator = os.environ.get("MACHINE_LEARNING_ACCELERATOR", "cpu").lower()
@@ -73,7 +72,7 @@ index 2a5f47cb1f5259b16e574f186177b2653b7d2dcf..f4738ee094ffd45c6f4172c3b3af2fda
      @property
      def device_id(self) -> str:
          return os.environ.get("MACHINE_LEARNING_DEVICE_ID", "0")
-@@ -155,11 +165,13 @@ class CustomUvicornServer(Server):
+@@ -155,11 +164,13 @@ class CustomUvicornServer(Server):
          await super().shutdown()
  
  
