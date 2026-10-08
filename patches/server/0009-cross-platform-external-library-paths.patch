@@ -1,55 +1,37 @@
-diff --git a/server/src/repositories/asset.repository.ts b/server/src/repositories/asset.repository.ts
-index 313830d0ed48b6652e6996e85b40c1e66b162f17..6a7b28185fe0803d8bfb20e826bed1d7127ad8a4 100644
 --- a/server/src/repositories/asset.repository.ts
 +++ b/server/src/repositories/asset.repository.ts
-@@ -1087,7 +1087,11 @@ export class AssetRepository {
+@@ -14,6 +14,7 @@
+ import { jsonArrayFrom } from 'kysely/helpers/postgres';
+ import { isEmpty, isUndefined, omitBy } from 'lodash-es';
+ import { InjectKysely } from 'nestjs-kysely';
++import { normalize } from 'node:path';
+ import type { AuthDto } from 'src/dtos/auth.dto.js';
+ import { LockableProperty, Stack } from 'src/database.js';
+ import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators.js';
+@@ -1087,7 +1088,11 @@
      importPaths: string[],
      exclusionPatterns: string[],
    ): Promise<UpdateResult> {
 -    const paths = importPaths.map((importPath) => `${importPath}%`);
 +    const paths = importPaths.map((importPath) => {
 +      const normalizedPath = normalize(importPath);
-+      const escapedPath = normalizedPath.replaceAll(\, \\).replaceAll(%, \%).replaceAll(_, \_);
++      const escapedPath = normalizedPath.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 +      return `${escapedPath}%`;
 +    });
      const exclusions = exclusionPatterns.map((pattern) => globToPostgresRegex(pattern));
  
      return this.db
-diff --git a/server/src/repositories/storage.repository.ts b/server/src/repositories/storage.repository.ts
-index eaed895531ab0e1a47087425e4b3275a8a9cd82e..31b8d4e527b4d369159d570bf3fd7b8173cd31bb 100644
---- a/server/src/repositories/storage.repository.ts
-+++ b/server/src/repositories/storage.repository.ts
-@@ -239,7 +239,7 @@ export class StorageRepository {
-       onlyFiles: true,
-       dot: includeHidden,
-       ignore: exclusionPatterns,
--    });
-+    }).then((paths) => paths.map((filePath) => path.normalize(filePath)));
-   }
- 
-   async *walk(walkOptions: WalkOptionsDto): AsyncGenerator<string[]> {
-@@ -262,7 +262,7 @@ export class StorageRepository {
- 
-     let batch: string[] = [];
-     for await (const value of stream) {
--      batch.push(value.toString());
-+      batch.push(path.normalize(value.toString()));
-       if (batch.length !== walkOptions.take) {
-         continue;
-       }
-diff --git a/server/src/services/library.service.ts b/server/src/services/library.service.ts
-index 7fac6db3f9614260552831c3a5c7f116fd80b102..3d6296f15a81d6bfb6c6a485a5f9bd91059bdb43 100644
 --- a/server/src/services/library.service.ts
 +++ b/server/src/services/library.service.ts
-@@ -104,6 +104,7 @@ export class LibraryService extends BaseService {
+@@ -104,6 +104,7 @@
  
      const matcher = picomatch(`**/*{${mimeTypes.getSupportedFileExtensions().join(',')}}`, {
        nocase: true,
-+      windows: process.platform === win32,
++      windows: process.platform === 'win32',
        ignore: library.exclusionPatterns,
      });
  
-@@ -512,7 +513,7 @@ export class LibraryService extends BaseService {
+@@ -512,7 +513,7 @@
            break;
          }
          case AssetSyncResult.CHECK_OFFLINE: {
@@ -58,12 +40,12 @@ index 7fac6db3f9614260552831c3a5c7f116fd80b102..3d6296f15a81d6bfb6c6a485a5f9bd91
  
            if (!isInImportPath) {
              this.logger.verbose(
-@@ -522,7 +523,7 @@ export class LibraryService extends BaseService {
+@@ -522,7 +523,7 @@
            }
  
            const isExcluded = job.exclusionPatterns.some((pattern) =>
 -            picomatch.isMatch(asset.originalPath, pattern, { nocase: true }),
-+            picomatch.isMatch(asset.originalPath, pattern, { nocase: true, windows: process.platform === win32 }),
++            picomatch.isMatch(asset.originalPath, pattern, { nocase: true, windows: process.platform === 'win32' }),
            );
  
            if (!isExcluded) {
