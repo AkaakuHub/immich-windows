@@ -19,8 +19,11 @@ function Stop-ImmichMachineLearningProcesses {
     )
     $pythonProcesses = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
         $path = [string]$_.ExecutablePath
-        $path -and ($roots | Where-Object { $path.StartsWith($_.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }) -and
+        $commandLine = [string]$_.CommandLine
+        $packagedPath = $path -and ($roots | Where-Object { $path.StartsWith($_.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }) -and
             $path -match '\\machine-learning\\python-runtime\\'
+        $mlSupervisor = $commandLine -match '\s-m\s+immich_ml(?:\s|$)'
+        $packagedPath -or $mlSupervisor
     }
     foreach ($process in $pythonProcesses) {
         & taskkill.exe /PID $process.ProcessId /T /F | Out-Host
