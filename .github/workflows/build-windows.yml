@@ -308,6 +308,12 @@ jobs:
           key: build-downloads-corepack-v1-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
           # Reuse the matching archive cache once when seeding Corepack.
           restore-keys: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
+      - name: Start PostgreSQL qualification service
+        shell: pwsh
+        run: |
+          .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
+            -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
+            -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
       - name: Build and qualify Windows package
         shell: pwsh
         env:
