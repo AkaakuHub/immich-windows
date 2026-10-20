@@ -33,6 +33,8 @@ class FakeAPI:
         self.runs = []
         self.writes = []
         self.reads = []
+        self.older_prs = []
+        self.extra_pins = {}
 
     def get(self, path, repo=None):
         self.reads.append((path, repo))
@@ -46,6 +48,8 @@ class FakeAPI:
             return {'object': {'type': 'commit', 'sha': NEW}}
         if path == 'pulls/12':
             return self.pr
+        if path.startswith('pulls/'):
+            return next(pr for pr in self.older_prs if path == f"pulls/{pr['number']}")
         if path == 'git/commits/' + 'f' * 40:
             return {'sha': 'f' * 40, 'parents': [{'sha': MAIN}, {'sha': HEAD}]}
         if path == 'git/commits/' + MAIN:
@@ -60,12 +64,16 @@ class FakeAPI:
 
     def file(self, path, ref, repo=None):
         if path == 'upstream.json':
+            if ref in self.extra_pins:
+                return json.dumps(self.extra_pins[ref])
             return json.dumps(self.pin if ref == MAIN else {'version': 'v3.2.4', 'commit': NEW, 'windowsRevision': 0})
         if path == 'dependencies/versions.json':
             return '{}'
         raise AssertionError(f'Unexpected file: {path}')
 
     def pages(self, path, key=None):
+        if path == 'pulls?state=open&base=main':
+            return iter([pr for pr in self.older_prs + ([self.pr] if self.pr else []) if pr['state'] == 'open'])
         if path.startswith('pulls?'):
             return iter([self.pr] if self.pr else [])
         if path == 'actions/workflows/build-windows.yml/runs?event=workflow_dispatch':
@@ -96,6 +104,10 @@ class FakeAPI:
         if path == 'pulls/12':
             self.pr['body'] = data['body']
             return self.pr
+        if path.startswith('pulls/'):
+            pr = next(pr for pr in self.older_prs if path == f"pulls/{pr['number']}")
+            pr.update(data)
+            return pr
         if path.endswith('/dispatches'):
             return None
         raise AssertionError(f'Unexpected write: {method} {path}')
@@ -111,6 +123,43 @@ class WatcherTests(unittest.TestCase):
 
     def run_check(self):
         return check.run(self.api, self.prepare)
+
+    def older_pr(self, version='v3.2.3'):
+        head = '9' * 40
+        pr = make_pr(head=head)
+        pr['number'] = 11
+        pr['head']['ref'] = check.BRANCH_PREFIX + version
+        self.api.older_prs.append(pr)
+        self.api.extra_pins[head] = {'version': version, 'commit': OLD, 'windowsRevision': 0}
+        return pr
+
+    def test_new_target_closes_owned_older_pr_and_second_check_does_not_close_it_again(self):
+        old = self.older_pr()
+        self.run_check()
+        self.assertEqual(old['state'], 'closed')
+        closes = [w for w in self.api.writes if w[1] == 'pulls/11']
+        self.assertEqual(closes, [('PATCH', 'pulls/11', {'state': 'closed'})])
+        self.api.runs = [{'event': 'workflow_dispatch', 'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}',
+                          'head_repository': {'full_name': self.api.repo}, 'id': 42, 'status': 'completed', 'conclusion': 'failure'}]
+        self.run_check()
+        self.assertEqual(len([w for w in self.api.writes if w[1] == 'pulls/11']), 1)
+
+    def test_old_pr_with_user_changes_is_preserved(self):
+        old = self.older_pr()
+        old['head']['sha'] = '8' * 40
+        self.run_check()
+        self.assertEqual(old['state'], 'open')
+
+    def test_old_pr_without_ownership_marker_is_preserved(self):
+        old = self.older_pr()
+        old['body'] = check.MARKER
+        self.run_check()
+        self.assertEqual(old['state'], 'open')
+
+    def test_newer_automatic_pr_is_preserved(self):
+        old = self.older_pr('v3.2.5')
+        self.run_check()
+        self.assertEqual(old['state'], 'open')
 
     def test_same_upstream_never_resets_revision_or_prepares_or_builds(self):
         self.api.latest['tag_name'] = 'v3.2.2'

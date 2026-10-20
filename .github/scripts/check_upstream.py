@@ -304,6 +304,30 @@ def write_branch(api, branch, base, files, version, previous_head=None):
     return commit['sha']
 
 
+def close_superseded(api, version, keep_number=None):
+    for item in api.pages('pulls?state=open&base=main'):
+        branch = item['head']['ref']
+        old_version = branch.removeprefix(BRANCH_PREFIX)
+        if (item['number'] == keep_number or not branch.startswith(BRANCH_PREFIX)
+                or not STABLE.fullmatch(old_version) or number(old_version) >= number(version)
+                or item.get('user', {}).get('login') != 'github-actions[bot]'
+                or MARKER not in (item.get('body') or '')):
+            continue
+        ownership = OWNERSHIP.findall(item.get('body') or '')
+        if len(ownership) != 1 or ownership[0][0] != item['head']['sha']:
+            summary(f"Preserved PR #{item['number']}: its automatic ownership changed.")
+            continue
+        pr = api.get(f"pulls/{item['number']}")
+        if (pr['state'] != 'open' or (pr['head'].get('repo') or {}).get('full_name') != api.repo
+                or pr['head']['sha'] != item['head']['sha'] or OWNERSHIP.findall(pr.get('body') or '') != ownership):
+            summary(f"Preserved PR #{pr['number']}: its automatic ownership changed.")
+            continue
+        pin = json.loads(api.file('upstream.json', pr['head']['sha']))
+        validate_pr(api, pr, branch, old_version, pin['commit'])
+        api.write('PATCH', f"pulls/{pr['number']}", {'state': 'closed'})
+        summary(f"Closed superseded automatic PR #{pr['number']} ({old_version}); current stable target is {version}.")
+
+
 def run(api, prepare_update, recover_publication=None, recover_completion=None):
     main = api.get('git/ref/heads/main')['object']['sha']
     require(SHA.fullmatch(main), 'Invalid main revision')
@@ -314,6 +338,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
     current_number, latest_number = number(pin['version']), number(version)
     summary(f"Pinned: {pin['version']}.{pin['windowsRevision']}; latest stable: {version}.")
     if latest_number <= current_number:
+        close_superseded(api, pin['version'])
         # A merged automatic update can outlive a transient publication failure.
         # Recover only its existing qualification; never start another build.
         if recover_publication is not None and recover_publication(main, pin):
@@ -354,6 +379,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
             pr = api.get(f"pulls/{pr['number']}")
             validate_pr(api, pr, branch, version, upstream_commit)
             summary(f"Refreshed PR #{pr['number']} against current main; the new head requires fresh qualification.")
+        close_superseded(api, version, pr['number'])
         return dispatch_once(api, pr, recover_completion)
     # Recover an interrupted run after branch creation but before PR creation.
     try:
@@ -398,6 +424,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
     pr = api.get(f"pulls/{pr['number']}")
     require(pr['head']['sha'] == head, 'Update branch changed while creating PR')
     validate_pr(api, pr, branch, version, upstream_commit)
+    close_superseded(api, version, pr['number'])
     return dispatch_once(api, pr, recover_completion)
 
 
