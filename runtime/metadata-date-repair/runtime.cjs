@@ -12,6 +12,15 @@ function releaseIdentity(manifest, serverPackage) {
     && manifest.dependencies?.upstreamRuntime?.immichCommit === manifest.upstreamCommit, 'unsupported-upstream-build');
   return { upstreamCommit: manifest.upstreamCommit, version: manifest.immichVersion };
 }
+function inactiveAssetStateTrigger(trigger) {
+  if (trigger.table_name !== 'asset' || trigger.tgname !== 'asset_face_update_asset_state') return false;
+  const definition = trigger.definition.replace(/\s+/g, ' ').trim();
+  const match = /^CREATE TRIGGER "?asset_face_update_asset_state"? AFTER UPDATE ON (?:public\.)?"?asset"? FOR EACH ROW WHEN \((.+)\) EXECUTE FUNCTION (?:public\.)?"?asset_face_update_asset_state"?\(\);?$/i.exec(definition);
+  if (!match) return false;
+  const condition = match[1].replace(/\bROW(?=\s*\()/gi, '').replace(/[\s()"]/g, '').toLowerCase();
+  return condition === 'old.ownerid,old.visibility,old.deletedatisdistinctfromnew.ownerid,new.visibility,new.deletedat'
+    || condition === 'old.owneridisdistinctfromnew.owneridorold.visibilityisdistinctfromnew.visibilityorold.deletedatisdistinctfromnew.deletedat';
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function normalized(p) { const v = path.resolve(p); return process.platform === 'win32' ? v.toLowerCase() : v; }
 function sourceFileError(error) {
@@ -199,7 +208,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       identity.triggersDigest = core.hash(triggers);
       // Filled against pinned function source; unknown/custom triggers fail closed.
       for (const table of ['asset','asset_exif']) {
-        const t = triggers.filter(t => t.table_name === table);
+        const t = triggers.filter(t => t.table_name === table && !inactiveAssetStateTrigger(t));
         core.insist(t.length === 1 && /before update on /i.test(t[0].definition) && /for each row execute function .*updated_at\(\)/i.test(t[0].definition), 'unsupported-database-triggers');
         const body = /\$function\$([\s\S]*?)\$function\$/i.exec(t[0].function)?.[1]?.replace(/\s+/g, ' ').trim();
         core.insist(body && /^DECLARE clock_timestamp TIMESTAMP := clock_timestamp\(\); BEGIN new\."updatedAt" = clock_timestamp; new\."updateId" = immich_uuid_v7\(clock_timestamp\); return new; END;$/i.test(body), 'unverified-updated-at-function');
@@ -214,4 +223,4 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     throw new core.Stop('runtime-initialization-failed');
   }
 }
-module.exports = { sourceFileError, createAdapter, statToken, normalized, releaseIdentity };
+module.exports = { sourceFileError, createAdapter, statToken, normalized, releaseIdentity, inactiveAssetStateTrigger };

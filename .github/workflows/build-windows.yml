@@ -5,7 +5,14 @@ run-name: >-
 on:
   pull_request:
     branches: [main]
-    paths-ignore: [README.md, 'docs/**']
+    paths-ignore:
+      - README.md
+      - 'docs/**'
+      - upstream.json
+      - dependencies/versions.json
+      - 'patches/**'
+      - 'metadata-patches/**'
+      - media-patches/libvips/0001-put-other-loaders-ahead-of-dcrawload.patch
   push:
     branches: [main]
     paths-ignore: [README.md, 'docs/**']
