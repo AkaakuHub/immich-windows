@@ -77,7 +77,7 @@ CI用Pythonスクリプトとworkflow契約のテストは、軽量なUbuntuの`
 node ./tests/Metadata-DateFallback.cjs ./.work/immich --server-root ./artifacts/application/server
 ```
 
-Tokyo・UTC・夏時間の夏冬と切替前後、GPS由来のzone優先、撮影日時がある既存分岐の不変、再処理での二重加算防止を確認します。`tests/Source-Preparation.ps1`は両パッチ一覧の適用順・内容変更・再利用・失敗時の復旧・手作業の変更の保護を確認します。アプリのキャッシュキーにはメタデータパッチも含み、ローカルの既存`sourceDiff`署名にも反映されます。
+Tokyo・UTC・夏時間の夏冬と切替前後、GPS由来のzone優先、zoneなし撮影日時の解釈、明示的なzoneを持つ撮影日時の不変、再処理での二重加算防止を確認します。`tests/Source-Preparation.ps1`は両パッチ一覧の適用順・内容変更・再利用・失敗時の復旧・手作業の変更の保護を確認します。アプリのキャッシュキーにはメタデータパッチも含み、ローカルの既存`sourceDiff`署名にも反映されます。
 
 ### GLibのWindows初期化の検証
 

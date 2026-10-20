@@ -43,8 +43,6 @@ function probe(text) {
 }
 const patched = probe(source);
 const original = probe(baseline);
-const fallbackMarker = '    if (!localDateTime || !dateTimeOriginal) {';
-assert.equal(getDatesMethod(source).split(fallbackMarker)[0], getDatesMethod(baseline).split(fallbackMarker)[0], 'EXIF capture-date interpretation must be identical apart from line endings');
 let checks = 0;
 const savedTZ = process.env.TZ;
 const savedDefaultZone = Settings.defaultZone;
@@ -105,20 +103,51 @@ try {
       ['camera explicit zone', '2024-05-01T12:00:00+09:00', true, 'Asia/Tokyo'],
       ['sidecar explicit zone', '2024-07-15T08:00:00-04:00', true, 'America/New_York'],
       ['explicit UTC suffix', '2024-05-01T12:00:00Z', true, undefined],
-      ['capture date without zone', '2024-05-01T12:00:00', false, undefined],
-      ['capture date with inferred GPS zone', '2024-05-01T12:00:00', false, 'Asia/Tokyo'],
+      ['UTC suffix without inferred zone', '2024-05-01T12:00:00+00:00', false, undefined],
     ]) {
       const tags = { zone, capture: { tag: 'DateTimeOriginal', dateTime: { rawValue, hasZone, toDateTime: () => DateTime.fromISO(rawValue, { setZone: true }) } } };
       assert.deepEqual(values(patched.getDates(asset, tags, stats)), values(original.getDates(asset, tags, stats)), `${label} unchanged under ${runtimeZone}`);
       checks++;
     }
   }
+  for (const [runtimeZone, rawValue, zone, instant, expectedZone] of [
+    ['Asia/Tokyo', '2024-05-01T12:00:00', undefined, '2024-05-01T03:00:00.000Z', 'Asia/Tokyo'],
+    ['Asia/Tokyo', '2024-05-02T01:08:16', undefined, '2024-05-01T16:08:16.000Z', 'Asia/Tokyo'],
+    ['UTC', '2024-05-01T12:00:00', undefined, '2024-05-01T12:00:00.000Z', 'UTC'],
+    ['America/New_York', '2024-01-15T12:00:00', undefined, '2024-01-15T17:00:00.000Z', 'America/New_York'],
+    ['America/New_York', '2024-07-15T12:00:00', undefined, '2024-07-15T16:00:00.000Z', 'America/New_York'],
+    ['Asia/Kathmandu', '2024-05-01T12:00:00', undefined, '2024-05-01T06:15:00.000Z', 'Asia/Kathmandu'],
+    ['Asia/Tokyo', '2024-05-01T12:00:00', 'America/New_York', '2024-05-01T16:00:00.000Z', 'America/New_York'],
+    ['Asia/Tokyo', '2024-05-01T12:00:00', 'UTC', '2024-05-01T12:00:00.000Z', 'UTC'],
+  ]) {
+    useZone(runtimeZone);
+    const { asset, stats } = input('2020-01-01T00:00:00.000Z');
+    const tags = { zone, capture: { tag: 'DateTimeOriginal', dateTime: { rawValue, hasZone: false, toDateTime: () => DateTime.fromISO(rawValue) } } };
+    const result = patched.getDates(asset, tags, stats);
+    assert.deepEqual(values(result), { dateTimeOriginal: instant, localDateTime: rawValue + '.000Z', timeZone: zone === undefined ? DateTime.local().zoneName : expectedZone });
+    assert.deepEqual(values(patched.getDates({ ...asset, fileCreatedAt: result.dateTimeOriginal }, tags, stats)), values(result));
+    assert.equal(DateTime.fromJSDate(result.dateTimeOriginal, { zone: result.timeZone }).setZone('UTC', { keepLocalTime: true }).toISO(), DateTime.fromJSDate(result.localDateTime, { zone: 'UTC' }).toISO());
+    checks++;
+  }
+  useZone('Asia/Tokyo');
+  {
+    const { asset, stats } = input('2020-01-01T00:00:00.000Z');
+    const capture = (rawValue, hasZone, zone) => ({ zone, capture: { tag: 'DateTimeOriginal', dateTime: { rawValue, hasZone, toDateTime: () => DateTime.fromISO(rawValue, { setZone: true }) } } });
+    const screenshot = capture('2024-05-02T00:05:00', false, undefined);
+    const camera = capture('2024-05-01T23:55:00+09:00', true, 'Asia/Tokyo');
+    const previous = patched.getDates(asset, camera, stats);
+    const next = patched.getDates(asset, screenshot, stats);
+    assert.equal(next.dateTimeOriginal - previous.dateTimeOriginal, 10 * 60 * 1000, 'Camera and screenshot ordering must use the same instant basis across midnight');
+    assert.equal(next.localDateTime.toISOString(), '2024-05-02T00:05:00.000Z', 'Screenshot must belong to its Japanese calendar day');
+    assert.equal(original.getDates(asset, screenshot, stats).dateTimeOriginal - previous.dateTimeOriginal, (9 * 60 + 10) * 60 * 1000, 'Pinned baseline must reproduce the mixed capture offset');
+    checks++;
+  }
   useZone('Asia/Tokyo');
   const { asset, stats } = input('2024-05-01T03:00:00.000Z');
   assert.equal(original.getDates(asset, {}, stats).localDateTime.toISOString(), '2024-05-01T03:00:00.000Z', 'Baseline must reproduce the UTC wall-time bug');
   assert.equal(patched.getDates(asset, {}, stats).localDateTime.toISOString(), '2024-05-01T12:00:00.000Z', 'Patched Tokyo wall time must fix the baseline regression');
   checks++;
-  console.log(`PASS metadata date fallback: ${checks} cases; actual getDates + Luxon, PNG/JPEG synthetic inputs, runtime/GPS zones, DST, EXIF/sidecar branch unchanged, repeated extraction stable.`);
+  console.log(`PASS metadata dates: ${checks} cases; actual getDates + Luxon, fallback and unzoned capture dates, explicit EXIF/sidecar zones unchanged, rollover, DST, repeated extraction stable.`);
 } finally {
   if (savedTZ === undefined) delete process.env.TZ;
   else process.env.TZ = savedTZ;

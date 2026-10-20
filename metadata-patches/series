@@ -1,2 +1,3 @@
 # Metadata behavior fixes; applied after the Windows compatibility series.
 server/0001-no-exif-local-date-time.patch
+server/0002-unzoned-capture-date-time.patch
