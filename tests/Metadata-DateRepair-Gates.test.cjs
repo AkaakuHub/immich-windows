@@ -2,7 +2,7 @@
 // Independent source-level safety review. Synthetic data only.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { releaseIdentity } = require('../runtime/metadata-date-repair/runtime.cjs');
+const { releaseIdentity, inactiveAssetStateTrigger } = require('../runtime/metadata-date-repair/runtime.cjs');
 const { initialReason, strictTags, assertChangedOnlyDates, validatePlan, hash, FORMAT, HISTORY_WARNING } = require('../runtime/metadata-date-repair/core.cjs');
 const ids = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000005'];
 function snapshot() {
@@ -23,6 +23,19 @@ test('upstream updates use the installed release identity without a second versi
 });
 test('normal PostgreSQL microsecond revisions must not exclude a millisecond capture date', () => {
   assert.equal(initialReason(snapshot()), null);
+});
+
+test('only the upstream asset-state trigger that cannot fire on date-only updates is excluded', () => {
+  const make = condition => ({ table_name: 'asset', tgname: 'asset_face_update_asset_state', definition: `CREATE TRIGGER asset_face_update_asset_state AFTER UPDATE ON public.asset FOR EACH ROW WHEN (${condition}) EXECUTE FUNCTION asset_face_update_asset_state()` });
+  const row = 'ROW(old."ownerId", old.visibility, old."deletedAt") IS DISTINCT FROM ROW(new."ownerId", new.visibility, new."deletedAt")';
+  assert.equal(inactiveAssetStateTrigger(make(row)), true);
+  assert.equal(inactiveAssetStateTrigger(make('(old."ownerId" IS DISTINCT FROM new."ownerId") OR (old.visibility IS DISTINCT FROM new.visibility) OR (old."deletedAt" IS DISTINCT FROM new."deletedAt")')), true);
+  for (const condition of [row + ' OR true', row.replaceAll('visibility', 'localDateTime'), row.replace('IS DISTINCT', 'IS NOT DISTINCT')]) {
+    assert.equal(inactiveAssetStateTrigger(make(condition)), false);
+  }
+  assert.equal(inactiveAssetStateTrigger({ ...make(row), table_name: 'asset_exif' }), false);
+  assert.equal(inactiveAssetStateTrigger({ ...make(row), tgname: 'custom' }), false);
+  assert.equal(inactiveAssetStateTrigger({ ...make(row), definition: make(row).definition.replace('AFTER UPDATE', 'BEFORE UPDATE') }), false);
 });
 test('pending metadata edit locks always exclude', () => {
   for (const property of ['dateTimeOriginal', 'timeZone', 'description']) {
