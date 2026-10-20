@@ -57,7 +57,7 @@ index 37860b26e1516faf86852dadf3a453b999d10ba0..ad2bcdd83485f25bb1187f8fa6588cde
    }
 diff --git a/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..bf29b7e9b5359d1fd0de4b7ca0eff6edab3b15b2
+index 0000000000000000000000000000000000000000..0d159fc6c51610294ff2e862e8722ace829bfeef
 --- /dev/null
 +++ b/server/src/schema/migrations/1787148183731-NormalizeWindowsMediaPaths.ts
 @@ -0,0 +1,13 @@
@@ -75,11 +75,11 @@ index 0000000000000000000000000000000000000000..bf29b7e9b5359d1fd0de4b7ca0eff6ed
 +
 +export async function down(): Promise<void> {}
 diff --git a/server/src/schema/migrations/ORDER b/server/src/schema/migrations/ORDER
-index 9f46fc4998e8098a34d52b08b661c1d67b914477..c60274a66031d81d31b78372e59566bd7105432d 100644
+index 2619cbe443c9f5dc4e72f9fb6172fbd77e685c0a..80b4cfeaec093e0f84622f377b86e2d52bc17377 100644
 --- a/server/src/schema/migrations/ORDER
 +++ b/server/src/schema/migrations/ORDER
-@@ -98,3 +98,4 @@
- 1790587508209-RenameGeoNamesCountries
+@@ -99,3 +99,4 @@
  1790616293884-PersonSharing
  1790693088454-AddPersonUserTableSharedBySharedWithConstraint
+ 1792213725597-AddAssetFaceAssetState
 +1787148183731-NormalizeWindowsMediaPaths
