@@ -28,7 +28,7 @@ Resume is still planning. It shows the complete proposed/excluded counts and req
 
 ## Scope and uncertainty
 
-The tool proposes only `asset.localDateTime` and `asset_exif.timeZone` changes. It preserves the exact existing `asset.fileCreatedAt` and `asset_exif.dateTimeOriginal` instants. PostgreSQL's existing `updated_at` triggers also advance each changed row's `updatedAt` and `updateId`; those automatic revision changes are checked and journaled by revision ID.
+The tool proposes changes to Immich's four existing date fields: `asset.fileCreatedAt`, `asset.localDateTime`, `asset_exif.dateTimeOriginal` and `asset_exif.timeZone`. Unzoned source capture dates are interpreted in the configured server timezone. A stored capture timestamp must match either the recomputed instant or the source wall time. Without a source capture date, the existing instant is preserved and must still match the installed fallback calculation. Image files are never rewritten. PostgreSQL's existing `updated_at` triggers advance each changed row's `updatedAt` and `updateId`; these revisions are checked and journaled.
 
 A database date edit made long ago, or an XMP sidecar subsequently deleted, can leave no distinguishing marker. These guards cannot prove that every historical manual edit is absent. Absence of a remembered manual edit is not proof that no historical edit occurred. The guided flow requires deliberate acknowledgement of this residual ambiguity before applying its exact displayed plan.
 
@@ -38,13 +38,13 @@ The default policy is deliberately strict:
 - PNG/JPEG still images only; exclude edited/offline/deleted assets and either direction of a live-photo link
 - Existing `fileCreatedAt`, `localDateTime`, and `dateTimeOriginal` must agree exactly at millisecond precision; existing timezone must be null; no active metadata locks
 - No linked sidecar; check only the two conventional sibling XMP paths on Windows, without directory enumeration
-- Reject source links/reparse paths, nonregular files, failed metadata reads, empty metadata, warnings/errors, unexpected MIME types, motion-photo markers, and any parseable or malformed nonempty capture-date tag
-- A valid capture timestamp without a timezone is still a capture timestamp and is excluded
+- Reject source links/reparse paths, nonregular files, failed metadata reads, empty metadata, warnings/errors, unexpected MIME types, motion-photo markers, malformed nonempty capture-date tags, and capture timestamps with an explicit timezone
+- Accept unzoned capture timestamps only when the stored date matches their recomputed instant or wall time
 - Reject any existing/inferred source timezone, including GPS-derived zones
-- Stored actual instant must also match the earliest current filesystem creation/modification time used by Immich's fallback; an earlier stored timestamp without this independent match is excluded as `stored-instant-not-filesystem-anchored`
+- Filesystem dates changed by transfer do not exclude an otherwise verified candidate. For files without capture metadata, the installed fallback must preserve the stored instant; a conflicting earlier filesystem timestamp is excluded
 - Recompute with the installed patched `MetadataService.getDates`, preserving its exact configured metadata reader and timezone behavior
 
-Filesystem anchoring may exclude legitimate uploaded images whose on-disk dates changed during transfer. There is intentionally no override to force such uncertain cases. Excluded items remain untouched. This is not a universal repair for screenshots or missing EXIF timezones.
+The server timezone is a policy for unzoned dates, not proof of a historical shooting location. Historical database-only edits and deleted sidecars can remain ambiguous. Excluded items remain untouched. This is not a universal repair for arbitrary wrong dates.
 
 ## What the tool does not do
 
@@ -117,13 +117,13 @@ It verifies every listed chunk before the first mutation, rejects duplicate asse
 
 ## Concurrency and recovery
 
-For each exact ID, apply reads source stat → installed ExifTool metadata → source stat outside the write transaction. It compares the reviewed source evidence and recomputed output. A short serializable transaction locks both rows, rereads their relevant snapshots and both revision IDs, rechecks sidecar absence/stat, and performs owner-scoped compare-and-swap updates of only the two fields. A zero-row or unexpected change rolls back both updates. No long ExifTool read occurs while row locks are held. No automatic transaction/commit retry is performed.
+For each exact ID, apply reads source stat → installed ExifTool metadata → source stat outside the write transaction. It compares the reviewed source evidence and recomputed output. A short serializable transaction locks both rows, rereads their relevant snapshots and both revision IDs, rechecks sidecar absence/stat, and performs owner-scoped compare-and-swap updates of only the reviewed date fields. A zero-row or unexpected change rolls back both updates. No long ExifTool read occurs while row locks are held. No automatic transaction/commit retry is performed.
 
 After both uncommitted updates return their actual new revisions, the tool appends and fsyncs a minimal `prepared` journal record before permitting COMMIT. If that write/fsync fails, the database transaction rolls back. A separate `committed` marker follows successful commit. Earlier IDs can already be committed if a later ID fails; the batch is intentionally per-asset, not one giant transaction.
 
 If the process dies or the commit acknowledgement is uncertain, do not run apply again blindly. `reconcile` is read-only and compares the exact old/new fields and both revision IDs from the prepared records against the selected owner's current rows. Results are `applied-unchanged`, `not-applied-unchanged`, or `changed-or-ambiguous`. An incomplete final journal line is ignored and reported as a truncated tail; no ambiguous state is automatically retried, applied, or undone. Keep the original plan and journal.
 
-A separately approved `undo` requires the exact original plan digest and reviewed parsed journal digest, plus a new exclusive journal. It restores only `localDateTime` and `timeZone` if the current after-values, both recorded resulting revisions, other relevant snapshot values, source stat and sidecar checks still match. It refuses newer manual changes and uses its own write-ahead journal. It does not roll back unrelated database state or recreate old revision IDs. A partial/truncated source journal must be reviewed rather than passed straight to undo. Reconciliation is not undo permission.
+A separately approved `undo` requires the exact original plan digest and reviewed parsed journal digest, plus a new exclusive journal. It restores the reviewed date fields if the current after-values, both recorded resulting revisions, other relevant snapshot values, source stat and sidecar checks still match. It refuses newer manual changes and uses its own write-ahead journal. It does not roll back unrelated database state or recreate old revision IDs. A partial/truncated source journal must be reviewed rather than passed straight to undo. Reconciliation is not undo permission.
 
 There is no atomic transaction spanning the filesystem and PostgreSQL. Immediate checks materially narrow the race window but cannot rule out a file mutation after the final stat, an undetectable restored-stat rewrite, or faulty filesystem/disk durability. Sidecar/DB workflows running concurrently can still change state after this transaction. The tool stops when it can observe inconsistency rather than claiming certainty it cannot establish.
 
