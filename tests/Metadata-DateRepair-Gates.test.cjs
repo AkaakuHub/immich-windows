@@ -2,12 +2,25 @@
 // Independent source-level safety review. Synthetic data only.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { releaseIdentity } = require('../runtime/metadata-date-repair/runtime.cjs');
 const { initialReason, strictTags, assertChangedOnlyDates, validatePlan, hash, FORMAT, HISTORY_WARNING } = require('../runtime/metadata-date-repair/core.cjs');
 const ids = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000005'];
 function snapshot() {
   const stamp = '2024-01-01T03:00:00.000Z';
   return { asset: { id: ids[0], ownerId: ids[1], type: 'IMAGE', originalPath: 'synthetic.png', isEdited: false, isOffline: false, deletedAt: null, livePhotoVideoId: null, updateId: ids[2], fileCreatedAt: stamp, fileModifiedAt: stamp, localDateTime: stamp, updatedAt: '2026-10-05T06:00:00.123456Z' }, exif: { assetId: ids[0], updateId: ids[3], updatedAt: '2026-10-05T06:00:00.654321Z', dateTimeOriginal: stamp, timeZone: null, lockedProperties: [] }, sidecars: [], reverseLiveLinks: 0 };
 }
+
+test('upstream updates use the installed release identity without a second version pin', () => {
+  for (const version of ['3.3.0', '3.3.1', '3.3.3']) {
+    const commit = 'a'.repeat(40);
+    const manifest = { immichVersion: `v${version}`, upstreamCommit: commit, dependencies: { upstreamRuntime: { immichCommit: commit } } };
+    assert.deepEqual(releaseIdentity(manifest, { version }), { version: `v${version}`, upstreamCommit: commit });
+    assert.throws(() => releaseIdentity(manifest, { version: '0.0.0' }));
+    assert.throws(() => releaseIdentity({ ...manifest, upstreamCommit: 'b'.repeat(40) }, { version }));
+    assert.throws(() => releaseIdentity({ ...manifest, upstreamCommit: '' }, { version }));
+    assert.throws(() => releaseIdentity({ ...manifest, dependencies: {} }, { version }));
+  }
+});
 test('normal PostgreSQL microsecond revisions must not exclude a millisecond capture date', () => {
   assert.equal(initialReason(snapshot()), null);
 });

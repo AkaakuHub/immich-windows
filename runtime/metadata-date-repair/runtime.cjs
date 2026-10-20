@@ -6,7 +6,12 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 const { createHash } = require('node:crypto');
 const core = require('./core.cjs');
-const PIN = 'e3b165609135365302e40a43d94967fdbb2e6888';
+function releaseIdentity(manifest, serverPackage) {
+  core.insist(/^[0-9a-f]{40}$/.test(manifest.upstreamCommit) && /^v\d+\.\d+\.\d+$/.test(manifest.immichVersion)
+    && manifest.immichVersion === `v${serverPackage.version}`
+    && manifest.dependencies?.upstreamRuntime?.immichCommit === manifest.upstreamCommit, 'unsupported-upstream-build');
+  return { upstreamCommit: manifest.upstreamCommit, version: manifest.immichVersion };
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function normalized(p) { const v = path.resolve(p); return process.platform === 'win32' ? v.toLowerCase() : v; }
 function sourceFileError(error) {
@@ -33,8 +38,8 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
   const release = await fs.realpath(releaseRoot);
   const server = path.join(release, 'server');
   const manifest = JSON.parse((await fs.readFile(path.join(release, 'manifest.json'), 'utf8')).replace(/^\uFEFF/, ''));
-  core.insist(manifest.upstreamCommit === PIN && /^v?3\.3\.0(?:\.|$)/.test(manifest.immichVersion), 'unsupported-upstream-build');
   const req = createRequire(path.join(server, 'package.json'));
+  const upstream = releaseIdentity(manifest, req('./package.json'));
   const runtimeFiles = ['dist/services/metadata.service.js', 'dist/repositories/metadata.repository.js', 'dist/repositories/config.repository.js', 'dist/utils/database.js', 'dist/enum.js', 'package.json'];
   const hashes = {};
   for (const file of runtimeFiles) hashes[file] = createHash('sha256').update(await fs.readFile(path.join(server, file))).digest('hex');
@@ -74,7 +79,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     core.insist(!firstDateTime({}), 'empty-date-parser-self-test-failed');
     const toolHashes = {};
     for (const file of ['core.cjs','runtime.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
-    const identity = { upstreamCommit: PIN, version: manifest.immichVersion, node: process.version, platform: process.platform, timezone, files: hashes, toolHashes };
+    const identity = { ...upstream, node: process.version, platform: process.platform, timezone, files: hashes, toolHashes };
     if (connect) {
       const config = new ConfigRepository().getEnv().database.config;
       const { log: _unredactedLog, ...kyselyConfig } = getKyselyConfig(config);
@@ -205,4 +210,4 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     throw new core.Stop('runtime-initialization-failed');
   }
 }
-module.exports = { sourceFileError, createAdapter, statToken, normalized, PIN };
+module.exports = { sourceFileError, createAdapter, statToken, normalized, releaseIdentity };

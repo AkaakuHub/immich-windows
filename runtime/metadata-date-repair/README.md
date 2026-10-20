@@ -1,6 +1,6 @@
 # Guarded existing-photo date repair
 
-For AkaakuHub/immich-windows, upstream Immich v3.3.0 at `e3b165609135365302e40a43d94967fdbb2e6888`. This is a single optional Windows maintenance tool, not a startup hook, background job, or normal metadata refresh. Releasing/building it does not authorize running it on a library.
+For AkaakuHub/immich-windows. The installed manifest, dependency provenance and server package must identify the same upstream build. Actual installed-method self-tests, schema and trigger checks determine runtime compatibility; there is no separately maintained version or commit constant. This is a single optional Windows maintenance tool, not a startup hook, background job, or normal metadata refresh. Releasing/building it does not authorize running it on a library.
 
 ## Double-click repair
 
@@ -69,7 +69,7 @@ Package the launcher and its supporting files under `runtime/metadata-date-repai
 
 The standalone launcher loads the selected installed `runtime/launchers/Load-ImmichEnv.ps1` without `-ServiceRole`, invokes the packaged Node executable, and restores its process environment afterward. It never starts the server. The installed release root contains `manifest.json`, `server/`, and `runtime/`; it is not the build-stage application directory.
 
-Runtime compatibility is fail-closed: Windows, exact upstream commit/version, known enum values, actual installed-method synthetic self-tests, expected timestamp schema, and only the pinned UPDATE trigger body. DELETE-only audit triggers are not confused with UPDATE triggers. Import/SQL/cleanup failures stop the operation. Upstream raw SQL/error logging is suppressed; errors print sanitized codes only.
+Runtime compatibility is fail-closed: Windows, consistent installed upstream identity, known enum values, actual installed-method synthetic self-tests, expected timestamp schema, and only the pinned UPDATE trigger body. DELETE-only audit triggers are not confused with UPDATE triggers. Import/SQL/cleanup failures stop the operation. Upstream raw SQL/error logging is suppressed; errors print sanitized codes only.
 
 The requested timezone must exactly match the effective Luxon timezone loaded from the selected service environment/system. The tool never sets `TZ` to make the check pass. If the configured running server differs, establish the correct environment separately before planning; changing settings is outside this tool. The plan binds runtime hashes, effective zone, database endpoint/name, schema/trigger fingerprints, and the exact owner/IDs. A different build, timezone, database target, snapshot, or source requires a new plan.
 

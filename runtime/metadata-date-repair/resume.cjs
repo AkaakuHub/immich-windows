@@ -101,9 +101,10 @@ function validatePart(p, adapter, ownerId, afterId) {
   core.insist(p.entries.every((e, i) => !i || e.id > p.entries[i - 1].id), 'invalid-resume-entry-order');
   const last = ids.at(-1) || afterId;
   core.insist(typeof p.exhausted === 'boolean' && (p.exhausted ? p.nextAfterId === null : p.inspected === p.scope.limit && p.inspected > 0 && p.nextAfterId === last), 'invalid-resume-continuation');
-  try { core.validatePlan(p, { identity: p.identity }, core.hash(p)); }
+  const planDigest = core.hash(p);
+  try { core.validatePlan(p, { identity: p.identity }, planDigest); }
   catch (error) { if (error instanceof core.Stop) throw error; throw new core.Stop('invalid-resume-entry'); }
-  return { planDigest: core.hash(p), inspected: p.inspected, proposed: p.entries.length, nextAfterId: p.nextAfterId, exhausted: p.exhausted };
+  return { planDigest, inspected: p.inspected, proposed: p.entries.length, nextAfterId: p.nextAfterId, exhausted: p.exhausted };
 }
 async function readResumeChunk(chunk, { directory }) {
   partNumber(chunk?.file);
