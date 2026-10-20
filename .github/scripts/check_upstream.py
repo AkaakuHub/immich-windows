@@ -166,6 +166,17 @@ def dispatch_once(api, pr, recover_completion=None):
     return 'dispatched'
 
 
+def append_migration_order(base, patched, upstream):
+    before, after, current = (text.splitlines() for text in (base, patched, upstream))
+    require(after[:len(before)] == before and current[:len(before)] == before,
+            'Migration order changed existing entries; manual resolution required')
+    additions = after[len(before):]
+    require(additions and all(re.fullmatch(r'[0-9]+-[A-Za-z0-9]+', name) for name in additions)
+            and len(set(after)) == len(after) and len(set(current)) == len(current),
+            'Invalid appended migration order')
+    return '\n'.join(current + [name for name in additions if name not in current]) + '\n'
+
+
 def prepare_patches(api, main, old_commit, new_commit):
     """Rebase only the recorded patch stack, with Git's conflict-free mechanics.
 
@@ -238,6 +249,8 @@ def prepare_patches(api, main, old_commit, new_commit):
             full_patch = command(old, 'diff', '--binary', '--full-index', old_tree).stdout
             require(full_patch, f'Empty patch: {name}')
             new_tree = command(new, 'write-tree').stdout.strip()
+            order_path = 'server/src/schema/migrations/ORDER'
+            new_order = (new / order_path).read_text(encoding='utf-8') if order_path in old_bytes else None
             direct = command(new, 'apply', '--check', '--index', '--whitespace=error-all', str(patch_file), check=False)
             if direct.returncode == 0:
                 command(new, 'apply', '--index', '--whitespace=error-all', str(patch_file))
@@ -253,7 +266,16 @@ def prepare_patches(api, main, old_commit, new_commit):
                 command(new, 'hash-object', '-w', '--stdin', data=content)
             patch_file.write_text(full_patch, encoding='utf-8', newline='')
             merged = command(new, 'apply', '--3way', '--index', '--whitespace=error-all', str(patch_file), check=False)
-            if merged.returncode or command(new, 'ls-files', '--unmerged').stdout:
+            conflicts = command(new, 'diff', '--name-only', '--diff-filter=U').stdout.splitlines()
+            if conflicts == [order_path] and new_order is not None:
+                order = append_migration_order(old_bytes[order_path].decode('utf-8'),
+                                               (old / order_path).read_text(encoding='utf-8'), new_order)
+                (new / order_path).write_text(order, encoding='utf-8', newline='')
+                command(new, 'add', order_path)
+                summary('Preserved upstream migration order and appended Windows migrations.')
+            elif merged.returncode:
+                raise ValueError(f'Cannot automatically apply patch {name} to {new_commit}:\n{merged.stderr.strip()}')
+            if command(new, 'ls-files', '--unmerged').stdout:
                 raise ValueError(f'Cannot automatically apply patch {name} to {new_commit}:\n{merged.stderr.strip()}')
             rebased = command(new, 'diff', '--binary', '--full-index', new_tree).stdout
             if rebased:

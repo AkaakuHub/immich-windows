@@ -404,6 +404,23 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(self.api.writes, [])
 
 
+class MigrationOrderTests(unittest.TestCase):
+    def test_independent_appenditions_preserve_upstream_order(self):
+        self.assertEqual(check.append_migration_order('1-First\n', '1-First\n2-Windows\n', '1-First\n3-Upstream\n'),
+                         '1-First\n3-Upstream\n2-Windows\n')
+
+    def test_existing_windows_migration_is_not_duplicated(self):
+        self.assertEqual(check.append_migration_order('1-First\n', '1-First\n2-Windows\n', '1-First\n2-Windows\n'),
+                         '1-First\n2-Windows\n')
+
+    def test_existing_order_changes_are_never_resolved_automatically(self):
+        for patched, upstream in [('2-Changed\n', '1-First\n3-Upstream\n'),
+                                  ('1-First\n2-Windows\n', '3-Upstream\n1-First\n'),
+                                  ('1-First\n1-First\n', '1-First\n')]:
+            with self.assertRaises(ValueError):
+                check.append_migration_order('1-First\n', patched, upstream)
+
+
 class PatchTests(unittest.TestCase):
     def setUp(self):
         self.before = ''.join(f'line {n}\n' for n in range(1, 16))
