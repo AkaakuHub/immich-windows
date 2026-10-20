@@ -21,7 +21,7 @@ const messages = {
   timezone: ['Installed server timezone', 'インストール済みサーバーのタイムゾーン'],
   saved: ['Private plan and recovery journals', '非公開の修復計画・復旧記録'],
   history: [core.HISTORY_WARNING, '過去に削除されたXMPや、以前のデータベース上の手動日付編集は、この不具合と区別できない場合があります。過去の手動編集がなかったことまでは証明できません。'],
-  changes: ['Only local date/time and timezone are repaired. Original capture instants and image files are preserved.', 'ローカル日時とタイムゾーンのみを修復します。元の撮影時刻と画像ファイルは保持します。'],
+  changes: ['Only the reviewed date fields are repaired. Unzoned source capture dates use the server timezone. Image files are preserved.', '確認した日時項目だけを修復します。タイムゾーンのない撮影日時はサーバーの設定で解釈します。画像ファイルは変更しません。'],
   confirm: ['Accept this uncertainty and apply the displayed plan? 1: repair / 0: cancel', 'この不確実性を了承して、表示した計画で修復しますか？ 1: 修復する / 0: キャンセル'],
   applying: ['Repairing the approved dates. Keep this window open.', '確認した日付を修復しています。この画面を閉じないでください。'],
   repaired: ['Repaired', '修復済み'],

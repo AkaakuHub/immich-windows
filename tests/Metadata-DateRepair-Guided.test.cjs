@@ -117,7 +117,7 @@ test('counts, exclusions and the full history warning precede approval', async t
     assert.match(output, /Dates to repair: 2/);
     assert.match(output, /Excluded by safety checks: 3/);
     assert(output.includes(core.HISTORY_WARNING));
-    assert.match(output, /Original capture instants and image files are preserved/);
+    assert.match(output, /Image files are preserved/);
     assert.equal(state.calls.length, 1);
     assert.equal(state.writes, 0);
     const prompt = state.transcript.at(-1);

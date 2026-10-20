@@ -21,7 +21,7 @@ function fake(count = 1) {
     async sidecarsAbsent() { events.push('sidecar'); return true; },
     async stat() { events.push('stat'); return { token: { size:'42', mtimeNs:'1', ctimeNs:'2', birthtimeNs:'3', ino:'4' }, stats: { birthtimeMs: Date.parse(INSTANT), mtimeMs: Date.parse(INSTANT)+1000, mtime: new Date(Date.parse(INSTANT)+1000) } }; },
     async readMetadata(p) { events.push('metadata'); return { canonicalSourcePath: p, tags: { SourceFile: p, MIMEType:'image/png' } }; },
-    firstDateTime: tags => tags.DateTimeOriginal && !tags.DateTimeOriginal.startsWith('invalid') ? {} : undefined,
+    firstDateTime: tags => tags.DateTimeOriginal && !tags.DateTimeOriginal.startsWith('invalid') ? { dateTime: { hasZone: false } } : undefined,
     getDates: () => ({ dateTimeOriginal: INSTANT, localDateTime: LOCAL, timeZone:'Asia/Tokyo' }),
     metadataEvidence: tags => ({ MIMEType: tags.MIMEType }),
     async transaction(fn) {
@@ -31,8 +31,9 @@ function fake(count = 1) {
           async snapshotForUpdate(id) { events.push('lock'); return structuredClone(rows.get(id)); },
           async updateDates(before, after) {
             events.push('asset-update'); rows.get(before.asset.id).asset.localDateTime = after.localDateTime;
+            rows.get(before.asset.id).asset.fileCreatedAt = after.fileCreatedAt;
             if (adapter.failExifCas) throw new core.Stop('exif-cas-failed');
-            const s = rows.get(before.asset.id); s.exif.timeZone = after.timeZone;
+            const s = rows.get(before.asset.id); s.exif.timeZone = after.timeZone; s.exif.dateTimeOriginal = after.dateTimeOriginal;
             s.asset.updateId=ID(sequence++); s.exif.updateId=ID(sequence++);
             s.asset.updatedAt='2026-10-05T06:10:00.123456Z'; s.exif.updatedAt='2026-10-05T06:10:00.123456Z';
             events.push('exif-update'); return structuredClone(s);
@@ -67,14 +68,37 @@ test('undo restores two fields only when both resulting revisions still match',a
 test('undo refuses newer manual revision and preserves it',async()=>{const {adapter:a,p,approved}=await prepared();const j=journal();await core.apply(a,p,approved,j);a.rows.get(ID(1)).exif.updateId=ID(801);const original=structuredClone(a.rows);await rejectsCode(()=>core.undo(a,p,j.records,{...approved,approvedJournalDigest:core.hash(j.records)},journal()),'undo-state-changed-or-not-applied');assert.deepEqual(a.rows,original);});
 test('undo journal mixup is rejected',async()=>{const {adapter:a,p,approved}=await prepared();await rejectsCode(()=>core.undo(a,p,[],{...approved,approvedJournalDigest:'0'.repeat(64)},journal()),'journal-digest-not-approved');});
 for(const [name,change,reason] of [
- ['parseable timestamp without timezone',t=>t.DateTimeOriginal='2024:05:01 12:00:00','capture-date-present'],
  ['invalid nonempty timestamp',t=>t.DateTimeOriginal='invalid timestamp','unparsed-capture-date-present'],
  ['explicit timezone',t=>t.zone='Asia/Tokyo','source-timezone-present'],
  ['reader warning',t=>t.Warning='bad metadata','metadata-warning'],
  ['motion photo',t=>t.MotionPhoto=1,'motion-or-live-metadata'],
  ['embedded video',t=>t.EmbeddedVideoType='MotionPhoto_Data','motion-or-live-metadata'],
 ]) test(`source gate excludes ${name}`,async()=>{const a=fake();const read=a.readMetadata;a.readMetadata=async p=>{const r=await read(p);change(r.tags);return r;};const p=await core.plan(a,options);assert.equal(p.entries.length,0);assert.equal(p.excluded[0].reason,reason);});
-test('unanchored earlier database instant is excluded without relaxed apply flag',async()=>{const a=fake();const stat=a.stat;a.stat=async p=>{const r=await stat(p);r.stats.birthtimeMs+=86400000;r.stats.mtimeMs+=86400000;return r;};const p=await core.plan(a,options);assert.equal(p.excluded[0].reason,'stored-instant-not-filesystem-anchored');});
+test('transferred filesystem dates preserve the existing fallback instant',async()=>{const a=fake();const stat=a.stat;a.stat=async p=>{const r=await stat(p);r.stats.birthtimeMs+=86400000;r.stats.mtimeMs+=86400000;return r;};const p=await core.plan(a,options);assert.equal(p.entries.length,1);assert.equal(p.entries[0].after.fileCreatedAt,INSTANT);});
+
+for (const storedAsWallTime of [false, true]) test(`unzoned capture dates repair and undo both legacy representations (${storedAsWallTime})`, async () => {
+  const a = fake(), row = a.rows.get(ID(1));
+  if (storedAsWallTime) {
+    row.asset.fileCreatedAt = LOCAL; row.asset.localDateTime = LOCAL; row.exif.dateTimeOriginal = LOCAL;
+  }
+  const before = structuredClone(row);
+  const read = a.readMetadata;
+  a.readMetadata = async p => { const result = await read(p); result.tags.DateTimeOriginal = '2024:05:01 12:04:05.678'; return result; };
+  const { p, approved } = await prepared(a);
+  assert.equal(p.entries.length, 1);
+  const j = journal(); await core.apply(a, p, approved, j);
+  assert.deepEqual(core.beforeDates(a.rows.get(ID(1))), { fileCreatedAt: INSTANT, localDateTime: LOCAL, dateTimeOriginal: INSTANT, timeZone: 'Asia/Tokyo' });
+  assert.deepEqual(await core.reconcile(a, j.records), [{ id: ID(1), state: 'applied-unchanged' }]);
+  await core.undo(a, p, j.records, { ...approved, approvedJournalDigest: core.hash(j.records) }, journal());
+  assert.deepEqual(core.beforeDates(a.rows.get(ID(1))), core.beforeDates(before));
+});
+
+test('a capture date unrelated to the stored instant is excluded', async () => {
+  const a = fake(), read = a.readMetadata;
+  a.readMetadata = async p => { const result = await read(p); result.tags.DateTimeOriginal = '2024:05:01 12:04:05'; return result; };
+  a.getDates = () => ({ dateTimeOriginal: '2020-01-01T00:00:00.000Z', localDateTime: '2020-01-01T09:00:00.000Z', timeZone: 'Asia/Tokyo' });
+  assert.equal((await core.plan(a, options)).excluded[0].reason, 'stored-date-not-source-anchored');
+});
 test('actual fallback instant change is excluded',async()=>{const a=fake();a.getDates=()=>({dateTimeOriginal:'2020-01-01T00:00:00.000Z',localDateTime:LOCAL,timeZone:'Asia/Tokyo'});const p=await core.plan(a,options);assert.equal(p.excluded[0].reason,'fallback-instant-differs');});
 test('sidecar discovered immediately before write aborts',async()=>{const {adapter:a,p,approved}=await prepared();let checks=0;a.sidecarsAbsent=async()=>++checks<3;await rejectsCode(()=>core.apply(a,p,approved,journal()),'sibling-sidecar');assert.equal(a.rows.get(ID(1)).exif.timeZone,null);});
 test('source changing during metadata read is excluded',async()=>{const a=fake();let calls=0;const stat=a.stat;a.stat=async p=>{const r=await stat(p);r.token.size=String(calls++);return r;};const p=await core.plan(a,options);assert.equal(p.excluded[0].reason,'source-changed-during-read');});

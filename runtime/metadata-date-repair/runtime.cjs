@@ -76,6 +76,10 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       core.insist(core.same(result, { dateTimeOriginal: instant, localDateTime: DateTime.fromISO(instant, { zone: timezone }).setZone('UTC', { keepLocalTime: true }).toJSDate().toISOString(), timeZone: timezone }), 'installed-patch-self-test-failed');
     }
     core.insist(firstDateTime({ DateTimeOriginal: '2024:05:01 12:34:56' }), 'capture-date-parser-self-test-failed');
+    const capture = getDates({ id: 'synthetic', originalPath: 'synthetic.png', fileCreatedAt: '2020-01-01T00:00:00.000Z' },
+      { DateTimeOriginal: '2024:05:01 12:34:56' }, { birthtimeMs: 0, mtimeMs: 0, mtime: new Date(0) });
+    core.insist(core.same(capture, { dateTimeOriginal: DateTime.fromISO('2024-05-01T12:34:56', { zone: timezone }).toJSDate().toISOString(),
+      localDateTime: '2024-05-01T12:34:56.000Z', timeZone: timezone }), 'installed-capture-patch-self-test-failed');
     core.insist(!firstDateTime({}), 'empty-date-parser-self-test-failed');
     const toolHashes = {};
     for (const file of ['core.cjs','runtime.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
@@ -170,9 +174,9 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
             core.insist(expected.asset.ownerId === ownerId && expected.exif.assetId === expected.asset.id, 'owner-scope-mismatch');
             // Fields are fixed in code; no table/column/value selection from CLI.
             const a = expected.asset, e = expected.exif;
-            const ar = await tx.updateTable('asset').set({ localDateTime: new Date(dates.localDateTime) }).where('id', '=', a.id).where('ownerId', '=', ownerId).where('updateId', '=', a.updateId).where('fileCreatedAt', '=', new Date(a.fileCreatedAt)).where('localDateTime', '=', new Date(a.localDateTime)).returning('id').execute();
+            const ar = await tx.updateTable('asset').set({ localDateTime: new Date(dates.localDateTime), fileCreatedAt: new Date(dates.fileCreatedAt) }).where('id', '=', a.id).where('ownerId', '=', ownerId).where('updateId', '=', a.updateId).where('fileCreatedAt', '=', new Date(a.fileCreatedAt)).where('localDateTime', '=', new Date(a.localDateTime)).returning('id').execute();
             core.insist(ar.length === 1, 'asset-cas-failed');
-            let eq = tx.updateTable('asset_exif').set({ timeZone: dates.timeZone }).where('assetId', '=', a.id).where('assetId', 'in', tx.selectFrom('asset').select('id').where('ownerId', '=', ownerId).where('id', '=', a.id)).where('updateId', '=', e.updateId).where('dateTimeOriginal', '=', new Date(e.dateTimeOriginal));
+            let eq = tx.updateTable('asset_exif').set({ timeZone: dates.timeZone, dateTimeOriginal: new Date(dates.dateTimeOriginal) }).where('assetId', '=', a.id).where('assetId', 'in', tx.selectFrom('asset').select('id').where('ownerId', '=', ownerId).where('id', '=', a.id)).where('updateId', '=', e.updateId).where('dateTimeOriginal', '=', new Date(e.dateTimeOriginal));
             eq = e.timeZone === null ? eq.where('timeZone', 'is', null) : eq.where('timeZone', '=', e.timeZone);
             const er = await eq.returning('assetId').execute();
             core.insist(er.length === 1, 'exif-cas-failed');

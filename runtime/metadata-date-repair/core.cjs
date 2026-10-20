@@ -54,30 +54,29 @@ function strictTags(tags, sourcePath, parseCapture) {
   insist(typeof tags.SourceFile === 'string' && sourcePath === tags.SourceFile, 'metadata-source-mismatch');
   insist(['image/jpeg', 'image/png'].includes(tags.MIMEType), 'metadata-mime-excluded');
   for (const key of Object.keys(tags)) if (/warning|error/i.test(key) && nonempty(tags[key])) throw new Stop('metadata-warning');
-  insist(!parseCapture(tags), 'capture-date-present');
-  insist(!CAPTURE_TAGS.some(k => nonempty(tags[k])), 'unparsed-capture-date-present');
+  const capture = parseCapture(tags);
+  insist(!capture || capture.dateTime?.hasZone === false, 'capture-timezone-present');
+  insist(capture || !CAPTURE_TAGS.some(k => nonempty(tags[k])), 'unparsed-capture-date-present');
   insist(!ZONE_TAGS.some(k => nonempty(tags[k])), 'source-timezone-present');
   insist(!MOTION_TAGS.some(k => nonempty(tags[k])), 'motion-or-live-metadata');
+  return capture;
 }
 async function verifySourceBody(adapter, s) {
   const actual = iso(s.asset.fileCreatedAt);
   const start = await atStage('source-stat-before', () => adapter.stat(s.asset.originalPath), { assetId: s.asset.id });
-  // Reject definite filesystem-date mismatches before opening the original for metadata.
-  const initialMillis = start.stats.birthtimeMs ? Math.min(start.stats.mtimeMs, start.stats.birthtimeMs) : start.stats.mtime.getTime();
-  insist(new Date(initialMillis).toISOString() === actual, 'stored-instant-not-filesystem-anchored');
   insist((await atStage('source-sidecars', () => adapter.sidecarsAbsent(s.asset.originalPath), { assetId: s.asset.id })), 'sibling-sidecar');
   const metadata = await atStage('read-metadata', () => adapter.readMetadata(s.asset.originalPath), { assetId: s.asset.id });
-  strictTags(metadata.tags, metadata.canonicalSourcePath, adapter.firstDateTime);
+  const capture = strictTags(metadata.tags, metadata.canonicalSourcePath, adapter.firstDateTime);
   const end = await atStage('source-stat-after', () => adapter.stat(s.asset.originalPath), { assetId: s.asset.id });
   insist(same(start.token, end.token), 'source-changed-during-read');
   insist(await atStage('source-sidecars', () => adapter.sidecarsAbsent(s.asset.originalPath), { assetId: s.asset.id }), 'sibling-sidecar');
   const result = adapter.getDates(s.asset, metadata.tags, end.stats);
-  const diskMillis = end.stats.birthtimeMs ? Math.min(end.stats.mtimeMs, end.stats.birthtimeMs) : end.stats.mtime.getTime();
-  insist(new Date(diskMillis).toISOString() === actual, 'stored-instant-not-filesystem-anchored');
-  insist(iso(result.dateTimeOriginal) === actual && iso(s.exif.dateTimeOriginal) === actual, 'fallback-instant-differs');
+  const instant = iso(result.dateTimeOriginal), local = iso(result.localDateTime);
+  if (capture) insist(actual === instant || actual === local, 'stored-date-not-source-anchored');
+  else insist(instant === actual, 'fallback-instant-differs');
   insist(result.timeZone === adapter.identity.timezone, 'fallback-timezone-differs');
-  insist(iso(result.localDateTime) !== iso(s.asset.localDateTime), 'no-wall-clock-change');
-  return { stat: end.token, metadataDigest: hash(adapter.metadataEvidence(metadata.tags)), after: { fileCreatedAt: s.asset.fileCreatedAt, localDateTime: iso(result.localDateTime), dateTimeOriginal: s.exif.dateTimeOriginal, timeZone: result.timeZone } };
+  insist(local !== iso(s.asset.localDateTime) || instant !== actual, 'no-wall-clock-change');
+  return { stat: end.token, metadataDigest: hash(adapter.metadataEvidence(metadata.tags)), after: { fileCreatedAt: instant, localDateTime: local, dateTimeOriginal: instant, timeZone: result.timeZone } };
 }
 async function verifySource(adapter, snapshot) { return atStage('source-verify', () => verifySourceBody(adapter, snapshot), { assetId: snapshot?.asset?.id }); }
 async function plan(adapter, options) {
@@ -134,7 +133,7 @@ function validatePlan(p, adapter, approvedDigest) {
   insist(same(p.identity, adapter.identity) || adapter.isCompatiblePlanIdentity?.(p.identity) === true, 'runtime-or-timezone-changed');
   insist(Array.isArray(p.entries) && p.entries.length <= p.scope.limit && p.entries.length <= 1000, 'invalid-plan-entries');
   const ids = new Set();
-  for (const e of p.entries) { insist(UUID.test(e.id) && e.id === e.snapshot.asset.id && !ids.has(e.id) && e.snapshot.asset.ownerId === p.scope.ownerId, 'invalid-plan-entry'); ids.add(e.id); insist(!initialReason(e.snapshot), 'ineligible-plan-entry'); insist(e.after.fileCreatedAt === e.snapshot.asset.fileCreatedAt && e.after.dateTimeOriginal === e.snapshot.exif.dateTimeOriginal, 'plan-changes-actual-instant'); }
+  for (const e of p.entries) { insist(UUID.test(e.id) && e.id === e.snapshot.asset.id && !ids.has(e.id) && e.snapshot.asset.ownerId === p.scope.ownerId, 'invalid-plan-entry'); ids.add(e.id); insist(!initialReason(e.snapshot), 'ineligible-plan-entry'); insist(iso(e.after.fileCreatedAt) === iso(e.after.dateTimeOriginal) && e.after.timeZone === adapter.identity.timezone, 'invalid-plan-dates'); iso(e.after.localDateTime); }
 }
 async function apply(adapter, p, options, journal) {
   insist(options.acknowledgeHistoryAmbiguity === true, 'historical-ambiguity-not-acknowledged');
@@ -148,7 +147,7 @@ async function apply(adapter, p, options, journal) {
     insist(same(evidence, { stat: e.stat, metadataDigest: e.metadataDigest, after: e.after }), 'source-or-calculation-changed');
     const result = await adapter.transaction(async tx => {
       // All ExifTool I/O is above. The transaction only checks metadata, a final stat,
-      // sidecar existence and exact revision/value CAS, then writes two date fields.
+      // sidecar existence and exact revision/value CAS, then writes reviewed dates.
       const locked = await tx.snapshotForUpdate(e.id);
       insist(same(locked, e.snapshot), 'transaction-snapshot-changed');
       insist(await adapter.sidecarsAbsent(current.asset.originalPath), 'sibling-sidecar');
@@ -169,7 +168,9 @@ async function apply(adapter, p, options, journal) {
 function assertChangedOnlyDates(before, after, dates) {
   const expected = structuredClone(before);
   expected.asset.localDateTime = dates.localDateTime;
+  expected.asset.fileCreatedAt = dates.fileCreatedAt;
   expected.exif.timeZone = dates.timeZone;
+  expected.exif.dateTimeOriginal = dates.dateTimeOriginal;
   for (const name of ['asset', 'exif']) {
     insist(UUID.test(after[name].updateId) && after[name].updateId !== before[name].updateId, 'missing-new-revision');
     expected[name].updateId = after[name].updateId; expected[name].updatedAt = after[name].updatedAt;
@@ -200,7 +201,8 @@ async function undo(adapter, p, sourceRecords, options, journal) {
     const current = await adapter.snapshot(r.id);
     insist(current && same(beforeDates(current), r.after) && same(revisions(current), r.afterRevisions), 'undo-state-changed-or-not-applied');
     const expected = structuredClone(e.snapshot);
-    expected.asset.localDateTime = r.after.localDateTime; expected.exif.timeZone = r.after.timeZone;
+    expected.asset.localDateTime = r.after.localDateTime; expected.asset.fileCreatedAt = r.after.fileCreatedAt;
+    expected.exif.timeZone = r.after.timeZone; expected.exif.dateTimeOriginal = r.after.dateTimeOriginal;
     for (const name of ['asset', 'exif']) { expected[name].updateId = current[name].updateId; expected[name].updatedAt = current[name].updatedAt; }
     insist(same(current, expected), 'undo-snapshot-changed');
     insist(await adapter.sidecarsAbsent(current.asset.originalPath), 'sibling-sidecar');

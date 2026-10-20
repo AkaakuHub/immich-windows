@@ -218,7 +218,7 @@ test('batch results are matched by ID, and a row removed during metadata I/O is 
 });
 
 for (const hasBirthtime of [true, false]) {
-  test(`an unanchored first stat skips all metadata reads (${hasBirthtime ? 'birthtime available' : 'mtime fallback'})`, async () => {
+  test(`transferred filesystem timestamps still read only the unresolved candidate (${hasBirthtime ? 'birthtime available' : 'mtime fallback'})`, async () => {
     const adapter = fixture(1), before = structuredClone(adapter.rows);
     adapter.changeStat = result => {
       result.stats.birthtimeMs = hasBirthtime ? Date.parse(INSTANT) + 86400000 : 0;
@@ -226,12 +226,12 @@ for (const hasBirthtime of [true, false]) {
       result.stats.mtime = new Date(result.stats.mtimeMs);
     };
     const result = await core.plan(adapter, OPTIONS);
-    assert.deepEqual(result.excluded, [{ id: ID(1), reason: 'stored-instant-not-filesystem-anchored' }]);
-    assert.equal(result.entries.length, 0);
-    assert.equal(adapter.counts.metadata, 0);
-    assert.equal(adapter.events.filter(event => event.kind === 'stat').length, 1);
-    assert.equal(adapter.events.filter(event => event.kind === 'sidecar').length, 0);
-    assert.equal(adapter.batches.length, 0);
+    assert.deepEqual(result.excluded, []);
+    assert.equal(result.entries.length, 1);
+    assert.equal(adapter.counts.metadata, 1);
+    assert.equal(adapter.events.filter(event => event.kind === 'stat').length, 2);
+    assert.equal(adapter.events.filter(event => event.kind === 'sidecar').length, 2);
+    assert.equal(adapter.batches.length, 1);
     assertReadOnly(adapter, before);
   });
 }

@@ -259,7 +259,30 @@ async function test() {
     assert.equal(emptyIo.questions.length, 1, 'An empty plan must not ask to apply');
     assert.deepEqual(await fullRows(), afterGuided, 'A repeated guided run must not add another offset');
     assert.deepEqual(await fs.readFile(originalPath), png, 'Guided repair must preserve original fixture bytes');
-    process.stdout.write('PASS installed metadata repair: compiled imports, actual ExifTool, real Kysely/CAS/triggers, atomic rollback, journal failure, apply/undo/reconcile, stale plan and repeat guards, guided user listing/cancel/apply/empty flow; synthetic PNG unchanged.\n');
+    stage = 'unzoned-capture-fixture';
+    const writer = new MetadataRepository({ setContext() {}, debug() {}, verbose() {}, log() {}, warn() {}, error() {} });
+    try { await writer.writeTags(originalPath, { DateTimeOriginal: '2024:01:15 12:04:05' }); }
+    finally { await writer.teardown(); }
+    const captureBytes = await fs.readFile(originalPath);
+    for (const [label, stored] of [['instant', instant], ['wall', expectedLocal]]) {
+      stage = `unzoned-capture-${label}-apply-undo`;
+      await db.transaction().execute(async tx => {
+        await tx.updateTable('asset').set({ fileCreatedAt: new Date(stored), localDateTime: new Date(stored) }).where('id', '=', assetId).where('ownerId', '=', ownerId).execute();
+        await tx.updateTable('asset_exif').set({ dateTimeOriginal: new Date(stored), timeZone: null }).where('assetId', '=', assetId).execute();
+      });
+      const before = await adapter.snapshot(assetId);
+      const capturePlan = await core.plan(adapter, { ownerId, limit: 10, pageSize: 10 });
+      assert.equal(capturePlan.entries.length, 1, JSON.stringify(capturePlan.excluded));
+      const captureApproval = { approvedDigest: core.hash(capturePlan), acknowledgeHistoryAmbiguity: true };
+      const applied = journal(`capture-${label}`);
+      await core.apply(adapter, capturePlan, captureApproval, applied);
+      assert.deepEqual(core.beforeDates(await adapter.snapshot(assetId)), { fileCreatedAt: instant, localDateTime: expectedLocal, dateTimeOriginal: instant, timeZone: 'Asia/Tokyo' });
+      assert.deepEqual(await core.reconcile(adapter, applied.records), [{ id: assetId, state: 'applied-unchanged' }]);
+      await core.undo(adapter, capturePlan, applied.records, { ...captureApproval, approvedJournalDigest: core.hash(applied.records) }, journal(`capture-${label}-undo`));
+      assert.deepEqual(core.beforeDates(await adapter.snapshot(assetId)), core.beforeDates(before));
+      assert.deepEqual(await fs.readFile(originalPath), captureBytes);
+    }
+    process.stdout.write('PASS installed metadata repair: actual ExifTool, Kysely/CAS/triggers, rollback, apply/undo/reconcile, guided cancel/resume/repeat, and both unzoned capture representations; source bytes preserved.\n');
   } finally {
     let cleanupError;
     const clean = async (fn) => { try { await fn(); } catch (error) { cleanupError ||= error; } };
