@@ -4,7 +4,7 @@ diff --git a/server/src/services/metadata.service.ts b/server/src/services/metad
 @@ -1022,6 +1022,9 @@
        timeZone = 'UTC+0';
      }
- 
+
 +    if (dateTime && !dateTime.hasZone) {
 +      timeZone ??= DateTime.local().zoneName;
 +    }
@@ -12,11 +12,11 @@ diff --git a/server/src/services/metadata.service.ts b/server/src/services/metad
        this.logger.verbose(
          `Found timezone ${timeZone} via ${exifTags.zoneSource} for asset ${asset.id}: ${asset.originalPath}`,
 @@ -1037,7 +1040,7 @@
- 
+
      // do not let JavaScript use local timezone
      if (dateTimeOriginal && !dateTime?.hasZone) {
 -      dateTimeOriginal = dateTimeOriginal.setZone('UTC', { keepLocalTime: true });
 +      dateTimeOriginal = dateTimeOriginal.setZone(timeZone ?? 'UTC', { keepLocalTime: true });
      }
- 
+
      // align with whatever timeZone we chose
