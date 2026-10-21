@@ -128,7 +128,7 @@ try {
         if (-not $DatabaseUnchanged) {
             $backupProgress=Start-ImmichProgress -Key backup
             $global:LASTEXITCODE=0
-            $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot
+            $backup=& (Join-Path $PSScriptRoot '..\migration\New-DatabaseBackup.ps1') -EnvFile $envFile -PostgresRoot $PostgresRoot -DestinationDirectory (Join-Path $DataRoot 'database-backups/upgrades')
             if ($LASTEXITCODE -ne 0) { throw "Database backup failed with exit code $LASTEXITCODE." }
             $backup=@($backup)[-1]
             if (-not $backup -or -not (Test-Path -LiteralPath $backup -PathType Leaf)) { throw "Pre-upgrade database backup was not created: $backup" }
@@ -207,6 +207,9 @@ try {
 
 # All entrypoints share this post-qualification lifecycle. Keep the v8 tray
 # alive on update failure; after success, await its actual exit before deleting.
+try {
+    & (Join-Path $PSScriptRoot '..\migration\Remove-UpgradeDatabaseBackups.ps1') -DataRoot $DataRoot
+} catch { Write-Warning "The update is healthy, but upgrade database backup cleanup failed: $($_.Exception.Message)" }
 $trayStopped=$false
 try {
     Stop-ImmichTray -InstallRoot $InstallRoot -ReleasePath $state.previousRelease

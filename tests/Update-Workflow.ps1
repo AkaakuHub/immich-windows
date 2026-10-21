@@ -42,6 +42,7 @@ try {
   $env:IMMICH_TEST_COUNTS=Join-Path $case counts
   $env:IMMICH_TEST_FAIL=$mode
   Copy-Item "$repo/packaging/Update.ps1" "$pkg/installer/Update.ps1"
+  Copy-Item "$repo/migration/Remove-UpgradeDatabaseBackups.ps1" "$pkg/migration/Remove-UpgradeDatabaseBackups.ps1"
   $common=Get-Content -Raw "$repo/runtime/Common.psm1"
   $common+="`nfunction Stop-ImmichTray {param(`$InstallRoot,`$ReleasePath); Add-Content `$env:IMMICH_TEST_COUNTS tray-stop; if (`$env:IMMICH_TEST_FAIL -eq 'tray-stop-fail') { throw 'Injected tray stop failure' }} `nfunction Start-ImmichTray {param(`$InstallRoot,`$DataRoot,`$Scope); Add-Content `$env:IMMICH_TEST_COUNTS tray-start; if (`$env:IMMICH_TEST_FAIL -eq 'tray-start-fail') { throw 'Injected tray start failure' }} `nfunction Assert-Administrator {} `nfunction Protect-ImmichDataRoot {param(`$Path)}`nExport-ModuleMember -Function *`n"
   if ($mode -eq 'stop-mutates') { $common += "`nfunction Test-ImmichDatabasePayloadEqual {param(`$PreviousRelease,`$CandidateRelease) return -not (Test-Path (Join-Path `$PreviousRelease changed-during-stop))}`nExport-ModuleMember -Function *`n" }
@@ -57,7 +58,7 @@ try {
   if ($mode -eq 'sharp-cleanup-fail') {
    Add-Content "$pkg/tests/Smoke-Windows.ps1" 'New-Item -ItemType Directory (Join-Path $InstallRoot "current/.dependency-backups/sharp") -Force | Out-Null; $global:IMMICH_TEST_SHARP_LOCK=[IO.File]::Open((Join-Path $InstallRoot "current/.dependency-backups/sharp/locked.dll"),[IO.FileMode]::Create,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)'
   }
-  Set-Content "$pkg/migration/New-DatabaseBackup.ps1" 'param($EnvFile,$PostgresRoot); Add-Content $env:IMMICH_TEST_EVENTS backup; if ($env:IMMICH_TEST_FAIL -eq "backup") { throw "Injected backup failure" }; if ($env:IMMICH_TEST_FAIL -eq "backup-exit") { exit 7 }; $path=Join-Path (Split-Path $EnvFile) backup.dump; Set-Content $path dump; return $path'
+  Set-Content "$pkg/migration/New-DatabaseBackup.ps1" 'param($EnvFile,$PostgresRoot,$DestinationDirectory); Add-Content $env:IMMICH_TEST_EVENTS backup; if ($DestinationDirectory -ne (Join-Path (Split-Path $EnvFile) "database-backups/upgrades")) { throw "Unexpected automatic backup destination" }; if ($env:IMMICH_TEST_FAIL -eq "backup") { throw "Injected backup failure" }; if ($env:IMMICH_TEST_FAIL -eq "backup-exit") { exit 7 }; $path=Join-Path (Split-Path $EnvFile) backup.dump; Set-Content $path dump; return $path'
   '{"schemaVersion":1,"immichVersion":"v3.2.2"}'|Set-Content "$old/manifest.json"
   '{"schemaVersion":2,"immichVersion":"v3.2.2","windowsRevision":1,"packageVersion":"v3.2.2.1"}'|Set-Content "$pkg/manifest.json"
   "IMMICH_WINDOWS_INSTALL_SCOPE=AllUsers`nDB_PASSWORD=test"|Set-Content "$data/immich.env"
