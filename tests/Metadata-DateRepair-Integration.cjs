@@ -118,7 +118,7 @@ async function test() {
     });
     wroteFixture = true;
     stage = 'installed-database-adapter';
-    adapter = await createAdapter({ releaseRoot, ownerId });
+    adapter = await createAdapter({ releaseRoot, ownerId, inventoryFile:path.join(fixture,'inventory.sqlite') });
     const initial = await adapter.snapshot(assetId);
     assert.deepEqual(await adapter.snapshots([assetId, randomUUID()]), [initial], 'Batch snapshot must return only existing assets in this owner scope');
     await assert.rejects(adapter.snapshots([assetId, assetId]), /invalid-snapshot-batch/);
@@ -165,6 +165,11 @@ async function test() {
     assert.equal(plan.entries.length, 1, `Synthetic no-EXIF fixture did not qualify: ${JSON.stringify(plan.excluded)}`);
     assert.equal(plan.entries[0].id, assetId);
     assert.equal(plan.entries[0].after.localDateTime, expectedLocal);
+    assert.equal(adapter.inventoryStats.sourceReads,1);
+    const repeatedPlan=await core.plan(adapter,{ownerId,limit:10,pageSize:10});
+    assert.equal(repeatedPlan.entries[0].metadataDigest,plan.entries[0].metadataDigest);
+    assert.equal(adapter.inventoryStats.sourceReads,1,'Repeated planning must not reread the unchanged original');
+    assert.equal(adapter.inventoryStats.reusedMetadata,1);
     const approved = { approvedDigest: core.hash(plan), acknowledgeHistoryAmbiguity: true };
     await assert.rejects(core.apply(adapter, plan, approved, journal('failed', true)), /synthetic-journal-failure/);
     assert.deepEqual(await adapter.snapshot(assetId), initial, 'Journal failure before COMMIT must roll back both rows');
@@ -232,13 +237,14 @@ async function test() {
     stage = 'guided-resumed-approved-flow-check';
     const oldPart = path.join(cancelled.directory, 'plan.json.part-0001.json');
     const oldPartBytes = await fs.readFile(oldPart);
-    const originalReadTags = MetadataRepository.prototype.readTags;
+    const { ExifTool } = req('exiftool-vendored');
+    const originalEnqueue = ExifTool.prototype.enqueueTask;
     let resumedMetadataReads = 0, guided;
     const approvedIo = scripted([selection, '1']);
-    MetadataRepository.prototype.readTags = function (...args) { resumedMetadataReads++; return originalReadTags.apply(this, args); };
+    ExifTool.prototype.enqueueTask = function (...args) { resumedMetadataReads++; return originalEnqueue.apply(this, args); };
     try { guided = await runGuided({ ...guidedOptions, resumeDirectory: cancelled.directory }, approvedIo); }
-    finally { MetadataRepository.prototype.readTags = originalReadTags; }
-    assert.equal(resumedMetadataReads, 1, 'Resume reuses planning evidence; only apply revalidates original metadata');
+    finally { ExifTool.prototype.enqueueTask = originalEnqueue; }
+    assert.equal(resumedMetadataReads, 0, 'Resume and apply must reuse stored raw metadata while the source stat is unchanged');
     assert.deepEqual(await fs.readFile(oldPart), oldPartBytes, 'Resuming must preserve old plan bytes');
     assert.equal(guided.status, 'complete');
     assert.equal(guided.applied, 1);

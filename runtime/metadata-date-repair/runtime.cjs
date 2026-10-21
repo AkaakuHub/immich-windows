@@ -39,7 +39,7 @@ function statToken(s, real) { return { real: normalized(real), dev: String(s.dev
 const ASSET_FIELDS = ['id', 'ownerId', 'originalPath', 'fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'updateId', 'isEdited', 'isOffline', 'isExternal', 'deletedAt', 'type', 'livePhotoVideoId'];
 const EXIF_FIELDS = ['assetId', 'dateTimeOriginal', 'timeZone', 'lockedProperties', 'updatedAt', 'updateId'];
 const DATE_FIELDS = new Set(['fileCreatedAt', 'localDateTime', 'fileModifiedAt', 'updatedAt', 'dateTimeOriginal', 'deletedAt']);
-async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly = false }) {
+async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly = false, inventoryFile }) {
   core.insist(process.platform === 'win32', 'windows-runtime-required');
   core.insist(path.isAbsolute(releaseRoot), 'absolute-release-root-required');
   if (connect && !usersOnly) core.insist(UUID.test(ownerId), 'owner-id-required');
@@ -58,7 +58,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
   for (const key of Object.keys(quiet)) console[key] = () => {};
   const originalCwd = process.cwd();
   process.chdir(release);
-  let db, metadataRepository;
+  let db, metadataRepository, inventory;
   const logger = { setContext() {}, verbose() {}, debug() {}, log() {}, warn() {}, error() {}, fatal() {} };
   try {
     req('reflect-metadata');
@@ -90,7 +90,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       localDateTime: '2024-05-01T12:34:56.000Z', timeZone: timezone }), 'installed-capture-patch-self-test-failed');
     core.insist(!firstDateTime({}), 'empty-date-parser-self-test-failed');
     const toolHashes = {};
-    for (const file of ['core.cjs','runtime.cjs','metadata-batch.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
+    for (const file of ['core.cjs','runtime.cjs','metadata-batch.cjs','inventory.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
     const identity = { ...upstream, node: process.version, platform: process.platform, timezone, files: hashes, toolHashes };
     if (connect) {
       const config = new ConfigRepository().getEnv().database.config;
@@ -98,7 +98,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       db = new Kysely({ ...kyselyConfig, log() {} });
     }
     const readOnly = fn => db.transaction().setIsolationLevel('repeatable read').execute(async tx => { await sql`set transaction read only`.execute(tx); await sql`set local statement_timeout = '15000ms'`.execute(tx); return fn(tx); });
-    const close = async () => { let error; try { await metadataRepository?.teardown(); } catch (e) { error = e; } try { await db?.destroy(); } catch (e) { error ||= e; } for (const [key, fn] of Object.entries(quiet)) console[key] = fn; process.chdir(originalCwd); if (error) throw new core.Stop('cleanup-failed'); };
+    const close = async () => { let error; try { await metadataRepository?.teardown(); } catch (e) { error = e; } try { inventory?.close(); } catch (e) { error ||= e; } try { await db?.destroy(); } catch (e) { error ||= e; } for (const [key, fn] of Object.entries(quiet)) console[key] = fn; process.chdir(originalCwd); if (error) throw new core.Stop('cleanup-failed'); };
     if (usersOnly) {
       // This object cannot read media or mutate assets. ExifTool is constructed
       // only by readMetadata below, never for the account selection screen.
@@ -132,7 +132,8 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       if (lock) q = q.forUpdate(['a', 'e']);
       return fromRow(tx, await q.executeTakeFirst());
     };
-    let batchReader;
+    let batchReader, inventoryCursor;
+    const inventoryStats = { sourceReads: 0, reusedMetadata: 0 };
     const repository = () => {
       if (!metadataRepository) {
         metadataRepository = new MetadataRepository(logger);
@@ -142,6 +143,13 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
     };
     const adapter = {
       identity, firstDateTime, getDates,
+      get inventoryStats() { return { ...inventoryStats }; },
+      recordInspections(records, cursor) { inventory?.inspected(records); inventoryCursor=cursor; },
+      recordApplied(entries) {
+        inventory?.inspected(entries.map(entry => ({ snapshot: entry.snapshot, reason:'applied', after:entry.after })));
+        inventoryCursor=entries[entries.length-1].id;
+      },
+      recordProgress(state) { inventory?.progress(ownerId, identity, { cursor: inventoryCursor, ...state }); },
       isCompatiblePlanIdentity: previous => require('./resume.cjs').isCompatiblePlanIdentity(previous, identity),
       close,
       async stat(p) { const { s, real } = await regularPath(p); return { token: statToken(s, real), stats: { birthtimeMs: Number(s.birthtimeNs / 1000000n) + Number(s.birthtimeNs % 1000000n) / 1e6, mtimeMs: Number(s.mtimeNs / 1000000n) + Number(s.mtimeNs % 1000000n) / 1e6, mtime: new Date(Number(s.mtimeNs / 1000000n)) } }; },
@@ -153,9 +161,28 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
         }
         return true;
       },
-      async readMetadataBatch(files) {
+      async readMetadataBatch(files, contexts) {
         batchReader ||= require('./metadata-batch.cjs').reader(req, repository(), normalized);
-        return batchReader(files);
+        if (!inventory) { inventoryStats.sourceReads += files.length; return batchReader.read(files); }
+        core.insist(Array.isArray(contexts) && contexts.length === files.length, 'inventory-source-context-required');
+        const result = new Map(), missing = [];
+        for (let i = 0; i < files.length; i++) {
+          core.insist(UUID.test(contexts[i].id) && contexts[i].stat, 'invalid-inventory-source-context');
+          const raw = inventory.get({ ...contexts[i], ownerId, file: files[i], extraction: batchReader.extraction });
+          if (raw) { result.set(files[i], batchReader.parse(files[i], raw)); inventoryStats.reusedMetadata++; }
+          else missing.push(i);
+        }
+        if (missing.length) {
+          const read = await batchReader.read(missing.map(i => files[i]));
+          inventoryStats.sourceReads += missing.length;
+          const records = [];
+          for (const i of missing) {
+            const metadata = read.get(files[i]); result.set(files[i], metadata);
+            if (!(metadata instanceof Error)) records.push({ ...contexts[i], ownerId, file: files[i], extraction: batchReader.extraction, raw: metadata.raw });
+          }
+          inventory.put(records);
+        }
+        return result;
       },
       metadataEvidence(tags) { return Object.fromEntries(['MIMEType', ...core.CAPTURE_TAGS, ...core.ZONE_TAGS, ...core.MOTION_TAGS].filter(k => tags[k] !== undefined).map(k => [k, tags[k]])); },
       async candidates({ afterId, limit }) {
@@ -214,9 +241,10 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
         core.insist(body && /^DECLARE clock_timestamp TIMESTAMP := clock_timestamp\(\); BEGIN new\."updatedAt" = clock_timestamp; new\."updateId" = immich_uuid_v7\(clock_timestamp\); return new; END;$/i.test(body), 'unverified-updated-at-function');
       }
     }
+    if (inventoryFile) inventory = await require('./inventory.cjs').openInventory(inventoryFile);
     return adapter;
   } catch (e) {
-    try { await metadataRepository?.teardown(); } catch {} try { await db?.destroy(); } catch {}
+    try { await metadataRepository?.teardown(); } catch {} try { inventory?.close(); } catch {} try { await db?.destroy(); } catch {}
     for (const [key, fn] of Object.entries(quiet)) console[key] = fn;
     process.chdir(originalCwd);
     if (e instanceof core.Stop) throw e;

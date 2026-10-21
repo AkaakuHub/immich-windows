@@ -9,7 +9,7 @@ const core = require('../runtime/metadata-date-repair/core.cjs');
 const { prepareResume, readResumeChunk, isCompatiblePlanIdentity, KNOWN_TOOL_HASHES } = require('../runtime/metadata-date-repair/resume.cjs');
 const ID = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
 const OWNER = ID(900);
-const current = () => ({ upstreamCommit: 'upstream-test', version: '2.5.6', node: 'v22.18.0', platform: 'win32', timezone: 'Asia/Tokyo', files: { 'metadata.service.js': '1'.repeat(64) }, database: { name: 'immich', address: '127.0.0.1', port: 5432 }, schemaDigest: '2'.repeat(64), triggersDigest: '3'.repeat(64), toolHashes: Object.fromEntries(['core.cjs', 'runtime.cjs', 'cli.cjs', 'guided.cjs', 'resume.cjs', 'metadata-batch.cjs'].map((file, i) => [file, String(i + 4).repeat(64)])) });
+const current = () => ({ upstreamCommit: 'upstream-test', version: '2.5.6', node: 'v22.18.0', platform: 'win32', timezone: 'Asia/Tokyo', files: { 'metadata.service.js': '1'.repeat(64) }, database: { name: 'immich', address: '127.0.0.1', port: 5432 }, schemaDigest: '2'.repeat(64), triggersDigest: '3'.repeat(64), toolHashes: Object.fromEntries(['core.cjs', 'runtime.cjs', 'cli.cjs', 'guided.cjs', 'resume.cjs', 'metadata-batch.cjs','inventory.cjs'].map((file, i) => [file, (i + 4).toString(16).repeat(64)])) });
 const adapter = () => new Proxy({ identity: current() }, { get(target, key) { assert.equal(key, 'identity', 'resume must not access photos, candidates, or write methods'); return target[key]; } });
 const partName = n => 'plan.json.part-' + String(n).padStart(4, '0') + '.json';
 function plan({ start = 1, count = 2, after = null, exhausted = false, hashes = KNOWN_TOOL_HASHES[0] } = {}) {

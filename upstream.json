@@ -4,6 +4,6 @@
   "commit": "69e0cb8606137c4f8dc0e7207a672ff8be39f358",
   "channel": "stable",
   "buildArchitecture": "win-x64",
-  "notes": "v3.3.4 stable source with batched metadata date repair and bounded automatic upgrade backups. Native compatibility requires the release qualification gates.",
+  "notes": "v3.3.4 stable source with batched date repair, persistent source inspection records and bounded automatic upgrade backups. Native compatibility requires the release qualification gates.",
   "windowsRevision": 1
 }

@@ -7,8 +7,10 @@ const core = require('./core.cjs');
 const HELP = `Immich date repair: guarded date-field maintenance; use Repair-MetadataDates.cmd for guided repair.
 Default command: plan (read-only database, bounded metadata reads, text plan only).
 Commands:
+  inventory --inventory-file ABSOLUTE (saved inspection dates and progress; no photo or server DB access)
   plan-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --out INDEX.json
-           [--max-candidates COUNT] [--page-size 25] [--resume-directory ABSOLUTE] (no total limit unless supplied)
+           [--max-candidates COUNT] [--page-size 25] [--resume-directory ABSOLUTE]
+           [--inventory-file ABSOLUTE] (no total limit unless supplied)
   apply-all --release-root ABSOLUTE --owner-id UUID --expected-timezone IANA --index INDEX.json
             --approved-index-sha256 DIGEST --journal-dir PRIVATE_DIRECTORY
             --acknowledge-history-ambiguity
@@ -31,8 +33,8 @@ An approval digest/acknowledgement is a deliberate operator gate, not proof of h
 function parse(argv) {
   let command = 'plan';
   if (argv[0] && !argv[0].startsWith('--')) command = argv.shift();
-  core.insist(['plan','plan-all','apply-all','review','self-test','apply','reconcile','undo'].includes(command), 'unknown-command');
-  const allowed = new Set(['release-root','owner-id','expected-timezone','out','limit','page-size','after-id','plan','approved-plan-sha256','journal','source-journal','approved-journal-sha256','acknowledge-history-ambiguity','max-candidates','index','approved-index-sha256','journal-dir','resume-directory','help']);
+  core.insist(['inventory','plan','plan-all','apply-all','review','self-test','apply','reconcile','undo'].includes(command), 'unknown-command');
+  const allowed = new Set(['release-root','owner-id','expected-timezone','inventory-file','out','limit','page-size','after-id','plan','approved-plan-sha256','journal','source-journal','approved-journal-sha256','acknowledge-history-ambiguity','max-candidates','index','approved-index-sha256','journal-dir','resume-directory','help']);
   const opts = { command };
   while (argv.length) {
     const key = argv.shift();
@@ -45,9 +47,10 @@ function parse(argv) {
   const runtime = ['release-root','owner-id','expected-timezone'];
   const approval = ['plan','approved-plan-sha256','journal'];
   const perCommand = {
-    plan: [...runtime,'out','limit','page-size','after-id'],
-    'plan-all': [...runtime,'out','max-candidates','page-size','after-id','resume-directory'],
-    'apply-all': [...runtime,'index','approved-index-sha256','journal-dir','acknowledge-history-ambiguity'],
+    inventory: ['inventory-file'],
+    plan: [...runtime,'inventory-file','out','limit','page-size','after-id'],
+    'plan-all': [...runtime,'inventory-file','out','max-candidates','page-size','after-id','resume-directory'],
+    'apply-all': [...runtime,'inventory-file','index','approved-index-sha256','journal-dir','acknowledge-history-ambiguity'],
     review: ['plan'],
     'self-test': ['release-root','expected-timezone'],
     apply: [...runtime,...approval,'acknowledge-history-ambiguity'],
@@ -99,8 +102,15 @@ async function run(argv, { onEvent, onFailure, emit = record => process.stdout.w
   let result;
   const report = record => { result = record; emit(record); };
   const o = parse([...argv]);
-  for (const key of ['out','plan','journal','source-journal','index','journal-dir','resume-directory']) if (o[key]) o[key] = path.resolve(o[key]);
+  for (const key of ['out','plan','journal','source-journal','index','journal-dir','resume-directory','inventory-file']) if (o[key]) o[key] = path.resolve(o[key]);
   if (o.help || argv.length === 0) { process.stdout.write(HELP); return; }
+  if (o.command === 'inventory') {
+    core.insist(o['inventory-file'], 'inventory-file-required');
+    await fs.stat(o['inventory-file']);
+    const inventory = await require('./inventory.cjs').openInventory(o['inventory-file']);
+    try { process.stdout.write(JSON.stringify(inventory.summary(), null, 2)+'\n'); } finally { inventory.close(); }
+    return;
+  }
   if (o.command === 'review') {
     const p = await readJson(o.plan);
     if (p.format === core.INDEX_FORMAT) { process.stdout.write(JSON.stringify({indexDigest:core.hash(p),ownerId:p.scope.ownerId,timezone:p.identity.timezone,chunks:p.chunks.length,inspected:p.inspected,proposed:p.proposed,exhausted:p.exhausted,nextAfterId:p.nextAfterId,historyWarning:p.historyWarning})+'\n'); return; }
@@ -135,7 +145,7 @@ async function run(argv, { onEvent, onFailure, emit = record => process.stdout.w
     if (['plan','plan-all'].includes(o.command)) handle = await exclusive(o.out, '.json');
     if (mutation) handle = await exclusive(o.journal, '.jsonl');
     const { createAdapter } = require('./runtime.cjs');
-    adapter = await core.atStage('runtime-init', () => createAdapter({ releaseRoot: o['release-root'], ownerId: o['owner-id'], connect: o.command !== 'self-test' }));
+    adapter = await core.atStage('runtime-init', () => createAdapter({ releaseRoot: o['release-root'], ownerId: o['owner-id'], connect: o.command !== 'self-test', inventoryFile: o['inventory-file'] }));
     core.insist(adapter.identity.timezone === o['expected-timezone'], 'configured-timezone-mismatch');
     if (o.command === 'self-test') { process.stdout.write(JSON.stringify({ command: 'self-test', passed: true, identity: adapter.identity, databaseOpened: false, mediaRead: false }) + '\n'); return; }
     if (o.command === 'plan-all') {
@@ -144,7 +154,9 @@ async function run(argv, { onEvent, onFailure, emit = record => process.stdout.w
       const initialIndex = o['resume-directory'] ? await core.atStage('resume-read', () => require('./resume.cjs').prepareResume({ directory: o['resume-directory'], adapter, ownerId: o['owner-id'], maximum: o['max-candidates'] === undefined ? null : Number(o['max-candidates']) })) : null;
       if (initialIndex) { await core.atStage('checkpoint-write', () => writeCheckpoint(o.out, initialIndex)); onEvent?.({kind:'resumed',inspected:initialIndex.inspected,proposed:initialIndex.proposed}); }
       const checkpoint = index => core.atStage('checkpoint-write', () => writeCheckpoint(o.out, index));
-      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:o['max-candidates'] === undefined ? null : Number(o['max-candidates']),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onCheckpoint:checkpoint,onProgress:progress=>onEvent?.({kind:'plan-progress',...progress})},async (p,n) => {
+      const output = await core.planAll(adapter,{ownerId:o['owner-id'],maxCandidates:o['max-candidates'] === undefined ? null : Number(o['max-candidates']),pageSize:Number(o['page-size'] || 25),afterId:o['after-id'],onCheckpoint:checkpoint,onProgress:progress=>{
+        adapter.recordProgress?.({status:'scanning',...progress}); onEvent?.({kind:'plan-progress',...progress,...adapter.inventoryStats});
+      }},async (p,n) => {
         return core.atStage('chunk-write', async () => {
         const file = path.basename(o.out) + '.part-' + String(n).padStart(4,'0') + '.json';
         const text = JSON.stringify(p,null,2) + '\n'; const h = await exclusive(path.join(path.dirname(path.resolve(o.out)),file),'.json');
@@ -153,9 +165,11 @@ async function run(argv, { onEvent, onFailure, emit = record => process.stdout.w
         }, { chunk: n });
       }, initialIndex);
       await checkpoint(output);
+      adapter.recordProgress?.({status:output.exhausted?'planned':'scanning',cursor:output.nextAfterId,inspected:output.inspected,proposed:output.proposed});
       report({command:'plan-all',indexDigest:core.hash(output),chunks:output.chunks.length,inspected:output.inspected,proposed:output.proposed,exhausted:output.exhausted,nextAfterId:output.nextAfterId,applied:0});
     } else if (batchMutation) {
       const indexDir = path.dirname(path.resolve(o.index)), journalDir = await fs.realpath(o['journal-dir']);
+      adapter.recordProgress?.({status:'applying',inspected:index.inspected,proposed:index.proposed});
       let committed = 0;
       const completed = await core.applyAll(adapter,index,{approvedIndexDigest:o['approved-index-sha256'],ownerId:o['owner-id'],acknowledgeHistoryAmbiguity:true},async chunk => {
         if (chunk.sourceDirectory) return require('./resume.cjs').readResumeChunk(chunk, { directory: indexDir });
@@ -163,6 +177,7 @@ async function run(argv, { onEvent, onFailure, emit = record => process.stdout.w
         const bytes = await fs.readFile(path.join(indexDir,chunk.file)); core.insist(bytes.length <= 16*1024*1024 && createHash('sha256').update(bytes).digest('hex') === chunk.sha256, 'chunk-file-digest-mismatch');
         return JSON.parse(bytes.toString('utf8'));
       },async chunk => { const h = await exclusive(path.join(journalDir,chunk.file+'.apply.jsonl'),'.jsonl'); const writer=fileJournal(h); return {...writer,async appendSync(record) { await writer.appendSync(record); if(record.kind === 'committed') onEvent?.({kind:'apply-progress',completed:++committed}); },close:()=>h.close()}; });
+      adapter.recordProgress?.({status:'applied',inspected:index.inspected,proposed:index.proposed});
       report({command:'apply-all',completed,chunks:index.chunks.length});
     } else if (o.command === 'plan') {
       const output = await core.plan(adapter, { ownerId: o['owner-id'], limit: Number(o.limit || 100), pageSize: Number(o['page-size'] || 25), afterId: o['after-id'] });

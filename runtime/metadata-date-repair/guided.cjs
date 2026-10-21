@@ -6,6 +6,9 @@ const readline = require('node:readline');
 const core = require('./core.cjs');
 
 const messages = {
+  inventory: ['Reusable image inspection records', '再利用する画像確認記録'],
+  sourceReads: ['Source metadata reads', '原本から取得'],
+  reusedMetadata: ['Reused metadata records', '記録を再利用'],
   title: ['Immich date repair', 'Immich 日付修復'],
   users: ['Choose the Immich user to repair (0: cancel):', '修復するImmichユーザーを選んでください（0: キャンセル）:'],
   invalid: ['Enter one of the displayed numbers.', '表示されている番号を入力してください。'],
@@ -100,7 +103,9 @@ async function runGuided({ releaseRoot, outputRoot, language = 'en', resumeDirec
     await ensureDirectory();
     const indexFile = path.join(directory, 'plan.json');
     say('saved', directory); say('scanning');
-    const common = ['--release-root', releaseRoot, '--owner-id', user.id, '--expected-timezone', timezone];
+    const common = ['--release-root', releaseRoot, '--owner-id', user.id, '--expected-timezone', timezone,
+      '--inventory-file', path.join(path.dirname(directory), 'inventory.sqlite')];
+    say('inventory', common[common.length-1]);
     const scanStarted = performance.now();
     const planned = await run(['plan-all', ...common, '--out', indexFile, ...(resumeDirectory ? ['--resume-directory', resumeDirectory] : [])], {
       emit() {}, onFailure: recordFailure, onEvent: event => {
@@ -108,7 +113,9 @@ async function runGuided({ releaseRoot, outputRoot, language = 'en', resumeDirec
         if (event.kind === 'plan-progress') {
         lastProgress = { inspected: event.inspected, proposed: event.proposed };
         const seconds = (performance.now() - scanStarted) / 1000;
-        say('checked', `${event.inspected}; ${text(language, 'proposed')}: ${event.proposed}; ${text(language, 'elapsed')}: ${seconds.toFixed(1)}s; ${seconds > 0 ? ((event.inspected - resumedCount) / seconds).toFixed(1) : '0.0'} ${text(language, 'rate')}`);
+        const reuse = Number.isSafeInteger(event.sourceReads) && Number.isSafeInteger(event.reusedMetadata)
+          ? `; ${text(language,'sourceReads')}: ${event.sourceReads}; ${text(language,'reusedMetadata')}: ${event.reusedMetadata}` : '';
+        say('checked', `${event.inspected}; ${text(language, 'proposed')}: ${event.proposed}; ${text(language, 'elapsed')}: ${seconds.toFixed(1)}s; ${seconds > 0 ? ((event.inspected - resumedCount) / seconds).toFixed(1) : '0.0'} ${text(language, 'rate')}${reuse}`);
       } },
     });
     const index = JSON.parse(await fs.readFile(indexFile, 'utf8'));

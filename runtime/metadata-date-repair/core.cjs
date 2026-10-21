@@ -95,7 +95,7 @@ async function plan(adapter, options) {
     const rows = await atStage('candidate-query', () => adapter.candidates({ ownerId: options.ownerId, afterId: cursor, limit: count }), { cursor });
     insist(Array.isArray(rows) && rows.length <= count, 'invalid-page');
     if (!rows.length) { output.exhausted = true; break; }
-    const pending = [], sources = [];
+    const pending = [], sources = [], excludedStart = output.excluded.length, entriesStart = output.entries.length;
     for (const snapshot of rows) {
       const id = snapshot.asset?.id;
       insist(UUID.test(id) && (!cursor || id > cursor) && !seen.has(id), 'invalid-keyset-order');
@@ -109,7 +109,8 @@ async function plan(adapter, options) {
       if (reason) output.excluded.push({ id, reason });
     }
     if (sources.length) {
-      const metadata = await atStage('read-metadata', () => adapter.readMetadataBatch(sources.map(source => source.snapshot.asset.originalPath)), { cursor });
+      const metadata = await atStage('read-metadata', () => adapter.readMetadataBatch(sources.map(source => source.snapshot.asset.originalPath),
+        sources.map(source => ({ id: source.id, stat: source.start.token }))), { cursor });
       insist(metadata instanceof Map, 'invalid-metadata-batch');
       for (const source of sources) {
         try {
@@ -136,6 +137,11 @@ async function plan(adapter, options) {
         if (same(byId.get(entry.id), entry.snapshot)) output.entries.push(entry);
         else output.excluded.push({ id: entry.id, reason: 'snapshot-changed-during-plan' });
       }
+    }
+    if (adapter.recordInspections) {
+      const excluded = new Map(output.excluded.slice(excludedStart).map(entry => [entry.id, entry.reason]));
+      const entries = new Map(output.entries.slice(entriesStart).map(entry => [entry.id, entry.after]));
+      await atStage('inventory-write', () => adapter.recordInspections(rows.map(snapshot => ({ snapshot, reason: excluded.get(snapshot.asset.id), after: entries.get(snapshot.asset.id) })), cursor), { cursor });
     }
     options.onProgress?.({ inspected: output.inspected, proposed: output.entries.length });
     if (rows.length < count) { output.exhausted = true; break; }
@@ -167,7 +173,8 @@ async function apply(adapter, p, options, journal) {
       insist(same(current, entry.snapshot), 'stale-plan');
       starts.set(entry.id, await prepareSource(adapter, current));
     }
-    const metadata = await adapter.readMetadataBatch(entries.map(entry => entry.snapshot.asset.originalPath));
+    const metadata = await adapter.readMetadataBatch(entries.map(entry => entry.snapshot.asset.originalPath),
+      entries.map(entry => ({ id: entry.id, stat: starts.get(entry.id).token })));
     insist(metadata instanceof Map, 'invalid-metadata-batch');
     for (const e of entries) {
       const current = currentById.get(e.id);
@@ -191,6 +198,7 @@ async function apply(adapter, p, options, journal) {
       await journal.appendSync({ kind: 'committed', id: e.id, afterRevisions: result.afterRevisions });
       completed.push(e.id);
     }
+    if (adapter.recordApplied) await atStage('inventory-write', () => adapter.recordApplied(entries));
   }
   await journal.appendSync({ kind: 'complete', count: completed.length });
   return completed;

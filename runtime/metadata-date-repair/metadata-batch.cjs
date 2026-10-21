@@ -8,6 +8,13 @@ function reader(req, repository, normalized) {
   const { ExifToolTask } = req(path.join(root, 'ExifToolTask.js'));
   const tool = repository.exiftool;
   core.insist(tool && typeof tool.enqueueTask === 'function', 'unsupported-metadata-batch-runtime');
+  function parse(file, record, error) {
+    const task = ReadTask.for(file, tool.options);
+    core.insist(typeof record?.SourceFile === 'string' && normalized(record.SourceFile) === normalized(file), 'metadata-source-mismatch');
+    const tags = task.parse(JSON.stringify([record]), error);
+    if (error || task.errors.length || task.warnings.length) return new core.Stop('metadata-reader-warning');
+    return { tags: { ...tags, SourceFile: normalized(file) }, canonicalSourcePath: normalized(file), raw: record };
+  }
   class BatchReadTask extends ExifToolTask {
     constructor(files) {
       const tasks = files.map(file => ReadTask.for(file, tool.options));
@@ -29,19 +36,21 @@ function reader(req, repository, normalized) {
       return new Map(this.tasks.map(task => {
         const source = normalized(task.sourceFile), record = byPath.get(source);
         core.insist(record, 'metadata-source-mismatch');
-        const tags = task.parse(JSON.stringify([record]), error);
-        if (error || this.errors.length || this.warnings.length || task.errors.length || task.warnings.length) {
+        if (error || this.errors.length || this.warnings.length) {
           return [task.sourceFile, new core.Stop('metadata-reader-warning')];
         }
-        return [task.sourceFile, { tags: { ...tags, SourceFile: source }, canonicalSourcePath: source }];
+        return [task.sourceFile, parse(task.sourceFile, record)];
       }));
     }
   }
-  return async files => {
+  const read = async files => {
     core.insist(Array.isArray(files) && files.length >= 1 && files.length <= 100, 'invalid-metadata-batch');
     const unique = [...new Set(files.map(normalized))];
     const result = await tool.enqueueTask(() => new BatchReadTask(unique));
     return new Map(files.map(file => [file, result.get(normalized(file))]));
   };
+  const extraction = core.hash({ version: req('exiftool-vendored/package.json').version,
+    args: ReadTask.for(path.resolve('inventory-source'), tool.options).args.slice(0, -1) });
+  return { read, parse, extraction };
 }
 module.exports = { reader };

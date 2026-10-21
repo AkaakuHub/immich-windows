@@ -28,7 +28,8 @@ async function testBatch(req, temporary, reader) {
     const singleStart = performance.now();
     for (const file of files) expected.set(file, evidence(await repository.readTags(file)));
     const singleMs = performance.now() - singleStart;
-    const read = reader(req, repository, normalized);
+    const batch = reader(req, repository, normalized);
+    const read = files => batch.read(files);
     const batchStart = performance.now();
     const result = await read([...files].reverse());
     const batchMs = performance.now() - batchStart;
@@ -39,6 +40,7 @@ async function testBatch(req, temporary, reader) {
       assert(!(metadata instanceof Error));
       assert.equal(metadata.canonicalSourcePath, normalized(file));
       assert.equal(evidence(metadata.tags), expected.get(file));
+      assert.equal(evidence(batch.parse(file, metadata.raw).tags), expected.get(file));
       assert.deepEqual(await fs.readFile(file), before.get(file));
     }
     const duplicate = await read([files[0], files[0]]);

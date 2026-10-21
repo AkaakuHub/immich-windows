@@ -31,7 +31,7 @@ function isCompatiblePlanIdentity(previous, current) {
   if (!isObject(previous) || !isObject(current)) return false;
   const { toolHashes: oldHashes, ...oldRuntime } = previous;
   const { toolHashes: newHashes, ...newRuntime } = current;
-  const files = ['cli.cjs', 'core.cjs', 'guided.cjs', 'metadata-batch.cjs', 'resume.cjs', 'runtime.cjs'];
+  const files = ['cli.cjs', 'core.cjs', 'guided.cjs', 'inventory.cjs', 'metadata-batch.cjs', 'resume.cjs', 'runtime.cjs'];
   if (!isObject(newHashes) || !core.same(Object.keys(newHashes).sort(), files) || !Object.values(newHashes).every(v => typeof v === 'string' && SHA.test(v))) return false;
   return core.same(oldRuntime, newRuntime) && (core.same(oldHashes, newHashes) || KNOWN_TOOL_HASHES.some(hashes => core.same(oldHashes, hashes)));
 }
