@@ -20,14 +20,18 @@ function reader(req, repository, normalized) {
       const tasks = files.map(file => ReadTask.for(file, tool.options));
       const args = tasks[0].args.slice(0, -1);
       core.insist(tasks.every(task => core.same(task.args.slice(0, -1), args)), 'metadata-batch-options-differ');
-      super([...args, ...tasks.map(task => task.sourceFile)], tool.options);
+      super([...args, '-G4', ...tasks.map(task => task.sourceFile)], tool.options);
       this.tasks = tasks;
     }
     parse(data, error) {
       const records = JSON.parse(data);
       core.insist(Array.isArray(records) && records.length === this.tasks.length, 'metadata-batch-count-mismatch');
       const byPath = new Map();
-      for (const record of records) {
+      for (const grouped of records) {
+        // Group names protect the transport SourceFile from an image's text tag.
+        const record = Object.fromEntries(Object.entries(grouped)
+          .filter(([key]) => key !== ':SourceFile')
+          .map(([key, value]) => [key.startsWith(':') ? key.slice(1) : key, value]));
         core.insist(typeof record.SourceFile === 'string', 'metadata-source-mismatch');
         const source = normalized(record.SourceFile);
         core.insist(!byPath.has(source), 'metadata-batch-duplicate-source');

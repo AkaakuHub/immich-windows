@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const { crc32 } = require('node:zlib');
 const core = require('../runtime/metadata-date-repair/core.cjs');
 
 async function testBatch(req, temporary, reader) {
@@ -22,12 +23,19 @@ async function testBatch(req, temporary, reader) {
     for (const file of files) await fs.writeFile(file, png);
     await repository.writeTags(files[0], { DateTimeOriginal: '2024:05:01 12:34:56' });
     await repository.writeTags(files[1], { DateTimeOriginal: '2024:05:01 12:34:56', OffsetTimeOriginal: '+09:00' });
-    const before = new Map();
-    for (const file of files) before.set(file, await fs.readFile(file));
+    await repository.writeTags(files[2], { DateTimeOriginal: '2024:05:02 23:45:01' });
     const expected = new Map();
     const singleStart = performance.now();
     for (const file of files) expected.set(file, evidence(await repository.readTags(file)));
     const singleMs = performance.now() - singleStart;
+    const bytes = await fs.readFile(files[2]);
+    const text = Buffer.from('SourceFile\0not-the-original.png'), type = Buffer.from('tEXt');
+    const length = Buffer.alloc(4), checksum = Buffer.alloc(4);
+    length.writeUInt32BE(text.length);
+    checksum.writeUInt32BE(crc32(Buffer.concat([type, text])));
+    await fs.writeFile(files[2], Buffer.concat([bytes.subarray(0, -12), length, type, text, checksum, bytes.subarray(-12)]));
+    const before = new Map();
+    for (const file of files) before.set(file, await fs.readFile(file));
     const batch = reader(req, repository, normalized);
     const read = files => batch.read(files);
     const batchStart = performance.now();
@@ -46,6 +54,7 @@ async function testBatch(req, temporary, reader) {
     const duplicate = await read([files[0], files[0]]);
     assert.equal(duplicate.size, 1);
     assert.equal(evidence(duplicate.get(files[0]).tags), expected.get(files[0]));
+    assert.throws(() => batch.parse(files[0], { SourceFile: files[1] }), /metadata-source-mismatch/);
     process.stdout.write(`PASS actual ExifTool batch: 25 files, same Immich date/zone parser, source bytes unchanged; single=${Math.round(singleMs)}ms batch=${Math.round(batchMs)}ms.\n`);
   } finally {
     await repository.teardown();
