@@ -41,7 +41,7 @@ function initialReason(s) {
   if (!s || !s.asset || !s.exif || !UUID.test(s.asset.id) || s.exif.assetId !== s.asset.id) return 'missing-or-invalid-record';
   const a = s.asset, e = s.exif;
   if (!UUID.test(a.updateId) || !UUID.test(e.updateId)) return 'missing-revisions';
-  if (a.type !== 'IMAGE' || !/\.(jpe?g|png)$/i.test(a.originalPath)) return 'unsupported-image-type';
+  if (a.type !== 'IMAGE') return 'unsupported-image-type';
   if (a.isEdited !== false || a.isOffline !== false || a.deletedAt !== null || a.livePhotoVideoId !== null || s.reverseLiveLinks !== 0) return 'edited-offline-deleted-or-live';
   if (e.timeZone !== null) return 'existing-timezone';
   if (!Array.isArray(e.lockedProperties) || e.lockedProperties.length !== 0) return 'metadata-locks-or-unknown';
@@ -52,7 +52,7 @@ function initialReason(s) {
 function strictTags(tags, sourcePath, parseCapture) {
   insist(tags && typeof tags === 'object' && !Array.isArray(tags) && Object.keys(tags).length > 1, 'metadata-empty');
   insist(typeof tags.SourceFile === 'string' && sourcePath === tags.SourceFile, 'metadata-source-mismatch');
-  insist(['image/jpeg', 'image/png'].includes(tags.MIMEType), 'metadata-mime-excluded');
+  insist(typeof tags.MIMEType === 'string' && /^image\//.test(tags.MIMEType), 'metadata-mime-excluded');
   for (const key of Object.keys(tags)) if (/warning|error/i.test(key) && nonempty(tags[key])) throw new Stop('metadata-warning');
   const capture = parseCapture(tags);
   insist(!capture || capture.dateTime?.hasZone === false, 'capture-timezone-present');
@@ -61,11 +61,15 @@ function strictTags(tags, sourcePath, parseCapture) {
   insist(!MOTION_TAGS.some(k => nonempty(tags[k])), 'motion-or-live-metadata');
   return capture;
 }
-async function verifySourceBody(adapter, s) {
-  const actual = iso(s.asset.fileCreatedAt);
+async function prepareSource(adapter, s) {
   const start = await atStage('source-stat-before', () => adapter.stat(s.asset.originalPath), { assetId: s.asset.id });
   insist((await atStage('source-sidecars', () => adapter.sidecarsAbsent(s.asset.originalPath), { assetId: s.asset.id })), 'sibling-sidecar');
-  const metadata = await atStage('read-metadata', () => adapter.readMetadata(s.asset.originalPath), { assetId: s.asset.id });
+  return start;
+}
+async function verifySourceBody(adapter, s, { start, metadata }) {
+  const actual = iso(s.asset.fileCreatedAt);
+  if (metadata instanceof Error) throw metadata;
+  insist(metadata && typeof metadata === 'object', 'metadata-empty');
   const capture = strictTags(metadata.tags, metadata.canonicalSourcePath, adapter.firstDateTime);
   const end = await atStage('source-stat-after', () => adapter.stat(s.asset.originalPath), { assetId: s.asset.id });
   insist(same(start.token, end.token), 'source-changed-during-read');
@@ -78,7 +82,6 @@ async function verifySourceBody(adapter, s) {
   insist(local !== iso(s.asset.localDateTime) || instant !== actual, 'no-wall-clock-change');
   return { stat: end.token, metadataDigest: hash(adapter.metadataEvidence(metadata.tags)), after: { fileCreatedAt: instant, localDateTime: local, dateTimeOriginal: instant, timeZone: result.timeZone } };
 }
-async function verifySource(adapter, snapshot) { return atStage('source-verify', () => verifySourceBody(adapter, snapshot), { assetId: snapshot?.asset?.id }); }
 async function plan(adapter, options) {
   insist(UUID.test(options.ownerId), 'owner-id-required');
   insist(Number.isInteger(options.limit) && options.limit >= 1 && options.limit <= 1000, 'invalid-limit');
@@ -92,7 +95,7 @@ async function plan(adapter, options) {
     const rows = await atStage('candidate-query', () => adapter.candidates({ ownerId: options.ownerId, afterId: cursor, limit: count }), { cursor });
     insist(Array.isArray(rows) && rows.length <= count, 'invalid-page');
     if (!rows.length) { output.exhausted = true; break; }
-    const pending = [];
+    const pending = [], sources = [];
     for (const snapshot of rows) {
       const id = snapshot.asset?.id;
       insist(UUID.test(id) && (!cursor || id > cursor) && !seen.has(id), 'invalid-keyset-order');
@@ -100,10 +103,23 @@ async function plan(adapter, options) {
       seen.add(id); cursor = id; output.inspected++;
       let reason = initialReason(snapshot);
       if (!reason) {
-        try { pending.push({ id, snapshot, ...await verifySource(adapter, snapshot) }); }
+        try { sources.push({ id, snapshot, start: await prepareSource(adapter, snapshot) }); }
         catch (e) { if (!(e instanceof Stop)) throw e; reason = e.code; }
       }
       if (reason) output.excluded.push({ id, reason });
+    }
+    if (sources.length) {
+      const metadata = await atStage('read-metadata', () => adapter.readMetadataBatch(sources.map(source => source.snapshot.asset.originalPath)), { cursor });
+      insist(metadata instanceof Map, 'invalid-metadata-batch');
+      for (const source of sources) {
+        try {
+          pending.push({ id: source.id, snapshot: source.snapshot, ...await atStage('source-verify',
+            () => verifySourceBody(adapter, source.snapshot, { start: source.start, metadata: metadata.get(source.snapshot.asset.originalPath) }), { assetId: source.id }) });
+        } catch (error) {
+          if (!(error instanceof Stop)) throw error;
+          output.excluded.push({ id: source.id, reason: error.code });
+        }
+      }
     }
     if (pending.length) {
       insist(typeof adapter.snapshots === 'function', 'batch-snapshots-required');
@@ -140,27 +156,41 @@ async function apply(adapter, p, options, journal) {
   validatePlan(p, adapter, options.approvedDigest);
   await journal.header({ format: FORMAT, operation: 'apply', planDigest: options.approvedDigest });
   const completed = [];
-  for (const e of p.entries) {
-    const current = await adapter.snapshot(e.id);
-    insist(same(current, e.snapshot), 'stale-plan');
-    const evidence = await verifySource(adapter, current);
-    insist(same(evidence, { stat: e.stat, metadataDigest: e.metadataDigest, after: e.after }), 'source-or-calculation-changed');
-    const result = await adapter.transaction(async tx => {
-      // All ExifTool I/O is above. The transaction only checks metadata, a final stat,
-      // sidecar existence and exact revision/value CAS, then writes reviewed dates.
-      const locked = await tx.snapshotForUpdate(e.id);
-      insist(same(locked, e.snapshot), 'transaction-snapshot-changed');
-      insist(await adapter.sidecarsAbsent(current.asset.originalPath), 'sibling-sidecar');
-      insist(same((await adapter.stat(current.asset.originalPath)).token, e.stat), 'source-changed-before-write');
-      const afterSnapshot = await tx.updateDates(e.snapshot, e.after);
-      assertChangedOnlyDates(e.snapshot, afterSnapshot, e.after);
-      const record = { kind: 'prepared', id: e.id, before: beforeDates(e.snapshot), after: e.after, beforeRevisions: revisions(e.snapshot), afterRevisions: revisions(afterSnapshot) };
-      await journal.appendSync(record); // MUST fsync before callback returns/COMMIT
-      return record;
-    });
-    // On uncertainty here, stop. Prepared record allows read-only reconciliation.
-    await journal.appendSync({ kind: 'committed', id: e.id, afterRevisions: result.afterRevisions });
-    completed.push(e.id);
+  for (let offset = 0; offset < p.entries.length; offset += 25) {
+    const entries = p.entries.slice(offset, offset + 25);
+    const snapshots = await adapter.snapshots(entries.map(entry => entry.id));
+    const currentById = new Map(snapshots.map(snapshot => [snapshot.asset.id, snapshot]));
+    insist(currentById.size === entries.length && snapshots.length === entries.length, 'stale-plan');
+    const starts = new Map();
+    for (const entry of entries) {
+      const current = currentById.get(entry.id);
+      insist(same(current, entry.snapshot), 'stale-plan');
+      starts.set(entry.id, await prepareSource(adapter, current));
+    }
+    const metadata = await adapter.readMetadataBatch(entries.map(entry => entry.snapshot.asset.originalPath));
+    insist(metadata instanceof Map, 'invalid-metadata-batch');
+    for (const e of entries) {
+      const current = currentById.get(e.id);
+      const evidence = await atStage('source-verify', () => verifySourceBody(adapter, current,
+        { start: starts.get(e.id), metadata: metadata.get(current.asset.originalPath) }), { assetId: e.id });
+      insist(same(evidence, { stat: e.stat, metadataDigest: e.metadataDigest, after: e.after }), 'source-or-calculation-changed');
+      const result = await adapter.transaction(async tx => {
+        // All ExifTool I/O is above. The transaction only checks metadata, a final stat,
+        // sidecar existence and exact revision/value CAS, then writes reviewed dates.
+        const locked = await tx.snapshotForUpdate(e.id);
+        insist(same(locked, e.snapshot), 'transaction-snapshot-changed');
+        insist(await adapter.sidecarsAbsent(current.asset.originalPath), 'sibling-sidecar');
+        insist(same((await adapter.stat(current.asset.originalPath)).token, e.stat), 'source-changed-before-write');
+        const afterSnapshot = await tx.updateDates(e.snapshot, e.after);
+        assertChangedOnlyDates(e.snapshot, afterSnapshot, e.after);
+        const record = { kind: 'prepared', id: e.id, before: beforeDates(e.snapshot), after: e.after, beforeRevisions: revisions(e.snapshot), afterRevisions: revisions(afterSnapshot) };
+        await journal.appendSync(record); // MUST fsync before callback returns/COMMIT
+        return record;
+      });
+      // On uncertainty here, stop. Prepared record allows read-only reconciliation.
+      await journal.appendSync({ kind: 'committed', id: e.id, afterRevisions: result.afterRevisions });
+      completed.push(e.id);
+    }
   }
   await journal.appendSync({ kind: 'complete', count: completed.length });
   return completed;
@@ -271,4 +301,4 @@ async function applyAll(adapter, index, options, readChunk, openJournal) {
   return completed;
 }
 
-module.exports = { atStage, failureDetails, INDEX_FORMAT, planAll, applyAll, FORMAT, CAPTURE_TAGS, ZONE_TAGS, MOTION_TAGS, HISTORY_WARNING, Stop, insist, stable, hash, same, iso, beforeDates, revisions, initialReason, strictTags, verifySource, plan, apply, undo, reconcile, validatePlan, assertChangedOnlyDates };
+module.exports = { atStage, failureDetails, INDEX_FORMAT, planAll, applyAll, FORMAT, CAPTURE_TAGS, ZONE_TAGS, MOTION_TAGS, HISTORY_WARNING, Stop, insist, stable, hash, same, iso, beforeDates, revisions, initialReason, strictTags, plan, apply, undo, reconcile, validatePlan, assertChangedOnlyDates };

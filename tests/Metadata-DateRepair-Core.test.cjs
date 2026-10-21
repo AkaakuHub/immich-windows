@@ -21,6 +21,7 @@ function fake(count = 1) {
     async sidecarsAbsent() { events.push('sidecar'); return true; },
     async stat() { events.push('stat'); return { token: { size:'42', mtimeNs:'1', ctimeNs:'2', birthtimeNs:'3', ino:'4' }, stats: { birthtimeMs: Date.parse(INSTANT), mtimeMs: Date.parse(INSTANT)+1000, mtime: new Date(Date.parse(INSTANT)+1000) } }; },
     async readMetadata(p) { events.push('metadata'); return { canonicalSourcePath: p, tags: { SourceFile: p, MIMEType:'image/png' } }; },
+    async readMetadataBatch(paths) { events.push('metadata-batch'); const result=new Map(); for(const p of paths) result.set(p, await adapter.readMetadata(p)); return result; },
     firstDateTime: tags => tags.DateTimeOriginal && !tags.DateTimeOriginal.startsWith('invalid') ? { dateTime: { hasZone: false } } : undefined,
     getDates: () => ({ dateTimeOriginal: INSTANT, localDateTime: LOCAL, timeZone:'Asia/Tokyo' }),
     metadataEvidence: tags => ({ MIMEType: tags.MIMEType }),
@@ -54,6 +55,25 @@ test('runtime adapter imports without starting the server', () => { const runtim
 test('default command is plan, unknown and duplicate options fail closed', () => { assert.equal(parse([]).command,'plan'); assert.throws(()=>parse(['--apply'])); assert.throws(()=>parse(['plan','--limit','1','--limit','2'])); });
 test('plan is bounded, keyset-paged, read-only, with honest continuation', async () => { const a=fake(5), p=await core.plan(a,{...options,limit:3}); assert.equal(p.entries.length,3); assert.equal(p.inspected,3); assert.equal(p.exhausted,false); assert.equal(p.nextAfterId,ID(3)); assert.deepEqual(a.calls.map(v=>v.limit),[2,1]); assert.equal(a.events.includes('begin'),false); });
 test('empty candidate scope reports exhaustion without claiming entire library',async()=>{ const a=fake(0),p=await core.plan(a,options); assert.equal(p.exhausted,true); assert.equal(p.scope.ownerId,OWNER); });
+test('planning and apply each use one metadata batch per 25 candidates', async () => {
+  const a=fake(51), p=await core.plan(a,{...options,pageSize:25});
+  assert.equal(p.entries.length,51);
+  assert.equal(a.events.filter(event=>event==='metadata-batch').length,3);
+  a.events.length=0;
+  await core.apply(a,p,{approvedDigest:core.hash(p),acknowledgeHistoryAmbiguity:true},journal());
+  assert.equal(a.events.filter(event=>event==='metadata-batch').length,3);
+});
+for (const [extension,mime] of [['heic','image/heic'],['avif','image/avif'],['webp','image/webp'],['tiff','image/tiff'],['cr3','image/x-canon-cr3'],['gif','image/gif']]) {
+  test(`the same source-date guards cover ${extension} images`,async()=>{
+    const a=fake(), s=a.rows.get(ID(1)); s.asset.originalPath=`/synthetic/1.${extension}`;
+    a.readMetadata=async p=>({canonicalSourcePath:p,tags:{SourceFile:p,MIMEType:mime}});
+    const p=await core.plan(a,options); assert.equal(p.entries.length,1); assert.equal(p.excluded.length,0);
+  });
+}
+test('a per-file metadata error excludes that source without re-reading the batch',async()=>{
+  const a=fake(2); a.readMetadataBatch=async paths=>new Map(paths.map((p,i)=>[p,i===0?new core.Stop('metadata-reader-warning'):{canonicalSourcePath:p,tags:{SourceFile:p,MIMEType:'image/png'}}]));
+  const p=await core.plan(a,options); assert.equal(p.entries.length,1); assert.deepEqual(p.excluded,[{id:ID(1),reason:'metadata-reader-warning'}]);
+});
 test('successful apply updates only date wall time and zone; durable WAL precedes commit',async()=>{ const {adapter:a,p,approved}=await prepared();const j=journal(a.events);const ids=await core.apply(a,p,approved,j);assert.deepEqual(ids,[ID(1)]);assert.equal(a.rows.get(ID(1)).asset.fileCreatedAt,INSTANT);assert.equal(a.rows.get(ID(1)).exif.dateTimeOriginal,INSTANT);assert.equal(a.rows.get(ID(1)).asset.localDateTime,LOCAL);assert(a.events.indexOf('prepared-fsync')<a.events.indexOf('commit'));assert(a.events.indexOf('metadata')<a.events.indexOf('begin'));const b=a.events.lastIndexOf('lock');assert(a.events.slice(b,b+4).includes('stat')); });
 test('apply requires explicit history acknowledgement before any journal or transaction',async()=>{ const {adapter:a,p,approved}=await prepared();const j=journal();await rejectsCode(()=>core.apply(a,p,{...approved,acknowledgeHistoryAmbiguity:false},j),'historical-ambiguity-not-acknowledged');assert.equal(j.records.length,0);assert(!a.events.includes('begin')); });
 test('wrong digest and runtime fail before a mutation',async()=>{ const {adapter:a,p,approved}=await prepared();await rejectsCode(()=>core.apply(a,p,{...approved,approvedDigest:'0'.repeat(64)},journal()),'plan-digest-not-approved');a.identity.timezone='UTC';await rejectsCode(()=>core.apply(a,p,approved,journal()),'runtime-or-timezone-changed'); });

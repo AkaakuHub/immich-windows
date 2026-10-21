@@ -35,7 +35,7 @@ A database date edit made long ago, or an XMP sidecar subsequently deleted, can 
 The default policy is deliberately strict:
 
 - One selected owner; bounded UUID-keyset candidate pages, at most 1,000 candidates per plan chunk and 100 per page (default page size 25); the guided flow continues until no further candidates remain
-- PNG/JPEG still images only; exclude edited/offline/deleted assets and either direction of a live-photo link
+- Image assets whose source MIME type starts with `image/`; exclude edited/offline/deleted assets and either direction of a live-photo link. File extensions do not decide eligibility.
 - Existing `fileCreatedAt`, `localDateTime`, and `dateTimeOriginal` must agree exactly at millisecond precision; existing timezone must be null; no active metadata locks
 - No linked sidecar; check only the two conventional sibling XMP paths on Windows, without directory enumeration
 - Reject source links/reparse paths, nonregular files, failed metadata reads, empty metadata, warnings/errors, unexpected MIME types, motion-photo markers, malformed nonempty capture-date tags, and capture timestamps with an explicit timezone

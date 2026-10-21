@@ -47,6 +47,8 @@ async function test() {
   const { runGuided } = require(path.join(runtime, 'guided.cjs'));
   const server = path.join(releaseRoot, 'server');
   const req = createRequire(path.join(server, 'package.json'));
+  stage = 'installed-batch-metadata';
+  await require('./Metadata-DateRepair-Batch.cjs').testBatch(req, temporary, require(path.join(runtime, 'metadata-batch.cjs')).reader);
   stage = 'installed-date-self-test';
   const synthetic = await createAdapter({ releaseRoot, connect: false });
   assert.equal(synthetic.identity.timezone, 'Asia/Tokyo');

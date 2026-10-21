@@ -70,7 +70,7 @@ Export-ModuleMember -Function *
     Write-Fixture (Join-Path $package 'runtime/launchers/Stop-Immich.ps1') 'param($EnvFile,$DataRoot,$InstallRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS stop; if ($env:IMMICH_TEST_PREPARED_MODE -eq "env-stop-mutates") { Add-Content $EnvFile "DB_PASSWORD=edited-during-stop" }; if ($env:IMMICH_TEST_PREPARED_MODE -eq "stop-mutates") { Set-Content (Join-Path (Get-CurrentReleaseTarget $InstallRoot) "server/dist/main.js") changed }; $global:LASTEXITCODE=0'
     Write-Fixture (Join-Path $package 'runtime/launchers/Start-Immich.ps1') 'param($EnvFile,$DataRoot,$InstallRoot,[switch]$UpgradeInProgress); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS start; $global:LASTEXITCODE=0'
     Write-Fixture (Join-Path $package 'tests/Smoke-Windows.ps1') 'param($InstallRoot,$DataRoot,$PostgresRoot); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS smoke; if ($env:IMMICH_TEST_PREPARED_MODE -eq ''move-smoke-failure'') { throw ''Injected smoke failure'' }; $global:LASTEXITCODE=0'
-    Copy-Item (Join-Path $repo 'migration/Remove-UpgradeDatabaseBackups.ps1') (Join-Path $package 'migration/Remove-UpgradeDatabaseBackups.ps1')
+    Write-Fixture (Join-Path $package 'migration/Remove-UpgradeDatabaseBackups.ps1') (Get-Content -Raw (Join-Path $repo 'migration/Remove-UpgradeDatabaseBackups.ps1'))
     Write-Fixture (Join-Path $package 'migration/New-DatabaseBackup.ps1') 'param($EnvFile,$PostgresRoot,$DestinationDirectory); Add-Content $env:IMMICH_TEST_PREPARED_EVENTS backup; $path=Join-Path (Split-Path $EnvFile) backup.dump; Set-Content $path backup; $global:LASTEXITCODE=0; return $path'
     foreach ($name in @('postgres','psql','pg_dump','pg_restore')) {
         $exe=Join-Path $pg "bin/$name.exe";Write-Fixture $exe fixture;$executables+=$exe

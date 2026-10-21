@@ -88,6 +88,12 @@ function fixture(count) {
         events.push({ kind: 'metadata-end', source });
       }
     },
+    async readMetadataBatch(paths) {
+      events.push({ kind: 'metadata-batch', paths: [...paths] });
+      const result = new Map();
+      for (const source of paths) result.set(source, await adapter.readMetadata(source));
+      return result;
+    },
     firstDateTime: () => undefined,
     getDates: () => ({ dateTimeOriginal: INSTANT, localDateTime: LOCAL, timeZone: 'Asia/Tokyo' }),
     metadataEvidence: tags => ({ MIMEType: tags.MIMEType }),

@@ -59,8 +59,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
   const originalCwd = process.cwd();
   process.chdir(release);
   let db, metadataRepository;
-  let warnings = 0;
-  const logger = { setContext() {}, verbose() {}, debug() {}, log() {}, warn() { warnings++; }, error() { warnings++; }, fatal() { warnings++; } };
+  const logger = { setContext() {}, verbose() {}, debug() {}, log() {}, warn() {}, error() {}, fatal() {} };
   try {
     req('reflect-metadata');
     const { MetadataService, firstDateTime } = req(path.join(server, runtimeFiles[0]));
@@ -91,7 +90,7 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       localDateTime: '2024-05-01T12:34:56.000Z', timeZone: timezone }), 'installed-capture-patch-self-test-failed');
     core.insist(!firstDateTime({}), 'empty-date-parser-self-test-failed');
     const toolHashes = {};
-    for (const file of ['core.cjs','runtime.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
+    for (const file of ['core.cjs','runtime.cjs','metadata-batch.cjs','cli.cjs','guided.cjs','resume.cjs']) toolHashes[file] = createHash('sha256').update(await fs.readFile(path.join(__dirname,file))).digest('hex');
     const identity = { ...upstream, node: process.version, platform: process.platform, timezone, files: hashes, toolHashes };
     if (connect) {
       const config = new ConfigRepository().getEnv().database.config;
@@ -133,6 +132,14 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
       if (lock) q = q.forUpdate(['a', 'e']);
       return fromRow(tx, await q.executeTakeFirst());
     };
+    let batchReader;
+    const repository = () => {
+      if (!metadataRepository) {
+        metadataRepository = new MetadataRepository(logger);
+        metadataRepository.setMaxConcurrency(1);
+      }
+      return metadataRepository;
+    };
     const adapter = {
       identity, firstDateTime, getDates,
       isCompatiblePlanIdentity: previous => require('./resume.cjs').isCompatiblePlanIdentity(previous, identity),
@@ -146,16 +153,9 @@ async function createAdapter({ releaseRoot, ownerId, connect = true, usersOnly =
         }
         return true;
       },
-      async readMetadata(p) {
-        if (!metadataRepository) {
-          metadataRepository = new MetadataRepository(logger);
-          metadataRepository.setMaxConcurrency(1);
-        }
-        const before = warnings;
-        const tags = await metadataRepository.readTags(p);
-        core.insist(before === warnings, 'metadata-reader-warning');
-        core.insist(typeof tags?.SourceFile === 'string' && normalized(tags.SourceFile) === normalized(p), 'metadata-source-mismatch');
-        return { tags: { ...tags, SourceFile: normalized(tags.SourceFile) }, canonicalSourcePath: normalized(p) };
+      async readMetadataBatch(files) {
+        batchReader ||= require('./metadata-batch.cjs').reader(req, repository(), normalized);
+        return batchReader(files);
       },
       metadataEvidence(tags) { return Object.fromEntries(['MIMEType', ...core.CAPTURE_TAGS, ...core.ZONE_TAGS, ...core.MOTION_TAGS].filter(k => tags[k] !== undefined).map(k => [k, tags[k]])); },
       async candidates({ afterId, limit }) {
