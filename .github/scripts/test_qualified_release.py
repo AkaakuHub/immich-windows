@@ -29,6 +29,49 @@ REPO = 'example/immich-windows'
 SOURCE, TREE, HEAD, BASE, MERGED = (character * 40 for character in 'abcde')
 
 
+class QualificationJobAvailabilityTests(unittest.TestCase):
+    def jobs(self):
+        return [{'name': name, 'run_attempt': 2, 'conclusion': 'success'} for name in sorted(release.REQUIRED_JOBS)]
+
+    def test_pending_api_results_are_polled_without_rebuilding(self):
+        pending = self.jobs()
+        pending[0]['conclusion'] = None
+        api = mock.Mock()
+        api.pages.side_effect = [pending, self.jobs()]
+        with mock.patch.object(release.time, 'sleep') as sleep:
+            self.assertEqual(release.qualification_jobs(api, {'id': 200, 'run_attempt': 2}), self.jobs())
+        sleep.assert_called_once_with(5)
+        self.assertEqual(api.pages.call_args.args, ('actions/runs/200/attempts/2/jobs', 'jobs'))
+
+    def test_failed_skipped_or_duplicated_jobs_are_never_accepted(self):
+        for conclusion in ('failure', 'cancelled', 'skipped'):
+            jobs = self.jobs()
+            jobs[0]['conclusion'] = conclusion
+            api = mock.Mock()
+            api.pages.return_value = jobs
+            with self.subTest(conclusion=conclusion), mock.patch.object(release.time, 'sleep') as sleep, self.assertRaises(ValueError):
+                release.qualification_jobs(api, {'id': 200, 'run_attempt': 2})
+            sleep.assert_not_called()
+        api.pages.return_value = self.jobs() + self.jobs()[:1]
+        with self.assertRaises(ValueError):
+            release.qualification_jobs(api, {'id': 200, 'run_attempt': 2})
+
+    def test_missing_results_have_a_bounded_wait(self):
+        api = mock.Mock()
+        api.pages.return_value = []
+        with mock.patch.object(release.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, 'not become available'):
+            release.qualification_jobs(api, {'id': 200, 'run_attempt': 2})
+        self.assertEqual(api.pages.call_count, 12)
+        self.assertEqual(sleep.call_count, 11)
+
+    def test_wrong_attempt_results_are_rejected_immediately(self):
+        api = mock.Mock()
+        api.pages.return_value = [dict(job, run_attempt=1) for job in self.jobs()]
+        with mock.patch.object(release.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, 'different attempt'):
+            release.qualification_jobs(api, {'id': 200, 'run_attempt': 2})
+        sleep.assert_not_called()
+
+
 def zip_bytes(entries):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:

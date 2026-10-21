@@ -487,6 +487,29 @@ def artifacts_for(api, run_id):
             if a['name'] == ARTIFACT and not a['expired']]
 
 
+def qualification_jobs(api, run):
+    endpoint = f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"
+    pending = []
+    for attempt in range(12):
+        jobs = list(api.pages(endpoint, 'jobs'))
+        pending = []
+        for name in sorted(REQUIRED_JOBS):
+            matches = [job for job in jobs if job['name'] == name]
+            require(all(job['run_attempt'] == run['run_attempt'] for job in matches),
+                    f'Qualification job belongs to a different attempt: {name}')
+            require(len(matches) <= 1, f'Duplicate qualification job: {name}')
+            if not matches or matches[0].get('conclusion') is None:
+                pending.append(name)
+            else:
+                require(matches[0]['conclusion'] == 'success',
+                        f"Qualification job did not succeed: {name} ({matches[0]['conclusion']})")
+        if not pending:
+            return jobs
+        if attempt < 11:
+            time.sleep(5)
+    raise ValueError(f"Qualification job results have not become available: {', '.join(pending)}")
+
+
 def verify(api, run, artifact, version, destination, pr=None, allow_original_attempt=False, target_tree=None, allow_open_automation=False):
     with tempfile.TemporaryDirectory() as temporary:
         archive = Path(temporary) / 'bundle.zip'
@@ -515,7 +538,7 @@ def verify(api, run, artifact, version, destination, pr=None, allow_original_att
         if error.code == 404:
             raise NotReusable('Historical tested Git object is no longer available') from error
         raise
-    jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+    jobs = qualification_jobs(api, run) if allow_original_attempt else list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
     validate_provenance(record, run, jobs, artifact, source, target_tree or git('rev-parse', 'HEAD^{tree}'), api.repo, pr, allow_open_automation=allow_open_automation)
     return record
 
