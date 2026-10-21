@@ -25,21 +25,21 @@ function reader(req, repository, normalized) {
     }
     parse(data, error) {
       const records = JSON.parse(data);
-      core.insist(Array.isArray(records) && records.length === this.tasks.length, 'metadata-batch-count-mismatch');
+      core.insist(Array.isArray(records), 'metadata-batch-response-invalid');
       const byPath = new Map();
       for (const grouped of records) {
         // Group names protect the transport SourceFile from an image's text tag.
         const record = Object.fromEntries(Object.entries(grouped)
           .filter(([key]) => key !== ':SourceFile')
           .map(([key, value]) => [key.startsWith(':') ? key.slice(1) : key, value]));
-        core.insist(typeof record.SourceFile === 'string', 'metadata-source-mismatch');
+        if (typeof record.SourceFile !== 'string') continue;
         const source = normalized(record.SourceFile);
-        core.insist(!byPath.has(source), 'metadata-batch-duplicate-source');
-        byPath.set(source, record);
+        byPath.set(source, byPath.has(source) ? new core.Stop('metadata-batch-duplicate-source') : record);
       }
       return new Map(this.tasks.map(task => {
         const source = normalized(task.sourceFile), record = byPath.get(source);
-        core.insist(record, 'metadata-source-mismatch');
+        if (!record) return [task.sourceFile, new core.Stop('metadata-source-mismatch')];
+        if (record instanceof Error) return [task.sourceFile, record];
         if (error || this.errors.length || this.warnings.length) {
           return [task.sourceFile, new core.Stop('metadata-reader-warning')];
         }
@@ -49,9 +49,10 @@ function reader(req, repository, normalized) {
   }
   const read = async files => {
     core.insist(Array.isArray(files) && files.length >= 1 && files.length <= 100, 'invalid-metadata-batch');
-    const unique = [...new Set(files.map(normalized))];
+    const unique = [...new Map(files.map(file => [normalized(file), file])).values()];
     const result = await tool.enqueueTask(() => new BatchReadTask(unique));
-    return new Map(files.map(file => [file, result.get(normalized(file))]));
+    const byPath = new Map([...result].map(([file, metadata]) => [normalized(file), metadata]));
+    return new Map(files.map(file => [file, byPath.get(normalized(file))]));
   };
   const extraction = core.hash({ version: req('exiftool-vendored/package.json').version,
     args: ReadTask.for(path.resolve('inventory-source'), tool.options).args.slice(0, -1) });
