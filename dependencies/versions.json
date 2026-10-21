@@ -30,7 +30,7 @@
     "source": "https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.2"
   },
   "python": {
-    "version": "3.13.16",
+    "version": "3.13.17",
     "distribution": "uv-managed CPython / python-build-standalone",
     "architecture": "x86_64-pc-windows-msvc",
     "source": "https://github.com/astral-sh/python-build-standalone/releases/latest"
@@ -40,10 +40,10 @@
     "source": "https://pypi.org/project/onnxruntime-directml/1.24.4/"
   },
   "node": {
-    "version": "24.21.0",
+    "version": "24.22.1",
     "architecture": "win-x64",
-    "source": "https://github.com/immich-app/base-images/blob/2692ae751f7760b3b135cb422c3e2ebec8893f8a/server/Dockerfile",
-    "asset": "node-v24.21.0-win-x64.zip"
+    "source": "https://github.com/immich-app/base-images/blob/ffeb230c5ade36f0e603aecfaef62e943309640b/server/Dockerfile",
+    "asset": "node-v24.22.1-win-x64.zip"
   },
   "uv": {
     "version": "0.13.4",
@@ -54,7 +54,7 @@
     "version": "7.1.4-3",
     "distribution": "jellyfin-ffmpeg",
     "repository": "https://github.com/jellyfin/jellyfin-ffmpeg",
-    "source": "https://github.com/immich-app/base-images/blob/2692ae751f7760b3b135cb422c3e2ebec8893f8a/server/packages/ffmpeg.json",
+    "source": "https://github.com/immich-app/base-images/blob/ffeb230c5ade36f0e603aecfaef62e943309640b/server/packages/ffmpeg.json",
     "asset": "jellyfin-ffmpeg_7.1.4-3_portable_win64-clang-gpl.zip",
     "sha256": "113adeb702683c38be40a65d859f8ef7ffb07bae9df16dfb6c3df5ac3d95ef3c"
   },
@@ -66,23 +66,23 @@
   },
   "pnpm": {
     "version": "11.27.1",
-    "source": "https://github.com/immich-app/immich/blob/69e0cb8606137c4f8dc0e7207a672ff8be39f358/mise.toml"
+    "source": "https://github.com/immich-app/immich/blob/8303cb117e197c700332b33b61b45314c9cc5bb4/mise.toml"
   },
   "extismJs": {
     "version": "1.7.0",
     "repository": "https://github.com/extism/js-pdk",
-    "source": "https://github.com/immich-app/immich/blob/69e0cb8606137c4f8dc0e7207a672ff8be39f358/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/8303cb117e197c700332b33b61b45314c9cc5bb4/mise.toml",
     "asset": "extism-js-x86_64-windows-v1.7.0.gz"
   },
   "binaryen": {
     "version": "124",
     "repository": "https://github.com/WebAssembly/binaryen",
-    "source": "https://github.com/immich-app/immich/blob/69e0cb8606137c4f8dc0e7207a672ff8be39f358/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/8303cb117e197c700332b33b61b45314c9cc5bb4/mise.toml",
     "asset": "binaryen-version_124-x86_64-windows.tar.gz"
   },
   "sharp": {
     "version": "0.35.3",
-    "source": "https://github.com/immich-app/immich/blob/69e0cb8606137c4f8dc0e7207a672ff8be39f358/server/package.json"
+    "source": "https://github.com/immich-app/immich/blob/8303cb117e197c700332b33b61b45314c9cc5bb4/server/package.json"
   },
   "sharpLibvips": {
     "version": "8.18.7",
@@ -95,47 +95,47 @@
     "notes": "Native Windows MXE media build with upstream libvips/libheif and loader patch. Windows platform recipes and HEVC/jpegli/JXL/RAW feature flags are preserved. Keep HEVC/GPL license notices with the package.",
     "libvipsRevision": "24ad4d042940e6bf99a68871ba886ca8847c9c82",
     "jpeg": "jpegli",
-    "immichBaseImagesCommit": "2692ae751f7760b3b135cb422c3e2ebec8893f8a",
+    "immichBaseImagesCommit": "ffeb230c5ade36f0e603aecfaef62e943309640b",
     "immichLoaderPatch": "media-patches/libvips/0001-put-other-loaders-ahead-of-dcrawload.patch",
     "libheif": {
-      "version": "1.23.5",
-      "revision": "413e2a87e6a70b3eccc3a3adc5801179dd2d9e00",
-      "sha256": "fd9036064c4432f0550d15072ddf34956a248279ee9aeaff0fba3fa0f77d8f1a",
+      "version": "1.23.6",
+      "revision": "f81f28ac014b1c28dee483ac45b72c6b05bc421a",
+      "sha256": "4484346dc5995319dbc11e3a1c35d0a2ec46511ce370900869337fd2c7033125",
       "recipeVersion": "1.23.5",
       "recipeSha256": "d1b78104a9618777f41ae155fe4436b1630f3f94056262feb4694b634d3a9744",
-      "source": "https://github.com/immich-app/base-images/blob/2692ae751f7760b3b135cb422c3e2ebec8893f8a/server/sources/libheif.json"
+      "source": "https://github.com/immich-app/base-images/blob/ffeb230c5ade36f0e603aecfaef62e943309640b/server/sources/libheif.json"
     }
   },
   "upstreamRuntime": {
     "schemaVersion": 1,
-    "immichCommit": "69e0cb8606137c4f8dc0e7207a672ff8be39f358",
+    "immichCommit": "8303cb117e197c700332b33b61b45314c9cc5bb4",
     "baseImages": {
       "repository": "immich-app/base-images",
-      "tag": "202610131110",
-      "commit": "2692ae751f7760b3b135cb422c3e2ebec8893f8a",
+      "tag": "202610211607",
+      "commit": "ffeb230c5ade36f0e603aecfaef62e943309640b",
       "images": {
         "dev": {
-          "tag": "202610131110",
-          "digest": "082dc5e2611953d63d7b30dc8427da37ff5cd1d932aa9e99ccc4a26298b5f7a5"
+          "tag": "202610211607",
+          "digest": "f99c605b44b291834cb680b80fd606f2b7c4bee5d8f9591bfdac51fdbd68c21d"
         },
         "prod": {
-          "tag": "202610131110",
-          "digest": "9d4ce4bfd72d77edddd3072fbca78b7f4307a32c8cbe75276349944dd6405be3"
+          "tag": "202610211607",
+          "digest": "e50a1b36e2638dce42981ddfa84c134246c48fb2ad290fab6acfc1bb9b2bd891"
         }
       }
     },
-    "nodeVersion": "24.21.0",
+    "nodeVersion": "24.22.1",
     "ffmpegVersion": "7.1.4-3",
     "developmentTools": {
-      "node": "24.21.0",
+      "node": "24.22.1",
       "ffmpeg": "7.1.3-6"
     },
     "sourceSha256": {
-      "mise.toml": "03481677e19e5d8108956a35b87c1b97dec9d7a2a51d8e6165574cd47fcd34be",
-      "server/package.json": "cc9310edfd1038b1cadf0a14471dc53d8a7b648ab3464d996ebe25d770041abf",
-      "server/Dockerfile": "3df4afca06b5d35b5508731f05c75f0859b073de3f8dd2035fe5c3aa887831e3",
-      "machine-learning/pyproject.toml": "28f38470a2ac88dd6edaeb96a8bcdefe6cddc478cc5f1efa6fef664343156e81",
-      "machine-learning/uv.lock": "740904cad146984c96741cbdca4af79c0e6baf3da14b136ab9df80970c157e78"
+      "mise.toml": "46a94ed5aaadf0698feec5e26c4b15d0333cbea98b7b0bb9cd4a028c1a4dfa51",
+      "server/package.json": "bd64816a2719921063c20c19eeb18f95914ad757755835a07c76111ed33a4776",
+      "server/Dockerfile": "04812200a49bce8ecadf113ccc722da5140f19e2f3bf93496d4c5c7cf7ddb5b6",
+      "machine-learning/pyproject.toml": "ff846bc4e69400323fd71528f4f15a6018d2522447380537673765e252fd0f9c",
+      "machine-learning/uv.lock": "ff8a66c97ecb59def68a7dd9dae380af2cf9fb4ce3de72e75b3cec3ebe4915e7"
     },
     "mediaSources": {
       "libvips": {
@@ -147,8 +147,8 @@
       "libheif": {
         "name": "libheif",
         "repository": "strukturag/libheif",
-        "version": "1.23.5",
-        "revision": "413e2a87e6a70b3eccc3a3adc5801179dd2d9e00"
+        "version": "1.23.6",
+        "revision": "f81f28ac014b1c28dee483ac45b72c6b05bc421a"
       },
       "libjxl": {
         "name": "libjxl",

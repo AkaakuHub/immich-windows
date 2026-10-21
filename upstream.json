@@ -1,9 +1,9 @@
 {
   "repository": "https://github.com/immich-app/immich.git",
-  "version": "v3.3.4",
-  "commit": "69e0cb8606137c4f8dc0e7207a672ff8be39f358",
+  "version": "v3.3.5",
+  "commit": "8303cb117e197c700332b33b61b45314c9cc5bb4",
   "channel": "stable",
   "buildArchitecture": "win-x64",
-  "notes": "v3.3.4 stable source with batched date repair, persistent source inspection records and bounded automatic upgrade backups. Native compatibility requires the release qualification gates.",
-  "windowsRevision": 3
+  "notes": "v3.3.5 stable source and upstream production runtime pins; initial Windows revision 0. Native compatibility requires the release qualification gates.",
+  "windowsRevision": 0
 }
