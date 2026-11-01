@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 
 from automation.transport import read_json
+from automation.pr_state import MARKER, OWNERSHIP, PENDING, prepared_pr, validate_pr, recover_pr_update, pending_body
 
 UPSTREAM = 'immich-app/immich'
 WORKFLOW = 'build-windows.yml'
@@ -26,9 +27,7 @@ BRANCH_PREFIX = 'automation/upstream-'
 PATCH_ROOTS = ('patches', 'metadata-patches')
 STABLE = re.compile(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
 SHA = re.compile(r'[0-9a-f]{40}')
-MARKER = '<!-- immich-windows:automatic-upstream:v1 -->'
 QUALIFICATION_TITLE = re.compile(r'Qualify upstream PR #[1-9][0-9]* head=[0-9a-f]{40} base=[0-9a-f]{40}')
-OWNERSHIP = re.compile(r'<!-- immich-windows:automatic-head ([0-9a-f]{40}) base ([0-9a-f]{40}) -->')
 
 
 def require(condition, message):
@@ -110,32 +109,6 @@ def resolve_commit(api, tag):
         require(value.get('type') == 'tag', 'Upstream tag does not resolve to a commit')
         value = api.get('git/tags/' + value['sha'], UPSTREAM)['object']
     raise ValueError('Upstream tag nesting is excessive')
-
-
-def validate_pr(api, pr, branch, version, upstream_commit):
-    require(pr['base']['ref'] == 'main' and pr['base']['repo']['full_name'] == api.repo
-            and pr['head'].get('repo') and pr['head']['repo']['full_name'] == api.repo
-            and pr['head']['ref'] == branch, 'Update PR repository/branch identity changed')
-    require(pr.get('user', {}).get('login') == 'github-actions[bot]', 'Automatic PR was not created by the repository workflow')
-    require(MARKER in (pr.get('body') or ''), 'An unrelated PR uses the automatic update branch; inspect it manually')
-    head = pr['head']['sha']
-    require(SHA.fullmatch(head), 'Invalid update PR head')
-    owner = OWNERSHIP.findall(pr.get('body') or '')
-    require(len(owner) == 1 and owner[0][0] == head, 'Automatic PR head changed outside this workflow; refusing to overwrite it')
-    pin = json.loads(api.file('upstream.json', head))
-    require(pin['version'] == version and pin['commit'] == upstream_commit and type(pin.get('windowsRevision')) is int
-            and pin['windowsRevision'] == 0, 'Existing automatic PR does not contain the expected upstream revision zero')
-
-
-def prepared_pr(api, number, head, base):
-    for attempt in range(6):
-        pr = api.get(f'pulls/{number}')
-        if (pr['head']['sha'] == head and pr['base']['sha'] == base
-                and OWNERSHIP.findall(pr.get('body') or '') == [(head, base)]):
-            return pr
-        if attempt < 5:
-            time.sleep(2)
-    raise ValueError('GitHub has not confirmed the prepared PR head/base; the next scheduled check will resume')
 
 
 def merge_metadata_ready(api, pr):
@@ -339,13 +312,15 @@ def write_tree(api, base, files):
     return api.write('POST', 'git/trees', {'base_tree': base['tree']['sha'], 'tree': entries})['sha']
 
 
-def write_branch(api, branch, base, files, version, previous_head=None):
+def write_branch(api, branch, base, files, version, previous_head=None, before_update=None):
     tree = write_tree(api, base, files)
     commit = api.write('POST', 'git/commits', {'message': f'chore: qualify Immich {version}.0 for Windows',
                                            'tree': tree, 'parents': [previous_head, base['sha']] if previous_head else [base['sha']]})
     # Never force-push or silently replace somebody else's existing update work.
     if previous_head:
         require(api.get('git/ref/heads/' + branch)['object']['sha'] == previous_head, 'Automatic branch changed during preparation')
+        if before_update is not None:
+            before_update(commit['sha'])
         api.write('PATCH', 'git/refs/heads/' + branch, {'sha': commit['sha'], 'force': False})
     else:
         api.write('POST', 'git/refs', {'ref': 'refs/heads/' + branch, 'sha': commit['sha']})
@@ -413,6 +388,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
         if pr['state'] != 'open':
             summary(f"PR #{pr['number']} for {version} is already closed; no duplicate PR or build.")
             return 'closed'
+        pr = recover_pr_update(api, pr, branch, version, upstream_commit)
         validate_pr(api, pr, branch, version, upstream_commit)
         recorded_base = OWNERSHIP.findall(pr['body'])[0][1]
         title = f"Qualify upstream PR #{pr['number']} head={pr['head']['sha']} base={recorded_base}"
@@ -431,8 +407,10 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
         if files:
             require(api.get('git/ref/heads/main')['object']['sha'] == main, 'Main changed during upstream preparation; run the check again')
             base = api.get('git/commits/' + main)
-            head = write_branch(api, branch, base, files, version, previous_head=pr['head']['sha'])
-            body = OWNERSHIP.sub(f'<!-- immich-windows:automatic-head {head} base {main} -->', pr['body'])
+            def record_pending(head):
+                api.write('PATCH', f"pulls/{pr['number']}", {'body': pending_body(pr['body'], head, main)})
+            head = write_branch(api, branch, base, files, version, previous_head=pr['head']['sha'], before_update=record_pending)
+            body = OWNERSHIP.sub(f'<!-- immich-windows:automatic-head {head} base {main} -->', PENDING.sub('', pr['body']).rstrip())
             api.write('PATCH', f"pulls/{pr['number']}", {'body': body})
             pr = prepared_pr(api, pr['number'], head, main)
             validate_pr(api, pr, branch, version, upstream_commit)
@@ -463,14 +441,24 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
                 and type(candidate.get('windowsRevision')) is int and candidate['windowsRevision'] == 0,
                 'Existing branch has unexpected pins; refusing to replace it')
         commit = api.get('git/commits/' + head)
-        require([parent['sha'] for parent in commit['parents']] == [main], 'Existing update branch is based on an older main; inspect it before continuing')
-        dependencies = json.loads(api.file('dependencies/versions.json', main))
-        files = prepare_update(api, pin, dependencies, dict(latest, commit=upstream_commit, windows_commit=main))
-        files.update(prepare_patches(api, main, pin['commit'], upstream_commit))
-        base = api.get('git/commits/' + main)
+        parents = [parent['sha'] for parent in commit['parents']]
+        require(len(parents) == 1 and SHA.fullmatch(parents[0]), 'Interrupted update branch has unexpected parents')
+        original_base = parents[0]
+        original_pin = pin if original_base == main else json.loads(api.file('upstream.json', original_base))
+        dependencies = json.loads(api.file('dependencies/versions.json', original_base))
+        files = prepare_update(api, original_pin, dependencies, dict(latest, commit=upstream_commit, windows_commit=original_base))
+        files.update(prepare_patches(api, original_base, original_pin['commit'], upstream_commit))
+        base = api.get('git/commits/' + original_base)
         expected_tree = write_tree(api, base, files)
         require(commit['tree']['sha'] == expected_tree, 'Unowned automatic branch differs from the deterministic update; refusing to adopt it')
         require(api.get('git/ref/heads/main')['object']['sha'] == main, 'Main changed during interrupted-run recovery')
+        if original_base != main:
+            dependencies = json.loads(api.file('dependencies/versions.json', main))
+            files = prepare_update(api, pin, dependencies, dict(latest, commit=upstream_commit, windows_commit=main))
+            files.update(prepare_patches(api, main, pin['commit'], upstream_commit))
+            require(api.get('git/ref/heads/main')['object']['sha'] == main, 'Main changed during interrupted-run recovery')
+            base = api.get('git/commits/' + main)
+            head = write_branch(api, branch, base, files, version, previous_head=head)
     pr = api.write('POST', 'pulls', {
         'title': f'Update Immich to {version}.0', 'head': branch, 'base': 'main', 'draft': True,
         'body': f'{MARKER}\n<!-- immich-windows:automatic-head {head} base {main} -->\n\nAutomated stable update: {pin["version"]} → {version}.0.\n\n'
