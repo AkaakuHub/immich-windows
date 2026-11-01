@@ -1,7 +1,7 @@
 """Daily stable-release detection and idempotent, Git-Data-API-only PR preparation.
 
 This entry point never builds, merges, or publishes. It dispatches the existing
-qualification workflow once per exact same-repository update head; qualification
+qualification workflow for an exact same-repository update head; qualification
 and publication retain their own independent evidence gates.
 """
 import base64
@@ -87,6 +87,9 @@ class GitHub:
 
     def file(self, path, ref, repo=None):
         response = self.get('contents/' + urllib.parse.quote(path, safe='/') + '?ref=' + urllib.parse.quote(ref, safe=''), repo)
+        if response.get('encoding') == 'none' and response.get('type') == 'file':
+            response = self.get('git/blobs/' + response['sha'], repo)
+            response['type'] = 'file'
         require(response.get('encoding') == 'base64' and response.get('type') == 'file', f'Invalid file response: {path}')
         return base64.b64decode(response['content'], validate=False).decode('utf-8')
 
@@ -136,7 +139,7 @@ def merge_metadata_ready(api, pr):
                     return True
         if attempt < 2:
             time.sleep(2)
-    summary(f"PR #{pr['number']} merge metadata is not ready; no build was started. The next daily/manual check will resume.")
+    summary(f"PR #{pr['number']} merge metadata is not ready; no build was started. The next scheduled/manual check will resume.")
     return False
 
 
@@ -145,16 +148,16 @@ def dispatch_once(api, pr, recover_completion=None):
     require(OWNERSHIP.findall(pr.get('body') or '') == [(head, pr['base']['sha'])], 'Main changed after update preparation; wait for a refreshed qualification')
     title = f"Qualify upstream PR #{pr['number']} head={head} base={pr['base']['sha']}"
     runs = api.pages(f'actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch', 'workflow_runs')
-    # A failed qualification is evidence of a real blocker, not permission to
-    # burn runner time by repeating the same build every day.
     run = next((run for run in runs if run.get('event') == 'workflow_dispatch' and run.get('display_title') == title
                 and run.get('head_repository', {}).get('full_name') == api.repo), None)
     if run:
         if run['status'] == 'completed' and run.get('conclusion') == 'success' and recover_completion is not None:
             if recover_completion(run['id']):
                 return 'completion-recovery'
-        summary(f"PR #{pr['number']} already has qualification run {run['id']} ({run['status']}/{run.get('conclusion')}); no duplicate build.")
-        return 'existing-run'
+        if run['status'] != 'completed' or run.get('conclusion') == 'success':
+            summary(f"PR #{pr['number']} already has qualification run {run['id']} ({run['status']}/{run.get('conclusion')}); no duplicate build.")
+            return 'existing-run'
+        summary(f"Retrying unsuccessful qualification {run['id']} for PR #{pr['number']}.")
     if not merge_metadata_ready(api, pr):
         return 'awaiting-merge-metadata'
     api.write('POST', f'actions/workflows/{WORKFLOW}/dispatches', {
@@ -376,7 +379,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
                    and item.get('actor', {}).get('login') == 'github-actions[bot]'
                    and QUALIFICATION_TITLE.fullmatch(item.get('display_title', ''))), None)
     if active:
-        summary(f"Automatic upstream qualification {active['id']} is still {active['status']}; defer the newer release until the next daily check.")
+        summary(f"Automatic upstream qualification {active['id']} is still {active['status']}; defer the newer release until the next scheduled check.")
         return 'active-qualification'
     upstream_commit = resolve_commit(api, version)
     branch = BRANCH_PREFIX + version
@@ -415,7 +418,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
         files = prepare_update(api, pin, dependencies, dict(latest, commit=upstream_commit, windows_commit=main))
         files.update(prepare_patches(api, main, pin['commit'], upstream_commit))
         # Refuse to build on a stale baseline when another change landed during
-        # preflight. The next daily/manual check can prepare against current main.
+        # preflight. The next scheduled/manual check can prepare against current main.
         require(api.get('git/ref/heads/main')['object']['sha'] == main, 'Main changed during upstream preparation; run the check again')
         base = api.get('git/commits/' + main)
         head = write_branch(api, branch, base, files, version)

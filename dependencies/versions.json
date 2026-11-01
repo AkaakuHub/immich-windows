@@ -24,16 +24,16 @@
     "source": "https://github.com/supervc-stack/VectorChord/releases/tag/1.1.1"
   },
   "valkey": {
-    "version": "9.1.2",
+    "version": "9.1.3",
     "repository": "https://github.com/valkey-windows/valkey-windows",
-    "asset": "Valkey-9.1.2-Windows-x64-msys2-with-Service.zip",
-    "source": "https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.2"
+    "asset": "Valkey-9.1.3-Windows-x64-msys2-with-Service.zip",
+    "source": "https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.3"
   },
   "python": {
-    "version": "3.13.17",
+    "version": "3.13.18",
     "distribution": "uv-managed CPython / python-build-standalone",
     "architecture": "x86_64-pc-windows-msvc",
-    "source": "https://github.com/astral-sh/python-build-standalone/releases/latest"
+    "source": "https://github.com/astral-sh/uv/blob/329bf9448afd9f9088d14a4d57fbc61eb454f117/crates/uv-python-managed/download-metadata.json"
   },
   "onnxruntimeDirectml": {
     "version": "1.24.4",
@@ -46,8 +46,8 @@
     "asset": "node-v24.22.1-win-x64.zip"
   },
   "uv": {
-    "version": "0.13.4",
-    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.4",
+    "version": "0.13.6",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.6",
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
