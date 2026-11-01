@@ -392,10 +392,20 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
             return 'closed'
         validate_pr(api, pr, branch, version, upstream_commit)
         recorded_base = OWNERSHIP.findall(pr['body'])[0][1]
-        if recorded_base != main:
+        title = f"Qualify upstream PR #{pr['number']} head={pr['head']['sha']} base={recorded_base}"
+        previous = next((item for item in recent['workflow_runs']
+                         if item.get('display_title') == title
+                         and item.get('head_repository', {}).get('full_name') == api.repo), None)
+        retry = previous and previous['status'] == 'completed' and previous.get('conclusion') != 'success'
+        files = None
+        if recorded_base != main or retry:
             dependencies = json.loads(api.file('dependencies/versions.json', main))
             files = prepare_update(api, pin, dependencies, dict(latest, commit=upstream_commit, windows_commit=main))
-            files.update(prepare_patches(api, main, pin['commit'], upstream_commit))
+            if recorded_base != main:
+                files.update(prepare_patches(api, main, pin['commit'], upstream_commit))
+            elif all(api.file(path, pr['head']['sha']) == content for path, content in files.items()):
+                files = None
+        if files:
             require(api.get('git/ref/heads/main')['object']['sha'] == main, 'Main changed during upstream preparation; run the check again')
             base = api.get('git/commits/' + main)
             head = write_branch(api, branch, base, files, version, previous_head=pr['head']['sha'])
@@ -403,7 +413,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
             api.write('PATCH', f"pulls/{pr['number']}", {'body': body})
             pr = api.get(f"pulls/{pr['number']}")
             validate_pr(api, pr, branch, version, upstream_commit)
-            summary(f"Refreshed PR #{pr['number']} against current main; the new head requires fresh qualification.")
+            summary(f"Refreshed PR #{pr['number']} with current main and dependency pins; the new head requires fresh qualification.")
         close_superseded(api, version, pr['number'])
         return dispatch_once(api, pr, recover_completion)
     # Recover an interrupted run after branch creation but before PR creation.

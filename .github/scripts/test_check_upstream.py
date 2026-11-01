@@ -249,6 +249,7 @@ class WatcherTests(unittest.TestCase):
 
     def test_failed_qualification_never_invokes_completion_recovery(self):
         self.api.pr = make_pr()
+        self.prepare.return_value = {'upstream.json': self.api.file('upstream.json', HEAD), 'dependencies/versions.json': '{}'}
         self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
@@ -257,6 +258,21 @@ class WatcherTests(unittest.TestCase):
         recover.assert_not_called()
         self.assertEqual(len(self.api.writes), 1)
         self.assertTrue(self.api.writes[0][1].endswith('/dispatches'))
+
+    def test_failed_qualification_refreshes_changed_dependencies_before_retry(self):
+        self.api.pr = make_pr()
+        self.api.branch = HEAD
+        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo},
+            'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
+        self.prepare.return_value = {'upstream.json': '{}', 'dependencies/versions.json': '{"uv":"updated"}'}
+        self.assertEqual(self.run_check(), 'dispatched')
+        self.prepare.assert_called_once()
+        commits = [item for item in self.api.writes if item[1] == 'git/commits']
+        self.assertEqual(len(commits), 1)
+        self.assertEqual(commits[0][2]['parents'], [HEAD, MAIN])
+        self.assertEqual(self.api.writes[-1][1], 'actions/workflows/build-windows.yml/dispatches')
 
     def test_pending_completion_recovery_does_not_dispatch_a_duplicate_build(self):
         self.api.pr = make_pr()
@@ -295,6 +311,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(self.api.writes, [])
 
     def test_unsuccessful_qualifications_retry_without_completion_or_publication(self):
+        self.prepare.return_value = {'upstream.json': self.api.file('upstream.json', HEAD), 'dependencies/versions.json': '{}'}
         for conclusion in ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required'):
             with self.subTest(conclusion=conclusion):
                 self.api = FakeAPI()
