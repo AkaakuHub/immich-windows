@@ -120,6 +120,17 @@ def validate_pr(api, pr, branch, version, upstream_commit):
             and pin['windowsRevision'] == 0, 'Existing automatic PR does not contain the expected upstream revision zero')
 
 
+def prepared_pr(api, number, head, base):
+    for attempt in range(6):
+        pr = api.get(f'pulls/{number}')
+        if (pr['head']['sha'] == head and pr['base']['sha'] == base
+                and OWNERSHIP.findall(pr.get('body') or '') == [(head, base)]):
+            return pr
+        if attempt < 5:
+            time.sleep(2)
+    raise ValueError('GitHub has not confirmed the prepared PR head/base; the next scheduled check will resume')
+
+
 def merge_metadata_ready(api, pr):
     """GitHub may not have computed a brand-new PR merge ref yet."""
     for attempt in range(3):
@@ -411,7 +422,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
             head = write_branch(api, branch, base, files, version, previous_head=pr['head']['sha'])
             body = OWNERSHIP.sub(f'<!-- immich-windows:automatic-head {head} base {main} -->', pr['body'])
             api.write('PATCH', f"pulls/{pr['number']}", {'body': body})
-            pr = api.get(f"pulls/{pr['number']}")
+            pr = prepared_pr(api, pr['number'], head, main)
             validate_pr(api, pr, branch, version, upstream_commit)
             summary(f"Refreshed PR #{pr['number']} with current main and dependency pins; the new head requires fresh qualification.")
         close_superseded(api, version, pr['number'])
@@ -456,8 +467,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
                 'Qualification must verify the exact PR head and current main before automatic merge; '
                 'publication promotes the identical qualified artifacts without a second build.\n',
     })
-    pr = api.get(f"pulls/{pr['number']}")
-    require(pr['head']['sha'] == head, 'Update branch changed while creating PR')
+    pr = prepared_pr(api, pr['number'], head, main)
     validate_pr(api, pr, branch, version, upstream_commit)
     close_superseded(api, version, pr['number'])
     return dispatch_once(api, pr, recover_completion)

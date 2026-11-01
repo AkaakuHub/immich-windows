@@ -284,6 +284,22 @@ class WatcherTests(unittest.TestCase):
         recover.assert_called_once_with(102)
         self.assertEqual(self.api.writes, [])
 
+    def test_prepared_pr_waits_for_github_to_reflect_the_new_head(self):
+        api = Mock()
+        api.get.side_effect = [make_pr(head=OLD), make_pr(marker_head=OLD), make_pr()]
+        with patch.object(check.time, 'sleep') as sleep:
+            result = check.prepared_pr(api, 12, HEAD, MAIN)
+        self.assertEqual(result['head']['sha'], HEAD)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_prepared_pr_never_accepts_a_different_head(self):
+        api = Mock()
+        api.get.return_value = make_pr(head=OLD)
+        with patch.object(check.time, 'sleep'), self.assertRaisesRegex(ValueError, 'not confirmed'):
+            check.prepared_pr(api, 12, HEAD, MAIN)
+        self.assertEqual(api.get.call_count, 6)
+        api.write.assert_not_called()
+
     def test_pending_merge_metadata_defers_without_creating_a_run(self):
         self.api.pr = make_pr()
         self.api.pr['merge_commit_sha'] = None
