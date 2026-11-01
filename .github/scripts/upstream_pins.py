@@ -14,9 +14,8 @@ from urllib.parse import quote
 IMMICH = 'immich-app/immich'
 BASE = 'immich-app/base-images'
 MXE = 'libvips/build-win64-mxe'
-PYTHON_STANDALONE = 'astral-sh/python-build-standalone'
-PYTHON_ASSET = re.compile(
-    r'cpython-(\d+\.\d+\.\d+)\+[^-]+-x86_64-pc-windows-msvc-install_only(?:_stripped)?\.tar\.gz')
+UV = 'astral-sh/uv'
+PYTHON_METADATA = 'crates/uv-python-managed/download-metadata.json'
 WINDOWS_RELEASES = {
     'uv': ('astral-sh/uv', re.compile(r'uv-x86_64-pc-windows-msvc\.zip')),
     'valkey': ('valkey-windows/valkey-windows', re.compile(r'Valkey-(\d+\.\d+\.\d+)-Windows-x64-msys2-with-Service\.zip')),
@@ -122,13 +121,11 @@ def python_compatible(version, constraint):
     return True
 
 
-def compatible_python_version(api, constraint, minor):
-    """Select the newest Windows CPython asset satisfying upstream's bounds."""
-    release = api.get('releases/latest', repo=PYTHON_STANDALONE)
+def compatible_python_version(api, constraint, minor, uv_commit):
+    metadata = json.loads(source(api, UV, uv_commit, PYTHON_METADATA))
     candidates = []
-    for asset in release.get('assets', []):
-        name = asset.get('name', '')
-        match = PYTHON_ASSET.fullmatch(name)
+    for key in metadata:
+        match = re.fullmatch(r'cpython-([0-9]+\.[0-9]+\.[0-9]+)-windows-x86_64-none', key)
         if match and match[1].startswith(minor + '.') and python_compatible(match[1], constraint):
             candidates.append(match[1])
     require(candidates, f'No Windows CPython runtime satisfies upstream {constraint}')
@@ -158,7 +155,9 @@ def prepare_update(api, current_pin, dependencies, release):
             'Upstream package versions do not match the release')
     python_minor = unique(r'^FROM python:([0-9]+\.[0-9]+)(?:\.[0-9]+)?-[^\s]+ AS builder-openvino\s*$',
                           files['machine-learning/Dockerfile'], 'production Python')
-    python_version = compatible_python_version(api, ml['requires-python'], python_minor)
+    uv_repository, uv_version, uv_asset = latest_windows_release(api, 'uv')
+    uv_commit = tag_commit(api, uv_repository, uv_version)
+    python_version = compatible_python_version(api, ml['requires-python'], python_minor, uv_commit)
     providers = ml['optional-dependencies'].get('openvino', [])
     require(len(providers) == 1 and re.fullmatch(r'onnxruntime-openvino[><=0-9., ]+', providers[0]),
             'Upstream OpenVINO extra changed; review Windows DirectML replacement')
@@ -185,8 +184,7 @@ def prepare_update(api, current_pin, dependencies, release):
     ffmpeg_asset = f'jellyfin-ffmpeg_{ffmpeg}_portable_win64-clang-gpl.zip'
     ffmpeg_checksum = release_asset(api, 'jellyfin/jellyfin-ffmpeg', f'v{ffmpeg}', ffmpeg_asset)
     result = deepcopy(dependencies)
-    update_dependency(result, 'python', f'https://github.com/{PYTHON_STANDALONE}/releases/latest', python_version)
-    uv_repository, uv_version, uv_asset = latest_windows_release(api, 'uv')
+    update_dependency(result, 'python', f'https://github.com/{UV}/blob/{uv_commit}/{PYTHON_METADATA}', python_version)
     update_dependency(result, 'uv', f'https://github.com/{uv_repository}/releases/tag/{uv_version}', uv_version, asset=uv_asset)
     valkey_repository, valkey_version, valkey_asset = latest_windows_release(api, 'valkey')
     update_dependency(result, 'valkey', f'https://github.com/{valkey_repository}/releases/tag/{valkey_version}',

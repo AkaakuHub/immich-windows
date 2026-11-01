@@ -253,9 +253,10 @@ class WatcherTests(unittest.TestCase):
             'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
         recover = Mock(return_value=True)
-        self.assertEqual(check.run(self.api, self.prepare, recover_completion=recover), 'existing-run')
+        self.assertEqual(check.run(self.api, self.prepare, recover_completion=recover), 'dispatched')
         recover.assert_not_called()
-        self.assertEqual(self.api.writes, [])
+        self.assertEqual(len(self.api.writes), 1)
+        self.assertTrue(self.api.writes[0][1].endswith('/dispatches'))
 
     def test_pending_completion_recovery_does_not_dispatch_a_duplicate_build(self):
         self.api.pr = make_pr()
@@ -293,8 +294,21 @@ class WatcherTests(unittest.TestCase):
             self.assertEqual(self.run_check(), 'awaiting-merge-metadata')
         self.assertEqual(self.api.writes, [])
 
-    def test_pending_success_and_failed_exact_head_are_not_built_again(self):
-        for status, conclusion in [('in_progress', None), ('completed', 'success'), ('completed', 'failure')]:
+    def test_unsuccessful_qualifications_retry_without_completion_or_publication(self):
+        for conclusion in ('failure', 'cancelled', 'timed_out', 'startup_failure', 'action_required'):
+            with self.subTest(conclusion=conclusion):
+                self.api = FakeAPI()
+                self.api.pr = make_pr()
+                self.api.runs = [{'id': 100, 'event': 'workflow_dispatch',
+                    'head_repository': {'full_name': self.api.repo}, 'status': 'completed',
+                    'conclusion': conclusion,
+                    'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
+                self.assertEqual(self.run_check(), 'dispatched')
+                self.assertEqual(len(self.api.writes), 1)
+                self.assertEqual(self.api.writes[0][1], 'actions/workflows/build-windows.yml/dispatches')
+
+    def test_pending_and_successful_exact_head_are_not_built_again(self):
+        for status, conclusion in [('in_progress', None), ('completed', 'success')]:
             with self.subTest(conclusion=conclusion):
                 self.api = FakeAPI()
                 self.api.pr = make_pr()

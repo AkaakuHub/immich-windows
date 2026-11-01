@@ -13,6 +13,7 @@ class FakeAPI:
         self.refs = {
             (pins.IMMICH, 'v3.2.4'): 'a' * 40,
             (pins.BASE, '202609281550'): 'b' * 40,
+            (pins.UV, '0.12.23'): '8' * 40,
             (pins.MXE, 'v8.18.5'): 'c' * 40,
             ('libvips/libvips', 'v8.18.5'): 'd' * 40,
             ('strukturag/libheif', 'v1.23.3'): 'e' * 40,
@@ -52,9 +53,11 @@ class FakeAPI:
             'jellyfin/jellyfin-ffmpeg': ('v7.1.4-3', 'jellyfin-ffmpeg_7.1.4-3_portable_win64-clang-gpl.zip'),
             'strukturag/libheif': ('v1.23.3', 'libheif-1.23.3.tar.gz'),
         }
-        self.python_release = {
-            'assets': [{'name': 'cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz'}]
-        }
+        self.files[pins.UV, pins.PYTHON_METADATA] = json.dumps({
+            'cpython-3.12.15-windows-x86_64-none': {},
+            'cpython-3.12.16+freethreaded-windows-x86_64-none': {},
+            'cpython-3.12.16-linux-x86_64-gnu': {},
+        })
         self.release_versions = {
             'astral-sh/uv': ('0.12.23', 'uv-x86_64-pc-windows-msvc.zip'),
             'valkey-windows/valkey-windows': ('9.1.2', 'Valkey-9.1.2-Windows-x64-msys2-with-Service.zip'),
@@ -78,8 +81,6 @@ class FakeAPI:
             tag, name = self.assets[repo]
             return {'tag_name': tag, 'draft': False, 'prerelease': False,
                     'assets': [{'name': name, 'digest': self.asset_digest}]}
-        if path == 'releases/latest' and repo == pins.PYTHON_STANDALONE:
-            return self.python_release
         if path == 'releases/latest' and repo in self.release_versions:
             version, asset = self.release_versions[repo]
             return {'tag_name': version, 'assets': [{'name': asset}]}
@@ -92,7 +93,7 @@ class FakeAPI:
         if repo == 'supervc-stack/VectorChord':
             assert ref == '7' * 40
             return '[dependencies]\npgrx={version="=0.17.0"}\n'
-        expected = {pins.IMMICH: 'a' * 40, pins.BASE: 'b' * 40, pins.MXE: 'c' * 40}[repo]
+        expected = {pins.IMMICH: 'a' * 40, pins.BASE: 'b' * 40, pins.MXE: 'c' * 40, pins.UV: '8' * 40}[repo]
         assert ref == expected, (repo, path, ref)
         return self.files[repo, path]
 
@@ -187,10 +188,20 @@ class PinTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing or ambiguous'):
             self.prepare()
 
-    def test_incompatible_python_pin_is_updated_from_standalone_release(self):
+    def test_python_pin_uses_selected_uv_download_catalog(self):
         self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11', '>=3.12')
         result = self.prepare()
         self.assertEqual(result['dependencies/versions.json']['python']['version'], '3.12.15')
+
+    def test_newest_supported_python_patch_is_selected(self):
+        self.api.files[pins.UV, pins.PYTHON_METADATA] = json.dumps({
+            'cpython-3.12.9-windows-x86_64-none': {},
+            'cpython-3.12.17-windows-x86_64-none': {},
+            'cpython-3.12.18rc1-windows-x86_64-none': {},
+        })
+        result = self.prepare()['dependencies/versions.json']['python']
+        self.assertEqual(result['version'], '3.12.17')
+        self.assertIn('8' * 40, result['source'])
 
     def test_missing_compatible_python_runtime_is_rejected(self):
         self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11', '>=3.13')
