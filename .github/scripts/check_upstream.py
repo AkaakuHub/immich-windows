@@ -6,6 +6,7 @@ and publication retain their own independent evidence gates.
 """
 import base64
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,7 @@ import urllib.request
 
 UPSTREAM = 'immich-app/immich'
 WORKFLOW = 'build-windows.yml'
+MAX_QUALIFICATION_ATTEMPTS = 3
 BRANCH_PREFIX = 'automation/upstream-'
 PATCH_ROOTS = ('patches', 'metadata-patches')
 STABLE = re.compile(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
@@ -159,8 +161,10 @@ def dispatch_once(api, pr, recover_completion=None):
     require(OWNERSHIP.findall(pr.get('body') or '') == [(head, pr['base']['sha'])], 'Main changed after update preparation; wait for a refreshed qualification')
     title = f"Qualify upstream PR #{pr['number']} head={head} base={pr['base']['sha']}"
     runs = api.pages(f'actions/workflows/{WORKFLOW}/runs?event=workflow_dispatch', 'workflow_runs')
-    run = next((run for run in runs if run.get('event') == 'workflow_dispatch' and run.get('display_title') == title
-                and run.get('head_repository', {}).get('full_name') == api.repo), None)
+    matching = list(islice((run for run in runs if run.get('event') == 'workflow_dispatch'
+                           and run.get('display_title') == title
+                           and run.get('head_repository', {}).get('full_name') == api.repo), MAX_QUALIFICATION_ATTEMPTS))
+    run = matching[0] if matching else None
     if run:
         if run['status'] == 'completed' and run.get('conclusion') == 'success' and recover_completion is not None:
             if recover_completion(run['id']):
@@ -168,6 +172,9 @@ def dispatch_once(api, pr, recover_completion=None):
         if run['status'] != 'completed' or run.get('conclusion') == 'success':
             summary(f"PR #{pr['number']} already has qualification run {run['id']} ({run['status']}/{run.get('conclusion')}); no duplicate build.")
             return 'existing-run'
+        require(len(matching) < MAX_QUALIFICATION_ATTEMPTS,
+                f"PR #{pr['number']} failed {MAX_QUALIFICATION_ATTEMPTS} qualifications with unchanged head/base. "
+                'Automatic retries are exhausted; daily dependency and upstream checks will continue. Inspect the failed run.')
         summary(f"Retrying unsuccessful qualification {run['id']} for PR #{pr['number']}.")
     if not merge_metadata_ready(api, pr):
         return 'awaiting-merge-metadata'

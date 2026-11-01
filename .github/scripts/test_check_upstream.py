@@ -340,6 +340,54 @@ class WatcherTests(unittest.TestCase):
                 self.assertEqual(len(self.api.writes), 1)
                 self.assertEqual(self.api.writes[0][1], 'actions/workflows/build-windows.yml/dispatches')
 
+    def test_unchanged_candidate_stops_building_after_two_automatic_retries(self):
+        self.api.pr = make_pr()
+        self.prepare.return_value = {'upstream.json': self.api.file('upstream.json', HEAD), 'dependencies/versions.json': '{}'}
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (103, 102, 101)]
+        with self.assertRaisesRegex(ValueError, 'retries are exhausted'):
+            self.run_check()
+        self.prepare.assert_called_once()
+        self.assertEqual(self.api.writes, [])
+
+    def test_dependency_update_resumes_after_old_candidate_exhausts_retries(self):
+        self.api.pr = make_pr()
+        self.api.branch = HEAD
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (103, 102, 101)]
+        self.prepare.return_value = {'upstream.json': '{}', 'dependencies/versions.json': '{"uv":"updated"}'}
+        original_write, original_get = self.api.write, self.api.get
+        def write(method, path, data):
+            result = original_write(method, path, data)
+            return {'sha': NEW} if path == 'git/commits' else result
+        def get(path, repo=None):
+            result = original_get(path, repo)
+            if path == 'git/commits/' + 'f' * 40:
+                result['parents'] = [{'sha': MAIN}, {'sha': NEW}]
+            return result
+        self.api.write, self.api.get = write, get
+        self.assertEqual(self.run_check(), 'dispatched')
+        self.assertEqual(self.api.pr['head']['sha'], NEW)
+        self.assertEqual(self.api.writes[-1][2]['inputs']['expected_head'], NEW)
+
+    def test_second_automatic_retry_is_allowed(self):
+        self.api.pr = make_pr()
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (102, 101)]
+        self.assertEqual(check.dispatch_once(self.api, self.api.pr), 'dispatched')
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_new_candidate_is_qualified_after_old_candidate_exhausts_retries(self):
+        self.api.pr = make_pr()
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={OLD} base={MAIN}'} for run_id in (103, 102, 101)]
+        self.assertEqual(self.run_check(), 'dispatched')
+        self.assertEqual(len(self.api.writes), 1)
+
     def test_pending_and_successful_exact_head_are_not_built_again(self):
         for status, conclusion in [('in_progress', None), ('completed', 'success')]:
             with self.subTest(conclusion=conclusion):
