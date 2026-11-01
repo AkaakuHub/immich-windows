@@ -22,6 +22,8 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+from automation.transport import read_json
+
 WORKFLOW = '.github/workflows/build-windows.yml'
 ARTIFACT = 'qualified-windows-package-v1'
 REQUIRED_JOBS = {'validate', 'codec', 'postgres', 'assemble'}
@@ -99,8 +101,7 @@ class API:
         })
 
     def get(self, path):
-        with urllib.request.urlopen(self.request(path), timeout=60) as response:
-            return json.load(response)
+        return read_json(urllib.request.urlopen, self.request(path))
 
     def write(self, path, data, method='POST'):
         request = self.request(path)

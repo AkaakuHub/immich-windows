@@ -17,6 +17,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from automation.transport import read_json
+
 UPSTREAM = 'immich-app/immich'
 WORKFLOW = 'build-windows.yml'
 MAX_QUALIFICATION_ATTEMPTS = 3
@@ -67,7 +69,10 @@ class GitHub:
             'Content-Type': 'application/json',
             'X-GitHub-Api-Version': '2022-11-28',
         }, method=method)
-        with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
+        opener = urllib.request.build_opener(NoRedirect)
+        if method == 'GET':
+            return read_json(opener.open, request)
+        with opener.open(request, timeout=60) as response:
             raw = response.read()
             return json.loads(raw) if raw else None
 
