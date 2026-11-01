@@ -14,16 +14,18 @@ def read_json(open_response, request):
                 return json.load(response)
         except urllib.error.HTTPError as error:
             headers = error.headers
-            limited = error.code in (403, 429)
-            if limited:
-                if headers.get('Retry-After', '').isdigit():
-                    delay = max(delay, int(headers['Retry-After']))
-                elif headers.get('X-RateLimit-Remaining') == '0' and headers.get('X-RateLimit-Reset', '').isdigit():
-                    delay = max(delay, int(headers['X-RateLimit-Reset']) - time.time() + 1)
-                else:
+            retry_after = headers.get('Retry-After', '')
+            reset = headers.get('X-RateLimit-Reset', '')
+            primary_limit = headers.get('X-RateLimit-Remaining') == '0' and reset.isdigit()
+            if error.code in (403, 429):
+                if not retry_after.isdigit() and not primary_limit:
                     raise
             elif error.code not in (408, 500, 502, 503, 504):
                 raise
+            if retry_after.isdigit():
+                delay = max(delay, int(retry_after))
+            if primary_limit:
+                delay = max(delay, int(reset) - time.time() + 1)
             if attempt == 2 or delay > 30:
                 raise
             error.close()

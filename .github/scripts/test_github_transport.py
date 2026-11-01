@@ -37,6 +37,18 @@ class ReadRecoveryTests(unittest.TestCase):
         transport.read_json(opener, self.request)
         self.sleep.assert_called_once_with(8)
 
+    def test_service_unavailable_respects_retry_after(self):
+        opener = Mock(side_effect=[self.error(503, {'Retry-After': '10'}), io.BytesIO(b'{}')])
+        transport.read_json(opener, self.request)
+        self.sleep.assert_called_once_with(10)
+
+    def test_both_rate_limit_headers_use_the_later_time(self):
+        opener = Mock(side_effect=[self.error(403, {'Retry-After': '5', 'X-RateLimit-Remaining': '0',
+                                                   'X-RateLimit-Reset': '1010'}), io.BytesIO(b'{}')])
+        with patch.object(transport.time, 'time', return_value=1000):
+            transport.read_json(opener, self.request)
+        self.sleep.assert_called_once_with(11)
+
     def test_primary_rate_limit_waits_until_reset(self):
         opener = Mock(side_effect=[self.error(403, {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '1010'}),
                                    io.BytesIO(b'{}')])
