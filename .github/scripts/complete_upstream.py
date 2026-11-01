@@ -17,6 +17,9 @@ from qualified_release import (
 )
 
 
+MAX_PUBLICATION_ATTEMPTS = 3
+
+
 def current_main(api):
     sha = api.get('git/ref/heads/main')['object']['sha']
     require(SHA.fullmatch(sha), 'Invalid current main identity')
@@ -127,15 +130,16 @@ def complete(api, event_run, *, recover=False):
     # explicitly, bound to the verified run, artifact digest and merged commit.
     title = f"Promote qualified run {run['id']} at {merge}"
     recent = list(islice(api.pages(f'actions/workflows/build-windows.yml/runs?event=workflow_dispatch&head_sha={merge}', 'workflow_runs'), 100))
-    for candidate in recent:
-        if candidate.get('display_title') == title and candidate.get('head_sha') == merge:
-            if not recover or candidate.get('status') != 'completed' or candidate.get('conclusion') == 'success':
-                summary(f"Promotion was already attempted by run {candidate['id']}; no duplicate build or dispatch.")
-                return False
-            # Daily recovery may retry this failed publication continuation once.
-            # The exact original qualification remains mandatory; no new build.
-            summary(f"Retrying failed publication run {candidate['id']} using the same immutable artifact.")
-            break
+    matching = [candidate for candidate in recent
+                if candidate.get('display_title') == title and candidate.get('head_sha') == merge]
+    for candidate in matching:
+        if not recover or candidate.get('status') != 'completed' or candidate.get('conclusion') == 'success':
+            summary(f"Promotion was already attempted by run {candidate['id']}; no duplicate build or dispatch.")
+            return False
+        require(len(matching) < MAX_PUBLICATION_ATTEMPTS,
+                'Publication failed three times for the same qualification and merge; inspect the failed run. Daily checks continue.')
+        summary(f"Retrying failed publication run {candidate['id']} using the same immutable artifact.")
+        break
     else:
         require(len(recent) < 100, 'Promotion identity is outside the bounded lookup; refusing a duplicate dispatch')
     api.write('actions/workflows/build-windows.yml/dispatches', {'ref': 'main', 'inputs': {

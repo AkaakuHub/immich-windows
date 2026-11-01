@@ -340,6 +340,54 @@ class WatcherTests(unittest.TestCase):
                 self.assertEqual(len(self.api.writes), 1)
                 self.assertEqual(self.api.writes[0][1], 'actions/workflows/build-windows.yml/dispatches')
 
+    def test_unchanged_candidate_stops_building_after_two_automatic_retries(self):
+        self.api.pr = make_pr()
+        self.prepare.return_value = {'upstream.json': self.api.file('upstream.json', HEAD), 'dependencies/versions.json': '{}'}
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (103, 102, 101)]
+        with self.assertRaisesRegex(ValueError, 'retries are exhausted'):
+            self.run_check()
+        self.prepare.assert_called_once()
+        self.assertEqual(self.api.writes, [])
+
+    def test_dependency_update_resumes_after_old_candidate_exhausts_retries(self):
+        self.api.pr = make_pr()
+        self.api.branch = HEAD
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (103, 102, 101)]
+        self.prepare.return_value = {'upstream.json': '{}', 'dependencies/versions.json': '{"uv":"updated"}'}
+        original_write, original_get = self.api.write, self.api.get
+        def write(method, path, data):
+            result = original_write(method, path, data)
+            return {'sha': NEW} if path == 'git/commits' else result
+        def get(path, repo=None):
+            result = original_get(path, repo)
+            if path == 'git/commits/' + 'f' * 40:
+                result['parents'] = [{'sha': MAIN}, {'sha': NEW}]
+            return result
+        self.api.write, self.api.get = write, get
+        self.assertEqual(self.run_check(), 'dispatched')
+        self.assertEqual(self.api.pr['head']['sha'], NEW)
+        self.assertEqual(self.api.writes[-1][2]['inputs']['expected_head'], NEW)
+
+    def test_second_automatic_retry_is_allowed(self):
+        self.api.pr = make_pr()
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (102, 101)]
+        self.assertEqual(check.dispatch_once(self.api, self.api.pr), 'dispatched')
+        self.assertEqual(len(self.api.writes), 1)
+
+    def test_new_candidate_is_qualified_after_old_candidate_exhausts_retries(self):
+        self.api.pr = make_pr()
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={OLD} base={MAIN}'} for run_id in (103, 102, 101)]
+        self.assertEqual(self.run_check(), 'dispatched')
+        self.assertEqual(len(self.api.writes), 1)
+
     def test_pending_and_successful_exact_head_are_not_built_again(self):
         for status, conclusion in [('in_progress', None), ('completed', 'success')]:
             with self.subTest(conclusion=conclusion):
@@ -386,6 +434,69 @@ class WatcherTests(unittest.TestCase):
         updates = [x for x in self.api.writes if x[1] == 'git/refs/heads/' + BRANCH]
         self.assertEqual(updates[0][2], {'sha': HEAD, 'force': False})
         self.assertIn(f'base {MAIN}', self.api.pr['body'])
+
+    def test_refresh_records_pending_head_before_updating_branch(self):
+        self.api.pr = make_pr(base=OLD)
+        self.api.branch = HEAD
+        self.assertEqual(self.run_check(), 'dispatched')
+        pending_index = next(index for index, (_, path, data) in enumerate(self.api.writes)
+                             if path == 'pulls/12' and check.PENDING.findall(data.get('body', '')))
+        ref_index = next(index for index, (_, path, _) in enumerate(self.api.writes)
+                         if path == 'git/refs/heads/' + BRANCH)
+        finalized_index = next(index for index, (_, path, data) in enumerate(self.api.writes)
+                               if path == 'pulls/12' and not check.PENDING.findall(data.get('body', '')))
+        self.assertLess(pending_index, ref_index)
+        self.assertLess(ref_index, finalized_index)
+        self.assertEqual(check.PENDING.findall(self.api.pr['body']), [])
+
+    def test_interrupted_refresh_finalizes_the_recorded_head_without_new_commit(self):
+        self.api.pr = make_pr(head=NEW, marker_head=HEAD, marker_base=OLD)
+        self.api.pr['body'] = check.pending_body(self.api.pr['body'], NEW, MAIN)
+        self.api.branch = NEW
+        original_get = self.api.get
+        def get(path, repo=None):
+            if path == 'git/commits/' + NEW:
+                return {'sha': NEW, 'parents': [{'sha': HEAD}, {'sha': MAIN}]}
+            return original_get(path, repo)
+        self.api.get = get
+        pr = check.recover_pr_update(self.api, self.api.pr, BRANCH, 'v3.2.4', NEW)
+        self.assertEqual(check.OWNERSHIP.findall(pr['body']), [(NEW, MAIN)])
+        self.assertEqual(check.PENDING.findall(pr['body']), [])
+        self.assertEqual([path for _, path, _ in self.api.writes], ['pulls/12'])
+
+    def test_interrupted_refresh_refuses_unrecorded_or_unrelated_heads(self):
+        for pending_head, parents in ((HEAD, [HEAD, MAIN]), (NEW, [OLD, MAIN])):
+            with self.subTest(pending_head=pending_head, parents=parents):
+                api = FakeAPI()
+                api.pr = make_pr(head=NEW, marker_head=HEAD)
+                api.pr['body'] = check.pending_body(api.pr['body'], pending_head, MAIN)
+                api.branch = NEW
+                original_get = api.get
+                def get(path, repo=None):
+                    if path == 'git/commits/' + NEW:
+                        return {'sha': NEW, 'parents': [{'sha': parent} for parent in parents]}
+                    return original_get(path, repo)
+                api.get = get
+                with self.assertRaises(ValueError):
+                    check.recover_pr_update(api, api.pr, BRANCH, 'v3.2.4', NEW)
+                self.assertEqual(api.writes, [])
+
+    def test_interrupted_creation_on_old_main_is_verified_then_refreshed(self):
+        self.api.branch = HEAD
+        self.api.extra_pins[OLD] = self.api.pin
+        original_get = self.api.get
+        def get(path, repo=None):
+            if path == 'git/commits/' + HEAD:
+                return {'sha': HEAD, 'tree': {'sha': TREE}, 'parents': [{'sha': OLD}]}
+            if path == 'git/commits/' + OLD:
+                return {'sha': OLD, 'tree': {'sha': TREE}}
+            return original_get(path, repo)
+        self.api.get = get
+        self.assertEqual(self.run_check(), 'dispatched')
+        self.assertEqual(self.prepare.call_count, 2)
+        commits = [data for _, path, data in self.api.writes if path == 'git/commits']
+        self.assertEqual(commits[0]['parents'], [HEAD, MAIN])
+        self.assertEqual(check.OWNERSHIP.findall(self.api.pr['body']), [(HEAD, MAIN)])
 
     def test_interrupted_creation_recovers_existing_branch_without_new_commit(self):
         self.api.branch = HEAD

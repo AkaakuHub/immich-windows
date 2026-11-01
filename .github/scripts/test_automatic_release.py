@@ -468,6 +468,23 @@ class AutomaticTests(OfflineTestCase):
         self.assertEqual(self.api.write.call_args.args[1]['inputs']['qualified_run_id'], '100')
         self.assertNotIn('upstream_pr', self.api.write.call_args.args[1]['inputs'])
 
+    def test_daily_publication_recovery_is_bounded_for_unchanged_evidence(self):
+        self.recovery()
+        self.api.collections[PROMOTIONS] = [
+            {'display_title': f'Promote qualified run 100 at {SOURCE}', 'head_sha': SOURCE,
+             'id': run_id, 'status': 'completed', 'conclusion': 'failure'} for run_id in (103, 102, 101)]
+        with self.assertRaisesRegex(ValueError, 'Publication failed three times'):
+            completion.recover_publication(SOURCE, self.pin)
+        self.api.write.assert_not_called()
+
+    def test_daily_publication_recovery_allows_second_retry(self):
+        self.recovery()
+        self.api.collections[PROMOTIONS] = [
+            {'display_title': f'Promote qualified run 100 at {SOURCE}', 'head_sha': SOURCE,
+             'id': run_id, 'status': 'completed', 'conclusion': 'failure'} for run_id in (102, 101)]
+        self.assertTrue(completion.recover_publication(SOURCE, self.pin))
+        self.api.write.assert_called_once()
+
     def test_daily_recovery_skips_pending_or_successful_promotion(self):
         self.recovery()
         for status, conclusion in [('in_progress', None), ('queued', None), ('completed', 'success')]:
