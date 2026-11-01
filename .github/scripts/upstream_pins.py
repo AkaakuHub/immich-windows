@@ -11,6 +11,8 @@ import re
 import tomllib
 from urllib.parse import quote
 
+from automation.python_versions import compatible as python_compatible
+
 IMMICH = 'immich-app/immich'
 BASE = 'immich-app/base-images'
 MXE = 'libvips/build-win64-mxe'
@@ -104,21 +106,6 @@ def release_asset(api, repo, tag, name):
 
 def recipe_value(text, name):
     return unique(r'^\$\(PKG\)_' + name + r'\s*:=\s*(\S+)\s*$', text, f'MXE {name}')
-
-
-def python_compatible(version, constraint):
-    """Accept only deterministic simple numeric bounds; new syntax needs review."""
-    current = tuple(map(int, version.split('.')))
-    for bound in constraint.split(','):
-        match = re.fullmatch(r'\s*(>=|<=|>|<|==)([0-9]+(?:\.[0-9]+){0,2})\s*', bound)
-        require(match, f'Unsupported upstream Python constraint: {constraint}')
-        other = tuple(map(int, match[2].split('.')))
-        other += (0,) * (3 - len(other))
-        passes = {'>=': current >= other, '<=': current <= other, '>': current > other,
-                  '<': current < other, '==': current == other}[match[1]]
-        if not passes:
-            return False
-    return True
 
 
 def compatible_python_version(api, constraint, minor, uv_commit):

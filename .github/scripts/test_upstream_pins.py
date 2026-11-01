@@ -203,13 +203,21 @@ class PinTests(unittest.TestCase):
         self.assertEqual(result['version'], '3.12.17')
         self.assertIn('8' * 40, result['source'])
 
+    def test_compatible_release_and_excluded_patch_choose_an_available_runtime(self):
+        self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11,<4.0', '~=3.12.0,!=3.12.16')
+        self.api.files[pins.UV, pins.PYTHON_METADATA] = json.dumps({
+            'cpython-3.12.15-windows-x86_64-none': {},
+            'cpython-3.12.16-windows-x86_64-none': {},
+        })
+        self.assertEqual(self.prepare()['dependencies/versions.json']['python']['version'], '3.12.15')
+
     def test_missing_compatible_python_runtime_is_rejected(self):
         self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11', '>=3.13')
         with self.assertRaisesRegex(ValueError, 'No Windows CPython runtime'):
             self.prepare()
 
     def test_unmapped_python_syntax_rejected(self):
-        self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11,<4.0', '~=3.11')
+        self.mutate(pins.IMMICH, 'machine-learning/pyproject.toml', '>=3.11,<4.0', '===custom')
         with self.assertRaisesRegex(ValueError, 'Unsupported upstream Python'):
             self.prepare()
 
