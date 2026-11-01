@@ -139,7 +139,7 @@ def merge_metadata_ready(api, pr):
                     return True
         if attempt < 2:
             time.sleep(2)
-    summary(f"PR #{pr['number']} merge metadata is not ready; no build was started. The next daily/manual check will resume.")
+    summary(f"PR #{pr['number']} merge metadata is not ready; no build was started. The next scheduled/manual check will resume.")
     return False
 
 
@@ -379,7 +379,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
                    and item.get('actor', {}).get('login') == 'github-actions[bot]'
                    and QUALIFICATION_TITLE.fullmatch(item.get('display_title', ''))), None)
     if active:
-        summary(f"Automatic upstream qualification {active['id']} is still {active['status']}; defer the newer release until the next daily check.")
+        summary(f"Automatic upstream qualification {active['id']} is still {active['status']}; defer the newer release until the next scheduled check.")
         return 'active-qualification'
     upstream_commit = resolve_commit(api, version)
     branch = BRANCH_PREFIX + version
@@ -418,7 +418,7 @@ def run(api, prepare_update, recover_publication=None, recover_completion=None):
         files = prepare_update(api, pin, dependencies, dict(latest, commit=upstream_commit, windows_commit=main))
         files.update(prepare_patches(api, main, pin['commit'], upstream_commit))
         # Refuse to build on a stale baseline when another change landed during
-        # preflight. The next daily/manual check can prepare against current main.
+        # preflight. The next scheduled/manual check can prepare against current main.
         require(api.get('git/ref/heads/main')['object']['sha'] == main, 'Main changed during upstream preparation; run the check again')
         base = api.get('git/commits/' + main)
         head = write_branch(api, branch, base, files, version)
