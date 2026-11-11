@@ -26,7 +26,7 @@ index c5aeeba1839e33055fbaee98fd541abde244c453..6b3409f35d5dc8de1575de8901b07b49
 +        workers=settings.workers,
 +        loop="asyncio:SelectorEventLoop",
 +        timeout_keep_alive=settings.http_keepalive_timeout_s,
-+        log_config=str(module_dir / "log_conf.json"),
++        log_config=None,
 +    )
 +    server = uvicorn.Server(config=config)
 +    with config.bind_socket() as sock:
