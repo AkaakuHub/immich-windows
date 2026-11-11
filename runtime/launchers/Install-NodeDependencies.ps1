@@ -111,7 +111,7 @@ foreach ($required in @($node,$npm)) {
 
 $pnpmVersion = [string]$manifest.dependencies.pnpm.version
 $pnpmRoot = Join-Path $InstallRoot "tools\pnpm\$pnpmVersion"
-$pnpmCli = Join-Path $pnpmRoot 'node_modules\pnpm\bin\pnpm.cjs'
+$pnpmCli = Join-Path $pnpmRoot 'node_modules\pnpm\bin\pnpm.mjs'
 if (($skip.Values -contains $false) -and -not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
     New-Item -ItemType Directory -Path $pnpmRoot -Force | Out-Null
     $env:npm_config_cache = Join-Path $InstallRoot 'cache\npm'

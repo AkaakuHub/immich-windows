@@ -70,7 +70,7 @@ try {
     }
     Write-Fixture (Join-Path $standalone 'server/.immich/plugin-sdk/index.js') 'same sdk'
     foreach ($name in @('node.exe','npm.cmd')) { Write-Fixture (Join-Path $standalone "runtime/node/$name") 'fixture executable' }
-    Write-Fixture (Join-Path $base 'tools/pnpm/11.22.0/node_modules/pnpm/bin/pnpm.cjs') 'existing manager'
+    Write-Fixture (Join-Path $base 'tools/pnpm/11.22.0/node_modules/pnpm/bin/pnpm.mjs') 'existing manager'
     $standaloneNode=Join-Path $standalone 'runtime/node/node.exe'
     $managerCalls=[Collections.Generic.List[object]]::new()
     $managerStub={
