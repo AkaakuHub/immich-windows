@@ -1,14 +1,16 @@
+diff --git a/server/src/repositories/database.repository.ts b/server/src/repositories/database.repository.ts
+index df780eafcac597019be98048cb0bf78893a409e0..a09dce249281230edd3d207576b9e14926bdef27 100644
 --- a/server/src/repositories/database.repository.ts
 +++ b/server/src/repositories/database.repository.ts
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,7 @@ import { FileMigrationProvider, Migrator } from 'kysely/migration';
  import { InjectKysely } from 'nestjs-kysely';
  import { readdir } from 'node:fs/promises';
  import { join } from 'node:path';
 +import { pathToFileURL } from 'node:url';
  import { diff } from 'semver';
  import z from 'zod';
- import type { ExtensionVersion, VectorExtension } from 'src/types.js';
-@@ -507,7 +508,7 @@
+ import {
+@@ -512,7 +513,7 @@ export class DatabaseRepository {
        provider: new FileMigrationProvider({
          fs: { readdir },
          path: { join },

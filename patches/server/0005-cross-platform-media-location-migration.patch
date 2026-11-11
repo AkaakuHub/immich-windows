@@ -1,8 +1,8 @@
 diff --git a/server/src/repositories/database.repository.ts b/server/src/repositories/database.repository.ts
-index 37860b26e1516faf86852dadf3a453b999d10ba0..ad2bcdd83485f25bb1187f8fa6588cde54d11995 100644
+index 96b68bc973cd9580e13b9aa487ac92f275f236d1..df780eafcac597019be98048cb0bf78893a409e0 100644
 --- a/server/src/repositories/database.repository.ts
 +++ b/server/src/repositories/database.repository.ts
-@@ -417,40 +417,42 @@ export class DatabaseRepository {
+@@ -420,40 +420,42 @@ export class DatabaseRepository {
  
    async migrateFilePaths(sourceFolder: string, targetFolder: string): Promise<void> {
      // remove trailing slashes
@@ -75,11 +75,11 @@ index 0000000000000000000000000000000000000000..0d159fc6c51610294ff2e862e8722ace
 +
 +export async function down(): Promise<void> {}
 diff --git a/server/src/schema/migrations/ORDER b/server/src/schema/migrations/ORDER
-index 2619cbe443c9f5dc4e72f9fb6172fbd77e685c0a..80b4cfeaec093e0f84622f377b86e2d52bc17377 100644
+index 22ad10006e03e6d409994a7ceee7ebdab2062c01..88a1cca9ab260867aa70ab1b49f59940572464a5 100644
 --- a/server/src/schema/migrations/ORDER
 +++ b/server/src/schema/migrations/ORDER
-@@ -99,3 +99,4 @@
- 1790616293884-PersonSharing
- 1790693088454-AddPersonUserTableSharedBySharedWithConstraint
- 1792213725597-AddAssetFaceAssetState
+@@ -102,3 +102,4 @@
+ 1792511451454-AddPasskeyTable
+ 1792517020180-AddUpdateIdIndexes
+ 1792568637987-AddAssetOwnerIdUpdateIdIndex
 +1787148183731-NormalizeWindowsMediaPaths

@@ -1,14 +1,16 @@
 diff --git a/server/src/repositories/view-repository.ts b/server/src/repositories/view-repository.ts
-index dd5b353c6ac5ce8c98c00027131a0e0a7accb5d0..a338d3858ae6adca90c28cda8efded359a3a5c67 100644
+index 2a5bfebcbffa9e13b425fc4f76c6e39e2fb2e460..bab517cb62686688da40293d9559b1c5ddb6e34d 100644
 --- a/server/src/repositories/view-repository.ts
 +++ b/server/src/repositories/view-repository.ts
-@@ -1,4 +1,5 @@
+@@ -1,6 +1,7 @@
+ import type { Kysely } from 'kysely';
+ import { trim } from 'lodash-es';
  import { InjectKysely } from 'nestjs-kysely';
 +import { normalize, sep } from 'node:path';
- import type { Kysely } from 'kysely';
  import { DummyValue, GenerateSql } from 'src/decorators.js';
  import { AssetVisibility } from 'src/enum.js';
-@@ -12,7 +13,7 @@ export class ViewRepository {
+ import { DB } from 'src/schema/index.js';
+@@ -15,7 +16,7 @@ export class ViewRepository {
    async getUniqueOriginalPaths(userId: string) {
      const results = await this.db
        .selectFrom('asset')
@@ -17,7 +19,7 @@ index dd5b353c6ac5ce8c98c00027131a0e0a7accb5d0..a338d3858ae6adca90c28cda8efded35
        .distinct()
        .where('ownerId', '=', asUuid(userId))
        .where('visibility', '=', AssetVisibility.Timeline)
-@@ -23,12 +24,17 @@ export class ViewRepository {
+@@ -26,13 +27,13 @@ export class ViewRepository {
        .orderBy('directoryPath', 'asc')
        .execute();
  
@@ -27,24 +29,18 @@ index dd5b353c6ac5ce8c98c00027131a0e0a7accb5d0..a338d3858ae6adca90c28cda8efded35
  
    @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
    async getAssetsByOriginalPath(userId: string, partialPath: string) {
--    const normalizedPath = partialPath.replaceAll(/\/$/g, '');
-+    const normalizedPath = sep === '\\' ? normalize(`${partialPath}${sep}`).slice(0, -1) : partialPath.replaceAll(/\/$/g, '');
-+    const escapeLike = (value: string) => value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-+    const escapedPath = escapeLike(normalizedPath);
-+    const escapedSeparator = sep === '\\' ? '\\\\' : sep;
-+    const directChildPattern = `%${escapedPath}${escapedSeparator}%`;
-+    const nestedChildPattern = `%${escapedPath}${escapedSeparator}%${escapedSeparator}%`;
+     const directory = trim(partialPath, '/');
+-    const prefix = escapeLikePattern(directory ? `/${directory}/` : '/');
++    const prefix = escapeLikePattern(sep === '\\' ? normalize(`${partialPath}${sep}`) : directory ? `/${directory}/` : '/');
  
      return this.db
        .selectFrom('asset')
-@@ -40,10 +46,10 @@ export class ViewRepository {
-       .where('fileCreatedAt', 'is not', null)
+@@ -45,9 +46,9 @@ export class ViewRepository {
        .where('fileModifiedAt', 'is not', null)
        .where('localDateTime', 'is not', null)
--      .where('originalPath', 'like', `%${normalizedPath}/%`)
--      .where('originalPath', 'not like', `%${normalizedPath}/%/%`)
-+      .where('originalPath', 'like', directChildPattern)
-+      .where('originalPath', 'not like', nestedChildPattern)
+       .where('originalPath', 'like', `${prefix}%`)
+-      .where('originalPath', 'not like', `${prefix}%/%`)
++      .where('originalPath', 'not like', `${prefix}%${escapeLikePattern(sep)}%`)
        .orderBy(
 -        (eb) => eb.fn('regexp_replace', ['asset.originalPath', eb.val('.*/(.+)'), eb.val(String.raw`\1`)]),
 +        (eb) => eb.fn('regexp_replace', ['asset.originalPath', eb.val(sep === '\\' ? String.raw`.*[\\/](.+)` : '.*/(.+)'), eb.val(String.raw`\1`)]),
