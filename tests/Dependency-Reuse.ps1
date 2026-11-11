@@ -96,7 +96,7 @@ try {
     Write-Fixture (Join-Path $nodeRelease 'manifest.json') (@{dependencies=@{node=@{version='24.15.0'};pnpm=@{version='10.0.0'}};nativeDependencyFiles=$inventory}|ConvertTo-Json -Depth 6)
     $nodeInstaller=Join-Path $PSScriptRoot '../runtime/launchers/Install-NodeDependencies.ps1'
     $fakeNode=Join-Path $nodeRelease 'runtime/node/node.exe'
-    Write-Fixture (Join-Path $nodeInstall 'tools/pnpm/10.0.0/node_modules/pnpm/bin/pnpm.cjs') 'fixture manager'
+    Write-Fixture (Join-Path $nodeInstall 'tools/pnpm/10.0.0/node_modules/pnpm/bin/pnpm.mjs') 'fixture manager'
     $pnpmState=@{Calls=0}
     $fakePnpm={ $pnpmState.Calls++; $global:LASTEXITCODE=0 }.GetNewClosure()
     Set-Item "function:global:$fakeNode" $fakePnpm

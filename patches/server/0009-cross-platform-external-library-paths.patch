@@ -1,26 +1,4 @@
---- a/server/src/repositories/asset.repository.ts
-+++ b/server/src/repositories/asset.repository.ts
-@@ -14,6 +14,7 @@
- import { jsonArrayFrom } from 'kysely/helpers/postgres';
- import { isEmpty, isUndefined, omitBy } from 'lodash-es';
- import { InjectKysely } from 'nestjs-kysely';
-+import { normalize } from 'node:path';
- import type { AuthDto } from 'src/dtos/auth.dto.js';
- import { LockableProperty, Stack } from 'src/database.js';
- import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators.js';
-@@ -1087,7 +1088,11 @@
-     importPaths: string[],
-     exclusionPatterns: string[],
-   ): Promise<UpdateResult> {
--    const paths = importPaths.map((importPath) => `${importPath}%`);
-+    const paths = importPaths.map((importPath) => {
-+      const normalizedPath = normalize(importPath);
-+      const escapedPath = normalizedPath.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
-+      return `${escapedPath}%`;
-+    });
-     const exclusions = exclusionPatterns.map((pattern) => globToPostgresRegex(pattern));
- 
-     return this.db
+diff --git a/server/src/services/library.service.ts b/server/src/services/library.service.ts
 --- a/server/src/services/library.service.ts
 +++ b/server/src/services/library.service.ts
 @@ -104,6 +104,7 @@
@@ -31,21 +9,25 @@
        ignore: library.exclusionPatterns,
      });
  
-@@ -512,7 +513,7 @@
-           break;
-         }
-         case AssetSyncResult.CHECK_OFFLINE: {
--          const isInImportPath = job.importPaths.some((path) => asset.originalPath.startsWith(path));
-+          const isInImportPath = job.importPaths.some((importPath) => asset.originalPath.startsWith(path.normalize(importPath)));
+diff --git a/server/src/utils/misc.ts b/server/src/utils/misc.ts
+--- a/server/src/utils/misc.ts
++++ b/server/src/utils/misc.ts
+@@ -12,6 +12,6 @@
+ import { cleanupOpenApiDoc } from 'nestjs-zod';
+ import { writeFileSync } from 'node:fs';
+-import path from 'node:path';
++import path, { normalize } from 'node:path';
+ import picomatch from 'picomatch';
+ import { CLIP_MODEL_INFO, JOBS_ASSET_PAGINATION_SIZE, endpointTags, serverVersion } from 'src/constants.js';
+ import { extraModels } from 'src/decorators.js';
+@@ -380,8 +380,8 @@
+   importPaths: string[];
+   exclusionPatterns: string[];
+ }) => {
+-  const isExcluded = picomatch(exclusionPatterns, { nocase: true });
+-  return (path: string) => importPaths.some((importPath) => path.startsWith(importPath)) && !isExcluded(path);
++  const isExcluded = picomatch(exclusionPatterns, { nocase: true, windows: process.platform === 'win32' });
++  return (path: string) => importPaths.some((importPath) => path.startsWith(normalize(importPath))) && !isExcluded(path);
+ };
  
-           if (!isInImportPath) {
-             this.logger.verbose(
-@@ -522,7 +523,7 @@
-           }
- 
-           const isExcluded = job.exclusionPatterns.some((pattern) =>
--            picomatch.isMatch(asset.originalPath, pattern, { nocase: true }),
-+            picomatch.isMatch(asset.originalPath, pattern, { nocase: true, windows: process.platform === 'win32' }),
-           );
- 
-           if (!isExcluded) {
+ export function clamp(value: number, min: number, max: number) {

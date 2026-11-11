@@ -99,7 +99,7 @@ class PublicationTests(OfflineTestCase):
         self.api.objects[f'git/commits/{MERGED}'] = dict(source, sha=MERGED)
         self.api.objects[f"actions/runs/{run['id']}"] = run
         self.api.objects[f"actions/artifacts/{self.artifact['id']}"] = self.artifact
-        self.api.collections[f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"] = jobs
+        self.api.collections[f"actions/runs/{run['id']}/jobs?filter=all"] = jobs
         self.api.collections['releases/77/assets'] = [self.asset(name) for name in self.record['assets']]
         os.environ.update(QUALIFIED_RUN_ID=str(run['id']), QUALIFIED_ARTIFACT_ID=str(self.artifact['id']),
                           QUALIFIED_ARTIFACT_DIGEST=self.artifact['digest'])

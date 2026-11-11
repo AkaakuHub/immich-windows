@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from automation.jobs import latest_jobs
 from qualified_release import API, ARTIFACT, DIGEST, REQUIRED_JOBS, SHA, WORKFLOW, filenames, record_filenames, release_policy, require, sha256, summary
 
 
@@ -95,7 +96,7 @@ def published_metadata(api, version):
             and artifact['workflow_run']['id'] == run['id'] and artifact['workflow_run']['head_sha'] == run['head_sha']
             and artifact['workflow_run']['repository_id'] == artifact['workflow_run']['head_repository_id']
                 == run['repository']['id'] == run['head_repository']['id'], 'Published run provenance changed')
-    jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+    jobs = latest_jobs(api, run)
     require(REQUIRED_JOBS <= {j['name'] for j in jobs if j['conclusion'] == 'success' and j['run_attempt'] == run['run_attempt']},
             'Published qualification jobs did not succeed')
     assets = list(api.pages(f"releases/{release['id']}/assets"))

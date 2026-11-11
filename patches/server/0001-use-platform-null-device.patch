@@ -1,5 +1,5 @@
 diff --git a/server/src/repositories/media.repository.ts b/server/src/repositories/media.repository.ts
-index 90570873510a1780a918840025e121f2160fcb31..012bc3637ac2ded0269d7e77ce363b136381383c 100644
+index 9f847a147c3c476794310c6e973f56fdcb620835..d5a64bf0af460d5fd607586338611c5f0fa95ce8 100644
 --- a/server/src/repositories/media.repository.ts
 +++ b/server/src/repositories/media.repository.ts
 @@ -5,6 +5,7 @@ import { camelCase, upperFirst } from 'lodash-es';
@@ -9,8 +9,8 @@ index 90570873510a1780a918840025e121f2160fcb31..012bc3637ac2ded0269d7e77ce363b13
 +import { devNull } from 'node:os';
  import { Writable } from 'node:stream';
  import sharp, { Sharp } from 'sharp';
- import type {
-@@ -412,7 +413,7 @@ export class MediaRepository {
+ import { ORIENTATION_TO_SHARP_ROTATION } from 'src/constants.js';
+@@ -413,7 +414,7 @@ export class MediaRepository {
      // recommended for vp9 for better quality and compression
      return new Promise((resolve, reject) => {
        // first pass output is not saved as only the .log file is needed

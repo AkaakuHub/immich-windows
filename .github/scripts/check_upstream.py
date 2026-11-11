@@ -150,10 +150,14 @@ def dispatch_once(api, pr, recover_completion=None):
         if run['status'] != 'completed' or run.get('conclusion') == 'success':
             summary(f"PR #{pr['number']} already has qualification run {run['id']} ({run['status']}/{run.get('conclusion')}); no duplicate build.")
             return 'existing-run'
-        require(len(matching) < MAX_QUALIFICATION_ATTEMPTS,
+        require(sum(item['run_attempt'] for item in matching) < MAX_QUALIFICATION_ATTEMPTS,
                 f"PR #{pr['number']} failed {MAX_QUALIFICATION_ATTEMPTS} qualifications with unchanged head/base. "
                 'Automatic retries are exhausted; daily dependency and upstream checks will continue. Inspect the failed run.')
-        summary(f"Retrying unsuccessful qualification {run['id']} for PR #{pr['number']}.")
+        if not merge_metadata_ready(api, pr):
+            return 'awaiting-merge-metadata'
+        api.write('POST', f"actions/runs/{run['id']}/rerun-failed-jobs", {})
+        summary(f"Retrying only failed jobs in qualification {run['id']} for PR #{pr['number']}; successful jobs and built artifacts are retained.")
+        return 'retried'
     if not merge_metadata_ready(api, pr):
         return 'awaiting-merge-metadata'
     api.write('POST', f'actions/workflows/{WORKFLOW}/dispatches', {

@@ -108,7 +108,7 @@ class FakeAPI:
             pr = next(pr for pr in self.older_prs if path == f"pulls/{pr['number']}")
             pr.update(data)
             return pr
-        if path.endswith('/dispatches'):
+        if path.endswith(('/dispatches', '/rerun-failed-jobs')):
             return None
         raise AssertionError(f'Unexpected write: {method} {path}')
 
@@ -139,7 +139,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(old['state'], 'closed')
         closes = [w for w in self.api.writes if w[1] == 'pulls/11']
         self.assertEqual(closes, [('PATCH', 'pulls/11', {'state': 'closed'})])
-        self.api.runs = [{'event': 'workflow_dispatch', 'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}',
+        self.api.runs = [{'event': 'workflow_dispatch', 'run_attempt': 1, 'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}',
                           'head_repository': {'full_name': self.api.repo}, 'id': 42, 'status': 'completed', 'conclusion': 'failure'}]
         self.run_check()
         self.assertEqual(len([w for w in self.api.writes if w[1] == 'pulls/11']), 1)
@@ -201,7 +201,7 @@ class WatcherTests(unittest.TestCase):
         recover.assert_not_called()
 
     def test_active_owned_qualification_defers_newest_without_build_or_pr(self):
-        self.api.runs = [{'id': 90, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+        self.api.runs = [{'id': 90, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'actor': {'login': 'github-actions[bot]'}, 'status': 'in_progress', 'conclusion': None,
             'display_title': f'Qualify upstream PR #11 head={OLD} base={MAIN}'}]
         self.assertEqual(self.run_check(), 'active-qualification')
@@ -211,7 +211,7 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(sum('per_page=100' in entry[0] for entry in self.api.reads), 1)
 
     def test_terminal_failed_qualification_does_not_block_newer_release(self):
-        self.api.runs = [{'id': 90, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+        self.api.runs = [{'id': 90, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'actor': {'login': 'github-actions[bot]'}, 'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #11 head={OLD} base={MAIN}'}]
         self.assertEqual(self.run_check(), 'dispatched')
@@ -237,9 +237,9 @@ class WatcherTests(unittest.TestCase):
     def test_latest_successful_exact_head_can_recover_completion_without_build(self):
         self.api.pr = make_pr()
         title = f'Qualify upstream PR #12 head={HEAD} base={MAIN}'
-        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'success', 'display_title': title},
-            {'id': 101, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+            {'id': 101, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'success', 'display_title': title}]
         recover = Mock(return_value=True)
         self.assertEqual(check.run(self.api, self.prepare, recover_completion=recover), 'completion-recovery')
@@ -250,23 +250,33 @@ class WatcherTests(unittest.TestCase):
     def test_failed_qualification_never_invokes_completion_recovery(self):
         self.api.pr = make_pr()
         self.prepare.return_value = {'upstream.json': self.api.file('upstream.json', HEAD), 'dependencies/versions.json': '{}'}
-        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
         recover = Mock(return_value=True)
-        self.assertEqual(check.run(self.api, self.prepare, recover_completion=recover), 'dispatched')
+        self.assertEqual(check.run(self.api, self.prepare, recover_completion=recover), 'retried')
         recover.assert_not_called()
         self.assertEqual(len(self.api.writes), 1)
-        self.assertTrue(self.api.writes[0][1].endswith('/dispatches'))
+        self.assertEqual(self.api.writes[0][1], 'actions/runs/102/rerun-failed-jobs')
 
     def test_failed_qualification_refreshes_changed_dependencies_before_retry(self):
         self.api.pr = make_pr()
         self.api.branch = HEAD
-        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch',
+        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'run_attempt': 1,
             'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
         self.prepare.return_value = {'upstream.json': '{}', 'dependencies/versions.json': '{"uv":"updated"}'}
+        original_write, original_get = self.api.write, self.api.get
+        def write(method, path, data):
+            result = original_write(method, path, data)
+            return {'sha': NEW} if path == 'git/commits' else result
+        def get(path, repo=None):
+            result = original_get(path, repo)
+            if path == 'git/commits/' + 'f' * 40:
+                result['parents'] = [{'sha': MAIN}, {'sha': NEW}]
+            return result
+        self.api.write, self.api.get = write, get
         self.assertEqual(self.run_check(), 'dispatched')
         self.prepare.assert_called_once()
         commits = [item for item in self.api.writes if item[1] == 'git/commits']
@@ -276,7 +286,7 @@ class WatcherTests(unittest.TestCase):
 
     def test_pending_completion_recovery_does_not_dispatch_a_duplicate_build(self):
         self.api.pr = make_pr()
-        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+        self.api.runs = [{'id': 102, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'success',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
         recover = Mock(return_value=False)
@@ -332,18 +342,18 @@ class WatcherTests(unittest.TestCase):
             with self.subTest(conclusion=conclusion):
                 self.api = FakeAPI()
                 self.api.pr = make_pr()
-                self.api.runs = [{'id': 100, 'event': 'workflow_dispatch',
+                self.api.runs = [{'id': 100, 'event': 'workflow_dispatch', 'run_attempt': 1,
                     'head_repository': {'full_name': self.api.repo}, 'status': 'completed',
                     'conclusion': conclusion,
                     'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
-                self.assertEqual(self.run_check(), 'dispatched')
+                self.assertEqual(self.run_check(), 'retried')
                 self.assertEqual(len(self.api.writes), 1)
-                self.assertEqual(self.api.writes[0][1], 'actions/workflows/build-windows.yml/dispatches')
+                self.assertEqual(self.api.writes[0][1], 'actions/runs/100/rerun-failed-jobs')
 
     def test_unchanged_candidate_stops_building_after_two_automatic_retries(self):
         self.api.pr = make_pr()
         self.prepare.return_value = {'upstream.json': self.api.file('upstream.json', HEAD), 'dependencies/versions.json': '{}'}
-        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch', 'run_attempt': 1,
             'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (103, 102, 101)]
         with self.assertRaisesRegex(ValueError, 'retries are exhausted'):
@@ -354,7 +364,7 @@ class WatcherTests(unittest.TestCase):
     def test_dependency_update_resumes_after_old_candidate_exhausts_retries(self):
         self.api.pr = make_pr()
         self.api.branch = HEAD
-        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch', 'run_attempt': 1,
             'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (103, 102, 101)]
         self.prepare.return_value = {'upstream.json': '{}', 'dependencies/versions.json': '{"uv":"updated"}'}
@@ -374,15 +384,24 @@ class WatcherTests(unittest.TestCase):
 
     def test_second_automatic_retry_is_allowed(self):
         self.api.pr = make_pr()
-        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch', 'run_attempt': 1,
             'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'} for run_id in (102, 101)]
-        self.assertEqual(check.dispatch_once(self.api, self.api.pr), 'dispatched')
+        self.assertEqual(check.dispatch_once(self.api, self.api.pr), 'retried')
         self.assertEqual(len(self.api.writes), 1)
+
+    def test_single_run_attempts_exhaust_the_retry_budget(self):
+        self.api.pr = make_pr()
+        self.api.runs = [{'id': 100, 'event': 'workflow_dispatch', 'run_attempt': 3,
+            'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
+            'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
+        with self.assertRaisesRegex(ValueError, 'retries are exhausted'):
+            check.dispatch_once(self.api, self.api.pr)
+        self.assertEqual(self.api.writes, [])
 
     def test_new_candidate_is_qualified_after_old_candidate_exhausts_retries(self):
         self.api.pr = make_pr()
-        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch',
+        self.api.runs = [{'id': run_id, 'event': 'workflow_dispatch', 'run_attempt': 1,
             'head_repository': {'full_name': self.api.repo}, 'status': 'completed', 'conclusion': 'failure',
             'display_title': f'Qualify upstream PR #12 head={OLD} base={MAIN}'} for run_id in (103, 102, 101)]
         self.assertEqual(self.run_check(), 'dispatched')
@@ -393,7 +412,7 @@ class WatcherTests(unittest.TestCase):
             with self.subTest(conclusion=conclusion):
                 self.api = FakeAPI()
                 self.api.pr = make_pr()
-                self.api.runs = [{'id': 100, 'event': 'workflow_dispatch', 'head_sha': MAIN,
+                self.api.runs = [{'id': 100, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_sha': MAIN,
                     'head_repository': {'full_name': self.api.repo}, 'status': status, 'conclusion': conclusion,
                     'display_title': f'Qualify upstream PR #12 head={HEAD} base={MAIN}'}]
                 self.assertEqual(self.run_check(), 'existing-run')
@@ -402,7 +421,7 @@ class WatcherTests(unittest.TestCase):
 
     def test_other_head_or_base_run_does_not_suppress_qualification(self):
         self.api.pr = make_pr()
-        self.api.runs = [{'id': 100, 'event': 'workflow_dispatch', 'head_repository': {'full_name': self.api.repo},
+        self.api.runs = [{'id': 100, 'event': 'workflow_dispatch', 'run_attempt': 1, 'head_repository': {'full_name': self.api.repo},
             'status': 'completed', 'conclusion': 'success',
             'display_title': f'Qualify upstream PR #12 head={HEAD} base={OLD}'}]
         self.assertEqual(self.run_check(), 'dispatched')

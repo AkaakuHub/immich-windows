@@ -1,24 +1,34 @@
 diff --git a/server/src/services/database-backup.service.ts b/server/src/services/database-backup.service.ts
-index 732132a138b162bb5affefc3b3211db769821789..e0aab1b1f3e012e81b2ba62ea332543c9fe7c175 100644
 --- a/server/src/services/database-backup.service.ts
 +++ b/server/src/services/database-backup.service.ts
-@@ -4,6 +4,7 @@ import { DateTime } from 'luxon';
- import { devNull } from 'node:os';
+@@ -4,6 +4,7 @@
  import path, { basename } from 'node:path';
  import { Duplex, PassThrough, Readable, Writable } from 'node:stream';
-+import { createGzip } from 'node:zlib';
  import { pipeline } from 'node:stream/promises';
++import { createGzip } from 'node:zlib';
  import { coerce, satisfies } from 'semver';
- import type { ArgOf } from 'src/repositories/event.repository.js';
-@@ -255,7 +256,10 @@ export class DatabaseBackupService {
+ import { serverVersion } from 'src/constants.js';
+ import { StorageCore } from 'src/cores/storage.core.js';
+@@ -236,8 +237,6 @@
+     const backupFilePath = path.join(StorageCore.getBaseFolder(StorageFolder.Backups), filename);
+     const temporaryFilePath = `${backupFilePath}.tmp`;
+ 
+-    const compression = await this.getCompressionCommand();
+-
+     let pgdump: Duplex | undefined;
+     let gzip: Duplex | undefined;
+ 
+@@ -249,7 +248,12 @@
          },
        });
  
--      gzip = this.processRepository.spawnDuplexStream('gzip', ['--rsyncable']);
-+      gzip =
-+        process.platform === 'win32'
-+          ? createGzip()
-+          : this.processRepository.spawnDuplexStream('gzip', ['--rsyncable']);
+-      gzip = this.processRepository.spawnDuplexStream(compression.command, compression.args);
++      if (process.platform === 'win32') {
++        gzip = createGzip();
++      } else {
++        const compression = await this.getCompressionCommand();
++        gzip = this.processRepository.spawnDuplexStream(compression.command, compression.args);
++      }
        const fileStream = this.storageRepository.createWriteStream(temporaryFilePath);
  
-       await pipeline(pgdump, gzip, fileStream);
+       await pipeline(pgdump, gzip, fileStream, { signal });

@@ -83,7 +83,7 @@ class AutomaticTests(OfflineTestCase):
                 {'path': 'upstream.json', 'mode': '100644', 'type': 'blob', 'sha': blob},
                 {'path': '.github/scripts/qualified_release.py', 'mode': '100644', 'type': 'blob', 'sha': '3' * 40}]}
         self.api.collections['actions/runs/100/artifacts'] = [self.artifact]
-        self.api.collections['actions/runs/100/attempts/2/jobs'] = self.jobs
+        self.api.collections['actions/runs/100/jobs?filter=all'] = self.jobs
         self.api.collections[RUNS] = []
         self.api.collections[PROMOTIONS] = []
         self.api.collections[f'commits/{MERGED}/pulls'] = [{'number': 17}]

@@ -260,7 +260,7 @@ jobs:
           compression-level: 0
           path: dist/*-migration-tools.zip
           if-no-files-found: error
-  assemble:
+  package:
     if: ${{ (github.event_name == 'push' || github.event_name == 'pull_request' || inputs.component == 'all') && needs.codec.result == 'success' && needs.postgres.result == 'success' }}
     needs: [plan, validate, codec, postgres]
     runs-on: windows-2025
@@ -315,12 +315,6 @@ jobs:
           key: build-downloads-corepack-v1-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
           # Reuse the matching archive cache once when seeding Corepack.
           restore-keys: build-downloads-${{ runner.os }}-${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}
-      - name: Start PostgreSQL qualification service
-        shell: pwsh
-        run: |
-          .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
-            -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
-            -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
       - name: Build and qualify Windows package
         shell: pwsh
         env:
@@ -344,11 +338,6 @@ jobs:
           .\packaging\Test-ReleasePackage.ps1 -PackageRoot "dist/$folder" -Version $version
           Compress-Archive -Path "dist/$folder" -DestinationPath "dist/$folder.zip" -CompressionLevel Optimal -Force
           .\packaging\New-MigrationToolsArchive.ps1
-      - name: Stage source metadata and asset hashes before installation tests
-        env:
-          QUALIFICATION_SOURCE: ${{ needs.plan.outputs.checkout || github.sha }}
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: python .github/scripts/qualified_release.py record --version "$env:VERSION"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: steps.application-cache.outputs.cache-hit != 'true'
         with:
@@ -369,6 +358,50 @@ jobs:
         with:
           path: .cache
           key: ${{ steps.build-downloads.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: built-windows-package-v1
+          compression-level: 0
+          include-hidden-files: true
+          path: |
+            dist/*-win-x64.zip
+            dist/dependency-*
+            dist/*-migration-tools.zip
+            dist/Install.cmd
+            .cache/node-*.zip
+            .cache/uv-*.zip
+            .cache/media-fixtures
+            artifacts/machine-learning/requirements.txt
+          retention-days: 14
+          if-no-files-found: error
+  assemble:
+    if: needs.package.result == 'success'
+    needs: [plan, package]
+    runs-on: windows-2025
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.plan.outputs.checkout || github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: built-windows-package-v1
+          path: .
+      - name: Start PostgreSQL qualification service
+        shell: pwsh
+        run: |
+          .\tests\actions\Start-TestPostgres.ps1 -PostgresRoot 'C:\Program Files\PostgreSQL\18' `
+            -DataRoot (Join-Path $env:RUNNER_TEMP 'postgresql18-data') `
+            -PasswordFile (Join-Path $env:RUNNER_TEMP 'immich-postgres-password.txt')
+      - name: Stage source metadata and asset hashes before installation tests
+        env:
+          QUALIFICATION_SOURCE: ${{ needs.plan.outputs.checkout || github.sha }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python .github/scripts/qualified_release.py record --version "$env:VERSION"
       - name: Select PostgreSQL runtime cache key
         id: pg-runtime
         shell: pwsh

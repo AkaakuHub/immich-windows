@@ -1,5 +1,4 @@
 diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml/__main__.py
-index 49e37aae94dca35dcc113fba5ec87b042f618e73..8f02c64a13347b2a040a0a4460f0365825e1669d 100644
 --- a/machine-learning/immich_ml/__main__.py
 +++ b/machine-learning/immich_ml/__main__.py
 @@ -1,6 +1,7 @@
@@ -10,39 +9,55 @@ index 49e37aae94dca35dcc113fba5ec87b042f618e73..8f02c64a13347b2a040a0a4460f03658
  from ipaddress import ip_address
  from pathlib import Path
  
-@@ -13,6 +14,25 @@ else:
+@@ -12,6 +13,23 @@
+     log.info("Initializing Immich ML")
  
  module_dir = Path(__file__).parent
- 
++
 +if sys.platform == "win32":
 +    import uvicorn
 +    from uvicorn.supervisors import Multiprocess
 +
-+    windows_host = non_prefixed_settings.immich_host.strip("[]")
 +    config = uvicorn.Config(
 +        "immich_ml.main:app",
-+        host=windows_host,
++        host=non_prefixed_settings.immich_host.strip("[]"),
 +        port=non_prefixed_settings.immich_port,
 +        workers=settings.workers,
 +        loop="asyncio:SelectorEventLoop",
 +        timeout_keep_alive=settings.http_keepalive_timeout_s,
-+        log_config=str(module_dir / "log_conf.json"),
++        log_config=None,
 +    )
-+    server = uvicorn.Server(config=config)
 +    with config.bind_socket() as sock:
-+        Multiprocess(config, target=server.run, sockets=[sock]).run()
++        Multiprocess(config, sockets=[sock]).run()
 +    raise SystemExit(0)
-+
+ 
  # on i915, Intel's runtime submits every allocation in the process with each run it gives OpenVINO's GPU plugin
  if any(driver.resolve().name == "i915" for driver in Path("/sys/class/drm").glob("renderD*/device/driver")):
-     os.environ.setdefault("NEOReadDebugKeys", "1")
+diff --git a/machine-learning/immich_ml/allocator.py b/machine-learning/immich_ml/allocator.py
+index 7cb3338bc620cc6bc6624efcbd3350c0531ab20b..87c055b6841da1b76a4c478fb94edbde90dd619d 100644
+--- a/machine-learning/immich_ml/allocator.py
++++ b/machine-learning/immich_ml/allocator.py
+@@ -1,9 +1,12 @@
+ import ctypes
++import sys
+ 
+-_process = ctypes.CDLL(None)
++_process = ctypes.CDLL(None) if sys.platform != "win32" else None
+ 
+ 
+ def release() -> None:
++    if _process is None:
++        return
+     if hasattr(_process, "mi_collect"):
+         _process.mi_collect(True)
+     elif hasattr(_process, "malloc_trim"):
 diff --git a/machine-learning/immich_ml/config.py b/machine-learning/immich_ml/config.py
-index 2a5f47cb1f5259b16e574f186177b2653b7d2dcf..f4738ee094ffd45c6f4172c3b3af2fdab6d2e0e3 100644
+index 4afab1b6d7b78b2cf98e472e549d2de892f0bb84..3f8c78c9cdee271152246138b2443692b7cdbe46 100644
 --- a/machine-learning/immich_ml/config.py
 +++ b/machine-learning/immich_ml/config.py
-@@ -5,13 +5,15 @@ import sys
- from pathlib import Path
+@@ -7,13 +7,15 @@ from pathlib import Path
  from socket import socket
+ from typing import Any
  
 -from gunicorn.arbiter import Arbiter
 +if sys.platform != "win32":
@@ -58,7 +73,7 @@ index 2a5f47cb1f5259b16e574f186177b2653b7d2dcf..f4738ee094ffd45c6f4172c3b3af2fda
  
  from .schemas import ModelOrganization
  
-@@ -80,6 +82,13 @@ class Settings(BaseSettings):
+@@ -83,6 +85,13 @@ class Settings(BaseSettings):
      def legacy_models(self) -> bool:
          return self.model_revision == "main"
  
@@ -72,7 +87,7 @@ index 2a5f47cb1f5259b16e574f186177b2653b7d2dcf..f4738ee094ffd45c6f4172c3b3af2fda
      @property
      def device_id(self) -> str:
          return os.environ.get("MACHINE_LEARNING_DEVICE_ID", "0")
-@@ -155,11 +164,13 @@ class CustomUvicornServer(Server):
+@@ -167,11 +176,13 @@ class CustomUvicornServer(Server):
          await super().shutdown()
  
  
@@ -95,7 +110,7 @@ index 2a5f47cb1f5259b16e574f186177b2653b7d2dcf..f4738ee094ffd45c6f4172c3b3af2fda
 +            if not server.started:
 +                sys.exit(Arbiter.WORKER_BOOT_ERROR)
 diff --git a/machine-learning/immich_ml/models/constants.py b/machine-learning/immich_ml/models/constants.py
-index d386b0768bb251f2dbd552b433be936482070341..7aa6e7bbeb4e1c6a17073d5442191d1b13c2f853 100644
+index c3b3a9abe0181c285929a6f9798d313024f1bc64..9e58bf109c1c7fafa315116c5978337eb37cc7cd 100644
 --- a/machine-learning/immich_ml/models/constants.py
 +++ b/machine-learning/immich_ml/models/constants.py
 @@ -92,6 +92,7 @@ _PADDLE_MODELS = {
@@ -170,110 +185,8 @@ index 8f96a29c8611873891927ff843a0faf7c7d770da..ba03fb510a4befe0eead673d5a314544
      log.debug(f"Available ORT providers: {available_providers}")
      providers = [provider for provider in SUPPORTED_PROVIDERS if provider in available_providers]
      if "nv_tensorrt_rtx" in providers:
---- a/machine-learning/pyproject.toml
-+++ b/machine-learning/pyproject.toml
-@@ -64,7 +64,7 @@
- override-dependencies = ["opencv-python ; sys_platform == 'never'"] # only install the headless version
- 
- [tool.uv.sources]
--immich-model = { git = "https://github.com/immich-app/ml-models.git", rev = "8bf3fd1b44b0c8608f52fb6e50ddff52826576d8" }
-+immich-model = { url = "https://github.com/immich-app/ml-models/archive/8bf3fd1b44b0c8608f52fb6e50ddff52826576d8.tar.gz" }
- onnxruntime-gpu = { index = "onnxruntime-cuda-12" }
- openvino = { index = "openvino-nightly" }
- 
---- a/machine-learning/uv.lock
-+++ b/machine-learning/uv.lock
-@@ -1,5 +1,5 @@
- version = 1
--revision = 5
-+revision = 2
- requires-python = ">=3.12, <4.0"
- resolution-markers = [
-     "python_full_version >= '3.15' and sys_platform == 'darwin'",
-@@ -769,7 +769,7 @@
-     { name = "fastapi", specifier = ">=0.95.2,<1.0" },
-     { name = "gunicorn", specifier = ">=21.1.0" },
-     { name = "huggingface-hub", specifier = ">=1.0,<2.0" },
--    { name = "immich-model", git = "https://github.com/immich-app/ml-models.git?rev=8bf3fd1b44b0c8608f52fb6e50ddff52826576d8" },
-+    { name = "immich-model", url = "https://github.com/immich-app/ml-models/archive/8bf3fd1b44b0c8608f52fb6e50ddff52826576d8.tar.gz" },
-     { name = "numpy", specifier = ">=2.4.0,<3.0" },
-     { name = "onnx", specifier = ">=1.22.0" },
-     { name = "onnxruntime", marker = "extra == 'armnn'", specifier = ">=1.23.2,<2" },
-@@ -841,7 +841,7 @@
- [[package]]
- name = "immich-model"
- version = "0.2.0"
--source = { git = "https://github.com/immich-app/ml-models.git?rev=8bf3fd1b44b0c8608f52fb6e50ddff52826576d8#8bf3fd1b44b0c8608f52fb6e50ddff52826576d8" }
-+source = { url = "https://github.com/immich-app/ml-models/archive/8bf3fd1b44b0c8608f52fb6e50ddff52826576d8.tar.gz" }
- dependencies = [
-     { name = "numpy" },
-     { name = "onnx" },
-@@ -849,6 +849,36 @@
-     { name = "onnxscript" },
-     { name = "safetensors" },
- ]
-+sdist = { hash = "sha256:8c42ff838e035e9415b56b6df7921529553a8b15f6acc9c16956e8ef389cc612" }
-+
-+[package.metadata]
-+requires-dist = [
-+    { name = "clip-benchmark", marker = "extra == 'export'" },
-+    { name = "huggingface-hub", marker = "extra == 'export'", specifier = ">=0.29.3" },
-+    { name = "kaggle", marker = "extra == 'export'", specifier = ">=1.7.4.2" },
-+    { name = "ml-dtypes", marker = "extra == 'export'", specifier = ">=0.5.0" },
-+    { name = "multilingual-clip", marker = "extra == 'export'", specifier = ">=1.0.10" },
-+    { name = "numpy", specifier = ">=1.26" },
-+    { name = "numpy", marker = "extra == 'export'", specifier = ">=2.1.0" },
-+    { name = "onnx", specifier = ">=1.16.1" },
-+    { name = "onnx-ir", specifier = ">=0.2.1" },
-+    { name = "onnxruntime", marker = "extra == 'export'", specifier = ">=1.18.2" },
-+    { name = "onnxruntime", marker = "extra == 'rknn'", specifier = ">=1.18.2" },
-+    { name = "onnxscript", specifier = ">=0.7.0" },
-+    { name = "open-clip-torch", marker = "extra == 'export'", specifier = ">=2.31.0" },
-+    { name = "pyyaml", marker = "extra == 'rknn'", specifier = ">=6" },
-+    { name = "rknn-toolkit2", marker = "extra == 'rknn'", specifier = ">=2.3.0" },
-+    { name = "safetensors", specifier = ">=0.7,<0.8" },
-+    { name = "setuptools", marker = "extra == 'rknn'", specifier = "<81" },
-+    { name = "tenacity", marker = "extra == 'export'", specifier = ">=9.0.0" },
-+    { name = "torch", marker = "extra == 'export'" },
-+    { name = "torch", marker = "extra == 'rknn'" },
-+    { name = "torchvision", marker = "extra == 'export'" },
-+    { name = "transformers", marker = "extra == 'export'", specifier = ">=4.49.0" },
-+    { name = "typer", marker = "extra == 'export'", specifier = ">=0.15.2" },
-+    { name = "typer", marker = "extra == 'rknn'", specifier = ">=0.15.2" },
-+]
-+provides-extras = ["export", "rknn"]
- 
- [[package]]
- name = "iniconfig"
-@@ -1444,7 +1474,7 @@
- version = "4.11.0.86"
- source = { registry = "https://pypi.org/simple" }
- dependencies = [
--    { name = "numpy" },
-+    { name = "numpy", marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
- ]
- sdist = { url = "https://files.pythonhosted.org/packages/17/06/68c27a523103dad5837dc5b87e71285280c4f098c60e4fe8a8db6486ab09/opencv-python-4.11.0.86.tar.gz", hash = "sha256:03d60ccae62304860d232272e4a4fda93c39d595780cb40b161b310244b736a4", size = 95171956, upload-time = "2025-01-16T13:52:24.737Z" }
- 
-diff --git a/machine-learning/immich_ml/allocator.py b/machine-learning/immich_ml/allocator.py
---- a/machine-learning/immich_ml/allocator.py
-+++ b/machine-learning/immich_ml/allocator.py
-@@ -1,10 +1,13 @@
- import ctypes
-+import sys
- 
--_process = ctypes.CDLL(None)
-+_process = ctypes.CDLL(None) if sys.platform != "win32" else None
- 
- 
- def release() -> None:
-+    if _process is None:
-+        return
-     if hasattr(_process, "mi_collect"):
-         _process.mi_collect(True)
-     elif hasattr(_process, "malloc_trim"):
-         _process.malloc_trim(0)
-
 diff --git a/machine-learning/immich_ml/sessions/prepare.py b/machine-learning/immich_ml/sessions/prepare.py
+index d2f974d9820aac5ff68111be1fd43817f0024fc0..2e9300d5a2d472ec7e86f77b7ff533a0d43fcd91 100644
 --- a/machine-learning/immich_ml/sessions/prepare.py
 +++ b/machine-learning/immich_ml/sessions/prepare.py
 @@ -1,4 +1,3 @@
@@ -299,3 +212,44 @@ diff --git a/machine-learning/immich_ml/sessions/prepare.py b/machine-learning/i
          if fresh(spec) is None:
              try:
                  prepare(spec)
+diff --git a/machine-learning/pyproject.toml b/machine-learning/pyproject.toml
+--- a/machine-learning/pyproject.toml
++++ b/machine-learning/pyproject.toml
+@@ -74,7 +74,7 @@
+ override-dependencies = ["opencv-python ; sys_platform == 'never'"] # only install the headless version
+ 
+ [tool.uv.sources]
+-immich-model = { git = "https://github.com/immich-app/ml-models.git", rev = "a1eeff2c2118d76067efecf4cc4630998eac519a" }
++immich-model = { url = "https://github.com/immich-app/ml-models/archive/a1eeff2c2118d76067efecf4cc4630998eac519a.tar.gz" }
+ onnxruntime-gpu = { index = "onnxruntime-cuda-12" }
+ openvino = { index = "openvino-nightly" }
+ 
+diff --git a/machine-learning/uv.lock b/machine-learning/uv.lock
+--- a/machine-learning/uv.lock
++++ b/machine-learning/uv.lock
+@@ -935,7 +935,7 @@
+     { name = "fastapi", specifier = ">=0.95.2,<1.0" },
+     { name = "gunicorn", specifier = ">=21.1.0" },
+     { name = "huggingface-hub", specifier = ">=1.0,<2.0" },
+-    { name = "immich-model", git = "https://github.com/immich-app/ml-models.git?rev=a1eeff2c2118d76067efecf4cc4630998eac519a" },
++    { name = "immich-model", url = "https://github.com/immich-app/ml-models/archive/a1eeff2c2118d76067efecf4cc4630998eac519a.tar.gz" },
+     { name = "numpy", specifier = ">=2.4.0,<3.0" },
+     { name = "onnx", specifier = ">=1.22.0" },
+     { name = "onnxruntime", marker = "extra == 'armnn'", specifier = ">=1.23.2,<2" },
+@@ -1015,7 +1015,7 @@
+ [[package]]
+ name = "immich-model"
+ version = "0.2.0"
+-source = { git = "https://github.com/immich-app/ml-models.git?rev=a1eeff2c2118d76067efecf4cc4630998eac519a#a1eeff2c2118d76067efecf4cc4630998eac519a" }
++source = { url = "https://github.com/immich-app/ml-models/archive/a1eeff2c2118d76067efecf4cc4630998eac519a.tar.gz" }
+ dependencies = [
+     { name = "numpy" },
+     { name = "onnx" },
+@@ -1023,6 +1023,7 @@
+     { name = "onnxscript" },
+     { name = "safetensors" },
+ ]
++sdist = { hash = "sha256:ab43d1dfa5f4b2794814876b12f9a3373d086a79498e2547bc79894c55f485bf" }
+ 
+ [[package]]
+ name = "iniconfig"

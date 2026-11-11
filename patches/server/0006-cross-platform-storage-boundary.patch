@@ -1,14 +1,13 @@
 diff --git a/server/src/cores/storage.core.ts b/server/src/cores/storage.core.ts
-index fa9d21a06c72b7f8361c220f503c1ce3d53f7a33..13e9bdc360550c7917ba101c987956692032bdc3 100644
 --- a/server/src/cores/storage.core.ts
 +++ b/server/src/cores/storage.core.ts
 @@ -1,4 +1,4 @@
 -import { dirname, join, resolve } from 'node:path';
 +import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
- import type { VideoInterfaces } from 'src/types.js';
  import { StorageAsset } from 'src/database.js';
  import {
-@@ -151,12 +151,13 @@ export class StorageCore {
+   AssetFileType,
+@@ -151,12 +151,13 @@
  
    static isImmichPath(path: string) {
      const resolvedPath = resolve(path);

@@ -22,11 +22,12 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+from automation.jobs import latest_jobs
 from automation.transport import read_json
 
 WORKFLOW = '.github/workflows/build-windows.yml'
 ARTIFACT = 'qualified-windows-package-v1'
-REQUIRED_JOBS = {'validate', 'codec', 'postgres', 'assemble'}
+REQUIRED_JOBS = {'validate', 'codec', 'postgres', 'package', 'assemble'}
 MAX_BYTES = 1024 * 1024 * 1024
 SHA = re.compile(r'^[0-9a-f]{40}$')
 DIGEST = re.compile(r'^sha256:[0-9a-f]{64}$')
@@ -377,8 +378,10 @@ def validate_provenance(record, run, jobs, artifact, source, target_tree, repo, 
     require(artifact['workflow_run']['id'] == run['id'] and artifact['workflow_run']['head_sha'] == run['head_sha'],
             'Artifact belongs to another run/head')
     require(artifact['name'] == ARTIFACT and not artifact['expired'], 'Missing or expired qualified artifact')
-    successes = {j['name'] for j in jobs if j['conclusion'] == 'success' and j['run_attempt'] == run['run_attempt']}
+    successes = {j['name'] for j in jobs if j['conclusion'] == 'success' and 1 <= j['run_attempt'] <= run['run_attempt']}
     require(REQUIRED_JOBS <= successes, 'Mandatory qualification jobs were skipped or did not succeed')
+    require(sum(j['name'] == 'assemble' and j['run_attempt'] == run['run_attempt'] for j in jobs) == 1,
+            'Installation qualification belongs to a previous run attempt')
     require(SHA.fullmatch(record['sourceCommit']) and SHA.fullmatch(record['sourceTree']), 'Invalid source Git object')
     require(source['sha'] == record['sourceCommit'] and source['tree']['sha'] == record['sourceTree'], 'Recorded Git object mismatch')
     if record['sourceTree'] != target_tree:
@@ -399,7 +402,7 @@ def validate_provenance(record, run, jobs, artifact, source, target_tree, repo, 
             require(record.get('automation') == 'upstream-v1' and AUTOMATION_JOBS <= successes,
                     'Automatic qualification did not pass its trusted plan')
             for name in AUTOMATION_JOBS:
-                matches = [j for j in jobs if j['name'] == name and j['run_attempt'] == run['run_attempt']]
+                matches = [j for j in jobs if j['name'] == name and 1 <= j['run_attempt'] <= run['run_attempt']]
                 require(len(matches) == 1 and matches[0].get('status') == 'completed'
                         and matches[0]['conclusion'] == 'success', 'Automatic gate is not uniquely terminal and successful')
         else:
@@ -488,15 +491,14 @@ def artifacts_for(api, run_id):
             if a['name'] == ARTIFACT and not a['expired']]
 
 
-def qualification_jobs(api, run):
-    endpoint = f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"
+def qualification_jobs(api, run, *, historical=False):
     pending = []
     for attempt in range(12):
-        jobs = list(api.pages(endpoint, 'jobs'))
+        jobs = latest_jobs(api, run, historical=historical)
         pending = []
         for name in sorted(REQUIRED_JOBS):
             matches = [job for job in jobs if job['name'] == name]
-            require(all(job['run_attempt'] == run['run_attempt'] for job in matches),
+            require(all(1 <= job['run_attempt'] <= run['run_attempt'] for job in matches),
                     f'Qualification job belongs to a different attempt: {name}')
             require(len(matches) <= 1, f'Duplicate qualification job: {name}')
             if not matches or matches[0].get('conclusion') is None:
@@ -524,6 +526,7 @@ def verify(api, run, artifact, version, destination, pr=None, allow_original_att
     require(SHA.fullmatch(record.get('sourceCommit', '')), 'Invalid source commit')
     workflow = api.get('actions/workflows/build-windows.yml')
     require(run['workflow_id'] == workflow['id'], 'Unexpected qualification workflow identity')
+    historical = False
     if allow_original_attempt and record['runAttempt'] != run['run_attempt']:
         original = record['runAttempt']
         require(type(original) is int and 0 < original < run['run_attempt'], 'Invalid original qualification attempt')
@@ -531,15 +534,16 @@ def verify(api, run, artifact, version, destination, pr=None, allow_original_att
         require(attempt['id'] == run['id'] and attempt['head_sha'] == run['head_sha']
                 and attempt['status'] == 'completed' and attempt['run_attempt'] == original, 'Wrong original run attempt')
         # Only a retry of this same main publisher may use earlier successful
-        # qualification jobs. All four must have succeeded in that one attempt.
+        # qualification jobs through the recorded attempt.
         run = dict(attempt, conclusion='success')
+        historical = True
     try:
         source = api.get(f"git/commits/{record['sourceCommit']}")
     except urllib.error.HTTPError as error:
         if error.code == 404:
             raise NotReusable('Historical tested Git object is no longer available') from error
         raise
-    jobs = qualification_jobs(api, run) if allow_original_attempt else list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+    jobs = qualification_jobs(api, run, historical=historical) if allow_original_attempt else latest_jobs(api, run)
     validate_provenance(record, run, jobs, artifact, source, target_tree or git('rev-parse', 'HEAD^{tree}'), api.repo, pr, allow_open_automation=allow_open_automation)
     return record
 
@@ -643,7 +647,7 @@ def validate_native_provenance(api, run, artifact):
             and provenance['repository_id'] == provenance['head_repository_id']
             == run['repository']['id'] == run['head_repository']['id'],
             'Raw libvips artifact belongs to another run/head/repository')
-    jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+    jobs = latest_jobs(api, run)
     codec = [j for j in jobs if j['name'] == 'codec' and j['conclusion'] == 'success'
              and j['run_attempt'] == run['run_attempt']]
     if not codec:

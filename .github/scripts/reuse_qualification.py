@@ -16,6 +16,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 
+from automation.jobs import latest_jobs
 from qualified_release import (
     API, ARTIFACT, DIGEST, REQUIRED_JOBS, SHA, WORKFLOW, NotReusable,
     artifacts_for, package_filenames, git, output, pin_version, require, sha256,
@@ -117,7 +118,7 @@ def workflow_inputs(text):
                 'name': 'Test artifact promotion and rejection policies', 'run': PYTHON_TEST,
             }:
                 continue  # Moved, unchanged, to the always-run CI tools job.
-            if (name == 'assemble' and step.get('id') == 'build-downloads'
+            if (name == 'package' and step.get('id') == 'build-downloads'
                     and step.get('uses') == CACHE_ACTION
                     and step.get('with', {}).get('path') == '.cache'):
                 settings = step['with']
@@ -127,14 +128,14 @@ def workflow_inputs(text):
                     settings['key'] = old_key
                     if settings.get('restore-keys') == old_key:
                         del settings['restore-keys']
-            if name == 'assemble' and step.get('name') == 'Build and qualify Windows package':
+            if name == 'package' and step.get('name') == 'Build and qualify Windows package':
                 env = step.get('env', {})
                 if env.get('COREPACK_HOME') == '${{ github.workspace }}/.cache/corepack':
                     del env['COREPACK_HOME']
                     if not env:
                         step.pop('env', None)
             if step.get('uses') == UPLOAD_ACTION and step.get('with', {}).get('name') in (
-                    'qualified-windows-package-v1', 'migration-tools'):
+                    'qualified-windows-package-v1', 'built-windows-package-v1', 'migration-tools'):
                 if step['with'].get('compression-level') in ('0', '6'):
                     del step['with']['compression-level']
             steps.append(step)
@@ -204,7 +205,7 @@ def validate_evidence(api, run, previous, jobs, artifact, record, source, workfl
             == run['repository']['id'] == run['head_repository']['id'],
             'Artifact belongs to another run/head/repository')
     for name in REQUIRED_JOBS:
-        matches = [j for j in jobs if j['name'] == name and j['run_attempt'] == run['run_attempt']]
+        matches = [j for j in jobs if j['name'] == name and 1 <= j['run_attempt'] <= run['run_attempt']]
         require(len(matches) == 1 and matches[0]['status'] == 'completed'
                 and matches[0]['conclusion'] == 'success', 'Required qualification job did not succeed')
     assemble = next(j for j in jobs if j['name'] == 'assemble' and j['run_attempt'] == run['run_attempt'])
@@ -242,7 +243,7 @@ def select(api, event):
         if run['status'] != 'completed' or run['conclusion'] != 'success':
             api.reuse_blocked = True
             return None
-        jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+        jobs = latest_jobs(api, run)
         artifacts = artifacts_for(api, run['id'])
         if not artifacts:
             # A preceding read-only reuse check has no new package. Follow back
@@ -367,7 +368,7 @@ def select_main(api, event):
         if run['status'] != 'completed' or run['conclusion'] != 'success':
             api.reuse_blocked = True
             return None
-        jobs = list(api.pages(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", 'jobs'))
+        jobs = latest_jobs(api, run)
         artifacts = artifacts_for(api, run['id'])
         if not artifacts:
             assemble = [j for j in jobs if j['name'] == 'assemble' and j['run_attempt'] == run['run_attempt']]
@@ -388,7 +389,7 @@ def select_main(api, event):
                 record = validate_bundle(archive, root / 'package', version)
             validate_provenance(record, run, jobs, artifact, source, source['tree']['sha'], api.repo)
             for name in REQUIRED_JOBS:
-                matches = [j for j in jobs if j['name'] == name and j['run_attempt'] == run['run_attempt']]
+                matches = [j for j in jobs if j['name'] == name and 1 <= j['run_attempt'] <= run['run_attempt']]
                 require(len(matches) == 1 and matches[0].get('status') == 'completed'
                         and matches[0]['conclusion'] == 'success', 'Required qualification job did not succeed')
             assemble = next(j for j in jobs if j['name'] == 'assemble' and j['run_attempt'] == run['run_attempt'])
