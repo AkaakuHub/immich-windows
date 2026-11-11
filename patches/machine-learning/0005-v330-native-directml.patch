@@ -1,5 +1,4 @@
 diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml/__main__.py
-index c5aeeba1839e33055fbaee98fd541abde244c453..6b3409f35d5dc8de1575de8901b07b49e6b00b5b 100644
 --- a/machine-learning/immich_ml/__main__.py
 +++ b/machine-learning/immich_ml/__main__.py
 @@ -1,6 +1,7 @@
@@ -10,32 +9,27 @@ index c5aeeba1839e33055fbaee98fd541abde244c453..6b3409f35d5dc8de1575de8901b07b49
  from ipaddress import ip_address
  from pathlib import Path
  
-@@ -13,6 +14,25 @@ else:
+@@ -12,6 +13,20 @@
+     log.info("Initializing Immich ML")
  
  module_dir = Path(__file__).parent
- 
++
 +if sys.platform == "win32":
 +    import uvicorn
-+    from uvicorn.supervisors import Multiprocess
 +
-+    windows_host = non_prefixed_settings.immich_host.strip("[]")
-+    config = uvicorn.Config(
++    uvicorn.run(
 +        "immich_ml.main:app",
-+        host=windows_host,
++        host=non_prefixed_settings.immich_host.strip("[]"),
 +        port=non_prefixed_settings.immich_port,
 +        workers=settings.workers,
 +        loop="asyncio:SelectorEventLoop",
 +        timeout_keep_alive=settings.http_keepalive_timeout_s,
 +        log_config=None,
 +    )
-+    server = uvicorn.Server(config=config)
-+    with config.bind_socket() as sock:
-+        Multiprocess(config, target=server.run, sockets=[sock]).run()
 +    raise SystemExit(0)
-+
+ 
  # on i915, Intel's runtime submits every allocation in the process with each run it gives OpenVINO's GPU plugin
  if any(driver.resolve().name == "i915" for driver in Path("/sys/class/drm").glob("renderD*/device/driver")):
-     os.environ.setdefault("NEOReadDebugKeys", "1")
 diff --git a/machine-learning/immich_ml/allocator.py b/machine-learning/immich_ml/allocator.py
 index 7cb3338bc620cc6bc6624efcbd3350c0531ab20b..87c055b6841da1b76a4c478fb94edbde90dd619d 100644
 --- a/machine-learning/immich_ml/allocator.py
