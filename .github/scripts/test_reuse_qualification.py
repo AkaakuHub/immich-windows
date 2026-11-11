@@ -77,7 +77,7 @@ def fixture():
                                       'created_at': stamp, 'updated_at': stamp}
                                      for suffix in ('win-x64', 'native-dependencies')]}])
         if path.startswith('actions/workflows/build-windows.yml/runs?'): return iter(states['runs'])
-        if path == 'actions/runs/100/attempts/2/jobs': return iter(jobs)
+        if path == 'actions/runs/100/jobs?filter=all': return iter(jobs)
         if path == 'actions/runs/100/artifacts': return iter(states['artifacts'])
         raise AssertionError(f'Unexpected API pages {path}')
 
@@ -199,15 +199,15 @@ class ReuseTests(unittest.TestCase):
 
     def test_every_mandatory_job_must_be_uniquely_successful(self):
         for name in reuse.REQUIRED_JOBS:
-            for condition in ('missing', 'skipped', 'failure', 'duplicate', 'older'):
+            for condition in ('missing', 'skipped', 'failure', 'duplicate', 'future'):
                 with self.subTest(name=name, condition=condition):
                     original = copy.deepcopy(self.state['jobs'])
                     job = next(j for j in self.state['jobs'] if j['name'] == name)
                     if condition == 'missing': self.state['jobs'].remove(job)
                     elif condition == 'duplicate': self.state['jobs'].append(job.copy())
-                    elif condition == 'older': job['run_attempt'] = 1
+                    elif condition == 'future': job['run_attempt'] = 3
                     else: job['conclusion'] = condition
-                    with self.assertRaisesRegex(ValueError, 'Required'): self.select()
+                    with self.assertRaises(ValueError): self.select()
                     self.state['jobs'][:] = original
 
     def test_artifact_run_head_and_repository_mismatches_rejected(self):
@@ -440,7 +440,7 @@ class WorkflowInputTests(unittest.TestCase):
     def test_precompressed_artifact_transport_does_not_requalify_product(self):
         old = self.text.replace('          compression-level: 0\n', '')
         self.assertEqual(self.original, reuse.workflow_inputs(old))
-        self.assertEqual(self.text.count('compression-level: 0'), 2)
+        self.assertEqual(self.text.count('compression-level: 0'), 3)
 
 
 class BaselineInputTests(unittest.TestCase):

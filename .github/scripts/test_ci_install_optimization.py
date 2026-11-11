@@ -54,7 +54,7 @@ sharp.versions = {sharp:'fixture',vips:'fixture'}; module.exports = sharp;
     def test_forwarder_cache_is_independent_of_application_patches(self):
         import yaml
         workflow = yaml.safe_load((ROOT / '.github/workflows/build-windows.yml').read_text(encoding='utf-8'))
-        steps = workflow['jobs']['assemble']['steps']
+        steps = workflow['jobs']['package']['steps']
         restore = {step['id']: step for step in steps if step.get('id', '').endswith('-cache')}
         self.assertEqual(restore['application-cache']['with']['path'], 'artifacts/application')
         cache = restore['forwarder-cache']['with']

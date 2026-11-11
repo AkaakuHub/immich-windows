@@ -41,7 +41,7 @@ class QualificationJobAvailabilityTests(unittest.TestCase):
         with mock.patch.object(release.time, 'sleep') as sleep:
             self.assertEqual(release.qualification_jobs(api, {'id': 200, 'run_attempt': 2}), self.jobs())
         sleep.assert_called_once_with(5)
-        self.assertEqual(api.pages.call_args.args, ('actions/runs/200/attempts/2/jobs', 'jobs'))
+        self.assertEqual(api.pages.call_args.args, ('actions/runs/200/jobs?filter=all', 'jobs'))
 
     def test_failed_skipped_or_duplicated_jobs_are_never_accepted(self):
         for conclusion in ('failure', 'cancelled', 'skipped'):
@@ -66,7 +66,7 @@ class QualificationJobAvailabilityTests(unittest.TestCase):
 
     def test_wrong_attempt_results_are_rejected_immediately(self):
         api = mock.Mock()
-        api.pages.return_value = [dict(job, run_attempt=1) for job in self.jobs()]
+        api.pages.return_value = [dict(job, run_attempt=3) for job in self.jobs()]
         with mock.patch.object(release.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, 'different attempt'):
             release.qualification_jobs(api, {'id': 200, 'run_attempt': 2})
         sleep.assert_not_called()
@@ -417,20 +417,33 @@ class ProvenanceTests(unittest.TestCase):
             with self.subTest(object=index, field=path, value=value), self.assertRaises(ValueError):
                 self.validate(values)
 
-    def test_every_required_job_must_succeed_in_the_exact_attempt(self):
+    def test_every_required_job_must_have_a_successful_latest_execution(self):
         for name in sorted(release.REQUIRED_JOBS):
-            for state in ('missing', 'skipped', 'failure', 'cancelled', 'old attempt'):
+            for state in ('missing', 'skipped', 'failure', 'cancelled', 'future attempt'):
                 values = provenance()
                 jobs = values[2]
                 job = next(job for job in jobs if job['name'] == name)
                 if state == 'missing':
                     jobs.remove(job)
-                elif state == 'old attempt':
-                    job['run_attempt'] = 1
+                elif state == 'future attempt':
+                    job['run_attempt'] = 3
                 else:
                     job['conclusion'] = state
                 with self.subTest(job=name, state=state), self.assertRaises(ValueError):
                     self.validate(values)
+
+    def test_install_retry_keeps_successful_build_gates_from_the_same_run(self):
+        values = provenance()
+        for job in values[2]:
+            if job['name'] != 'assemble':
+                job['run_attempt'] = 1
+        self.validate(values)
+
+    def test_previous_install_result_cannot_qualify_a_new_attempt(self):
+        values = provenance()
+        next(job for job in values[2] if job['name'] == 'assemble')['run_attempt'] = 1
+        with self.assertRaises(ValueError):
+            self.validate(values)
 
     def test_git_object_ids_and_authoritative_source_tree_are_verified(self):
         for index, path, value in (
@@ -609,7 +622,7 @@ class ControlFlowTests(OfflineTestCase):
         self.api.collections[
             f"actions/workflows/build-windows.yml/runs?event=pull_request&head_sha={pr['head']['sha']}"] = [run]
         self.api.collections[f"actions/runs/{run['id']}/artifacts"] = [artifact]
-        self.api.collections[f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"] = jobs
+        self.api.collections[f"actions/runs/{run['id']}/jobs?filter=all"] = jobs
         self.api.objects[f"actions/runs/{run['id']}"] = run
         self.api.objects['actions/workflows/build-windows.yml'] = {'id': 71}
         self.api.objects[f"git/commits/{record['sourceCommit']}"] = source
@@ -809,7 +822,7 @@ class ControlFlowTests(OfflineTestCase):
         self.install_publisher_retry()
         release.prepare_publish(VERSION, self.directory / 'publish')
         self.assertEqual(self.outputs()['source_commit'], MERGED)
-        self.assertIn(('pages', 'actions/runs/200/attempts/1/jobs', 'jobs'), self.api.calls)
+        self.assertIn(('pages', 'actions/runs/200/jobs?filter=all', 'jobs'), self.api.calls)
         self.assertNotIn(('pages', 'actions/runs/200/attempts/2/jobs', 'jobs'), self.api.calls)
 
     def test_publisher_retry_requires_same_original_run_head_and_completed_attempt(self):
@@ -1058,7 +1071,7 @@ class NativeReuseTests(OfflineTestCase):
             current_jobs = [dict(job, run_attempt=3, started_at='2026-10-02T09:00:00Z',
                                  completed_at='2026-10-02T09:40:00Z') for job in jobs
                             if state != 'no current-attempt codec' or job['name'] != 'codec']
-            self.api.collections['actions/runs/100/attempts/3/jobs'] = current_jobs
+            self.api.collections['actions/runs/100/jobs?filter=all'] = current_jobs
             with self.subTest(state=state):
                 release.prepare_native()
                 self.assertEqual(self.outputs()['reused'], 'false')

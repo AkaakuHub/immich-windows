@@ -6,7 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / '.github/workflows/build-windows.yml').read_text(encoding='utf-8')
-ASSEMBLE = WORKFLOW.split('\n  assemble:\n', 1)[1].split('\n  publish:\n', 1)[0]
+ASSEMBLE = WORKFLOW.split('\n  package:\n', 1)[1].split('\n  publish:\n', 1)[0]
 STEPS = re.split(r'(?=^      - )', ASSEMBLE, flags=re.MULTILINE)[1:]
 INPUTS = "${{ hashFiles('dependencies/versions.json', 'build/Bootstrap-BuildTools.ps1', 'build/Fetch-NodeRuntime.ps1', 'tests/Fetch-MediaFixtures.ps1') }}"
 
