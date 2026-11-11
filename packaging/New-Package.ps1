@@ -52,7 +52,7 @@ foreach ($project in @('server','cli')) {
     $package | Add-Member -NotePropertyName packageManager -NotePropertyValue "pnpm@$($versions.pnpm.version)" -Force
     Write-Utf8NoBom -Path $packagePath -Content ($package | ConvertTo-Json -Depth 100)
     $allowBuilds = "allowBuilds:`n  bcrypt: true`n  sharp: true"
-    if ($project -eq 'server') { $allowBuilds += "`n  '@scarf/scarf': false`n  esbuild: true`n  msgpackr-extract: true`n  protobufjs: false" }
+    if ($project -eq 'server') { $allowBuilds += "`n  better-sqlite3: true`n  '@scarf/scarf': false`n  esbuild: true`n  msgpackr-extract: true`n  protobufjs: false" }
     Write-Utf8NoBom -Path (Join-Path $projectRoot 'pnpm-workspace.yaml') -Content $allowBuilds
     Invoke-Native (Assert-Command pnpm) @('install','--lockfile-only','--prod','--config.node-linker=hoisted') $projectRoot
     if (Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules')) { throw "$project must not contain node_modules." }
