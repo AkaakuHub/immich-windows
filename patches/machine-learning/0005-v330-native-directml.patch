@@ -9,15 +9,16 @@ diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml
  from ipaddress import ip_address
  from pathlib import Path
  
-@@ -12,6 +13,20 @@
+@@ -12,6 +13,23 @@
      log.info("Initializing Immich ML")
  
  module_dir = Path(__file__).parent
 +
 +if sys.platform == "win32":
 +    import uvicorn
++    from uvicorn.supervisors import Multiprocess
 +
-+    uvicorn.run(
++    config = uvicorn.Config(
 +        "immich_ml.main:app",
 +        host=non_prefixed_settings.immich_host.strip("[]"),
 +        port=non_prefixed_settings.immich_port,
@@ -26,6 +27,8 @@ diff --git a/machine-learning/immich_ml/__main__.py b/machine-learning/immich_ml
 +        timeout_keep_alive=settings.http_keepalive_timeout_s,
 +        log_config=None,
 +    )
++    with config.bind_socket() as sock:
++        Multiprocess(config, sockets=[sock]).run()
 +    raise SystemExit(0)
  
  # on i915, Intel's runtime submits every allocation in the process with each run it gives OpenVINO's GPU plugin
