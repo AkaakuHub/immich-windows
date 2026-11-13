@@ -33,7 +33,7 @@
     "version": "3.13.18",
     "distribution": "uv-managed CPython / python-build-standalone",
     "architecture": "x86_64-pc-windows-msvc",
-    "source": "https://github.com/astral-sh/uv/blob/316c827e058c16b71d5c507a20729c2995a7bcce/crates/uv-python-managed/download-metadata.json"
+    "source": "https://github.com/astral-sh/uv/blob/3d97a6aad5ad989c1b4fc89406d54f0dce370b72/crates/uv-python-managed/download-metadata.json"
   },
   "onnxruntimeDirectml": {
     "version": "1.24.4",
@@ -46,8 +46,8 @@
     "asset": "node-v24.22.1-win-x64.zip"
   },
   "uv": {
-    "version": "0.13.7",
-    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.7",
+    "version": "0.13.8",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.8",
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
@@ -66,23 +66,23 @@
   },
   "pnpm": {
     "version": "12.15.0",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/mise.toml"
+    "source": "https://github.com/immich-app/immich/blob/22b95194c80a2f2e6201093916b6c8c3d6d271dd/mise.toml"
   },
   "extismJs": {
     "version": "1.7.0",
     "repository": "https://github.com/extism/js-pdk",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/22b95194c80a2f2e6201093916b6c8c3d6d271dd/mise.toml",
     "asset": "extism-js-x86_64-windows-v1.7.0.gz"
   },
   "binaryen": {
     "version": "124",
     "repository": "https://github.com/WebAssembly/binaryen",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/22b95194c80a2f2e6201093916b6c8c3d6d271dd/mise.toml",
     "asset": "binaryen-version_124-x86_64-windows.tar.gz"
   },
   "sharp": {
     "version": "0.35.3",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/server/package.json"
+    "source": "https://github.com/immich-app/immich/blob/22b95194c80a2f2e6201093916b6c8c3d6d271dd/server/package.json"
   },
   "sharpLibvips": {
     "version": "8.18.7",
@@ -108,7 +108,7 @@
   },
   "upstreamRuntime": {
     "schemaVersion": 1,
-    "immichCommit": "0715bcf8dab4b91118d6184479e2be2767ef8294",
+    "immichCommit": "22b95194c80a2f2e6201093916b6c8c3d6d271dd",
     "baseImages": {
       "repository": "immich-app/base-images",
       "tag": "202610291416",
@@ -132,10 +132,10 @@
     },
     "sourceSha256": {
       "mise.toml": "522f6066b673a6213cce1335a2b983b09d9c6b16529e5bb3d8471529cc389d18",
-      "server/package.json": "95660ef680dfbc557fcfab597e986da45ffde9f8df5c0453f9804fd7ff7b3a54",
+      "server/package.json": "85bbb9d0bc5256c08640c34153be430b30b95f9266fc60abc9cf7ad655924d8a",
       "server/Dockerfile": "e82bf4b538715d656acb7794f06806cc96add7895ffe0d673a6bd9121edb726b",
-      "machine-learning/pyproject.toml": "873550476289d29e6bbb161f3416b3e50661d12388b6ffa6321a1135a0494290",
-      "machine-learning/uv.lock": "11af17b1c907285e97f3f5365967503e64026e3f33fbce6209032e2a6b9789f0"
+      "machine-learning/pyproject.toml": "d48b6649c5af0efc60da1a885fe3ac4a86f66958af0f8bb5e50fa39c9bb0d0e5",
+      "machine-learning/uv.lock": "ae47df0abae2fb494e5561c3ec47e04ed1e101b859de85c3b5799fa9a678686f"
     },
     "mediaSources": {
       "libvips": {
