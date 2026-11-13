@@ -33,7 +33,7 @@
     "version": "3.13.18",
     "distribution": "uv-managed CPython / python-build-standalone",
     "architecture": "x86_64-pc-windows-msvc",
-    "source": "https://github.com/astral-sh/uv/blob/316c827e058c16b71d5c507a20729c2995a7bcce/crates/uv-python-managed/download-metadata.json"
+    "source": "https://github.com/astral-sh/uv/blob/3d97a6aad5ad989c1b4fc89406d54f0dce370b72/crates/uv-python-managed/download-metadata.json"
   },
   "onnxruntimeDirectml": {
     "version": "1.24.4",
@@ -46,8 +46,8 @@
     "asset": "node-v24.22.1-win-x64.zip"
   },
   "uv": {
-    "version": "0.13.7",
-    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.7",
+    "version": "0.13.8",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.8",
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
