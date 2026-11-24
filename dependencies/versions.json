@@ -24,16 +24,16 @@
     "source": "https://github.com/supervc-stack/VectorChord/releases/tag/1.1.1"
   },
   "valkey": {
-    "version": "9.1.3",
+    "version": "9.1.4",
     "repository": "https://github.com/valkey-windows/valkey-windows",
-    "asset": "Valkey-9.1.3-Windows-x64-msys2-with-Service.zip",
-    "source": "https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.3"
+    "asset": "Valkey-9.1.4-Windows-x64-msys2-with-Service.zip",
+    "source": "https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.4"
   },
   "python": {
     "version": "3.13.18",
     "distribution": "uv-managed CPython / python-build-standalone",
     "architecture": "x86_64-pc-windows-msvc",
-    "source": "https://github.com/astral-sh/uv/blob/316c827e058c16b71d5c507a20729c2995a7bcce/crates/uv-python-managed/download-metadata.json"
+    "source": "https://github.com/astral-sh/uv/blob/6b2d39dcc390293d51c9c0d2bbcd650f4bcbfdce/crates/uv-python-managed/download-metadata.json"
   },
   "onnxruntimeDirectml": {
     "version": "1.24.4",
@@ -46,8 +46,8 @@
     "asset": "node-v24.22.1-win-x64.zip"
   },
   "uv": {
-    "version": "0.13.7",
-    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.7",
+    "version": "0.13.9",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.13.9",
     "asset": "uv-x86_64-pc-windows-msvc.zip"
   },
   "ffmpeg": {
@@ -59,30 +59,30 @@
     "sha256": "113adeb702683c38be40a65d859f8ef7ffb07bae9df16dfb6c3df5ac3d95ef3c"
   },
   "winsw": {
-    "version": "2.12.0",
+    "version": "2.14.0",
     "repository": "https://github.com/winsw/winsw",
     "asset": "WinSW-x64.exe",
-    "source": "https://github.com/winsw/winsw/releases/tag/v2.12.0"
+    "source": "https://github.com/winsw/winsw/releases/tag/v2.14.0"
   },
   "pnpm": {
     "version": "12.15.0",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/mise.toml"
+    "source": "https://github.com/immich-app/immich/blob/b6b4b80df113656bfa4872cab31c7319e89438a9/mise.toml"
   },
   "extismJs": {
     "version": "1.7.0",
     "repository": "https://github.com/extism/js-pdk",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/b6b4b80df113656bfa4872cab31c7319e89438a9/mise.toml",
     "asset": "extism-js-x86_64-windows-v1.7.0.gz"
   },
   "binaryen": {
     "version": "124",
     "repository": "https://github.com/WebAssembly/binaryen",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/mise.toml",
+    "source": "https://github.com/immich-app/immich/blob/b6b4b80df113656bfa4872cab31c7319e89438a9/mise.toml",
     "asset": "binaryen-version_124-x86_64-windows.tar.gz"
   },
   "sharp": {
     "version": "0.35.3",
-    "source": "https://github.com/immich-app/immich/blob/0715bcf8dab4b91118d6184479e2be2767ef8294/server/package.json"
+    "source": "https://github.com/immich-app/immich/blob/b6b4b80df113656bfa4872cab31c7319e89438a9/server/package.json"
   },
   "sharpLibvips": {
     "version": "8.18.7",
@@ -108,7 +108,7 @@
   },
   "upstreamRuntime": {
     "schemaVersion": 1,
-    "immichCommit": "0715bcf8dab4b91118d6184479e2be2767ef8294",
+    "immichCommit": "b6b4b80df113656bfa4872cab31c7319e89438a9",
     "baseImages": {
       "repository": "immich-app/base-images",
       "tag": "202610291416",
@@ -132,10 +132,10 @@
     },
     "sourceSha256": {
       "mise.toml": "522f6066b673a6213cce1335a2b983b09d9c6b16529e5bb3d8471529cc389d18",
-      "server/package.json": "95660ef680dfbc557fcfab597e986da45ffde9f8df5c0453f9804fd7ff7b3a54",
-      "server/Dockerfile": "e82bf4b538715d656acb7794f06806cc96add7895ffe0d673a6bd9121edb726b",
-      "machine-learning/pyproject.toml": "873550476289d29e6bbb161f3416b3e50661d12388b6ffa6321a1135a0494290",
-      "machine-learning/uv.lock": "11af17b1c907285e97f3f5365967503e64026e3f33fbce6209032e2a6b9789f0"
+      "server/package.json": "3f706ad1f6ab03511cc1570dddec871690eb1edb8a5ad136acc09f9a054d090b",
+      "server/Dockerfile": "e5f561e42faac2d18203f83e1e040da54640b9ae61ca9af933871ab5fb258f81",
+      "machine-learning/pyproject.toml": "6272dcdb8810bb3a725fca4c6dac923d5fbaf3c29dc60e8faa5cbdcd050b61c7",
+      "machine-learning/uv.lock": "b49a42ec9b5fd194196921f25cd6b82576482481772f6f04f0dd3eddab580ed4"
     },
     "mediaSources": {
       "libvips": {
